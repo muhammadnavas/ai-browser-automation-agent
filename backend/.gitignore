@@ -1,0 +1,71 @@
+﻿# === Python bytecode ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# === Distribution / packaging ===
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-link
+.installed.cfg
+MANIFEST
+
+# === Virtual environments ===
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.Python
+
+# === Environment variables / secrets ===
+.env
+.env.*
+
+# === Testing ===
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+nosetests.xml
+test-results/
+junit.xml
+
+# === Playwright ===
+playwright-report/
+test-results/
+.playwright/
+
+# === Type checkers / linters ===
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.pytype/
+
+# === Project runtime outputs ===
+screenshots/
+reports/*.csv
+reports/*.pdf
+reports/*.xlsx
+*.log
+*.db
+*.sqlite3
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini

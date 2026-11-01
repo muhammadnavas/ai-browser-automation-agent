@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Browser Agent</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="popup-header">
+      <div class="brand">
+        <span class="brand-icon">🤖</span>
+        <div class="brand-info">
+          <h2>AI Browser Agent</h2>
+          <span class="version">Extension Bridge v1.0</span>
+        </div>
+      </div>
+      <div id="status-indicator" class="status-pill status-disconnected">
+        <span class="status-dot"></span>
+        <span id="status-text">Disconnected</span>
+      </div>
+    </header>
+
+    <div class="section">
+      <label for="server-url-input">Backend WebSocket URL</label>
+      <div class="input-row">
+        <input type="text" id="server-url-input" placeholder="ws://localhost:8000/api/extension/ws" />
+        <button id="save-url-btn" class="btn-secondary" title="Save URL">Save</button>
+      </div>
+    </div>
+
+    <div class="action-buttons">
+      <button id="reconnect-btn" class="btn-primary">🔄 Reconnect Backend</button>
+      <button id="open-dashboard-btn" class="btn-outline">🌐 Open Dashboard</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">
+        <span>Active Task Tabs</span>
+        <span id="task-count-badge" class="badge">0</span>
+      </div>
+      <div id="active-tasks-list" class="tasks-list">
+        <div class="empty-state">No active automation tabs</div>
+      </div>
+    </div>
+
+    <footer class="popup-footer">
+      <span>Operates in your current Chrome session</span>
+      <span class="secure-badge">🔒 Zero-token extraction</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

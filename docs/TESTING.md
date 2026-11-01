@@ -1,0 +1,97 @@
+# Testing & Verification Guide
+
+This document describes how to run the automated test suite, execute live verification demos, and verify the capabilities of the **AI Browser Automation Agent** components.
+
+---
+
+## 1. Directory Structure of Tests
+
+All test cases, resources, and configurations are organized under the `tests/` folder:
+
+```
+tests/
+├── resources/              # HTML and resource files for testing
+│   ├── alert_demo.html
+│   ├── download_demo.html
+│   ├── form_demo.html
+│   ├── popup_demo.html
+│   └── ...
+├── test_agent.py           # Verifies AgentTaskRunner, trajectory tracking, and planning loop
+├── test_browser_module.py  # Comprehensive tests for Playwright browser controls, actions, tabs, session, dialogs
+├── test_extractor.py       # Verifies InfoExtractor auto-detection logic and all 7 extraction modules
+├── test_form_agent.py      # Verifies high-level form filler workflows
+├── test_form_discovery.py  # Verifies form field parsing, label inference chain, and suggested data mapping
+└── test_pool_stealth.py    # Verifies BrowserPool singleton lifecycle and stealth bot-evasion injections
+```
+
+---
+
+## 2. Automated Tests (pytest)
+
+The project uses `pytest` (with `pytest-asyncio` for async loop execution) to verify backend functionality.
+
+### Prerequisites
+
+Make sure the development and testing dependencies are installed:
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### Running the Test Suite
+
+Run all tests in verbose mode:
+```bash
+python -m pytest -v
+```
+
+Run a specific test file:
+```bash
+# Run only browser automation module tests
+python -m pytest tests/test_browser_module.py -v
+
+# Run only information extraction tests
+python -m pytest tests/test_extractor.py -v
+```
+
+Run a specific test case inside a file:
+```bash
+python -m pytest tests/test_browser_module.py -k "test_click" -v
+```
+
+---
+
+## 3. Live Headed Verification Demos
+
+In addition to headless unit tests, the project provides three interactive, headed demonstration scripts under `scripts/` to verify capabilities visually in real-time.
+
+### 3.1. Full Module Verification Demo (`scripts/run_demo_task.py`)
+Launches a headed Chromium browser and exercises almost every capability in a single flow (navigation, mouse gestures, form typing, popup interception, file download, alert/prompt dialogs, session cookies saving, and full-page screenshot capturing) against an internal local HTTP server:
+
+```bash
+python scripts/run_demo_task.py
+```
+
+### 3.2. Form Autofill Live Demo (`scripts/demo_form_fill.py`)
+Loads a local form, triggers the Form Discovery Engine to detect all fields, suggest data mappings to a mock user profile, and automatically populates the form without manual CSS selectors:
+
+```bash
+python scripts/demo_form_fill.py
+```
+
+### 3.3. Data Extraction Live Demo (`scripts/demo_extraction.py`)
+Opens a headed browser, navigates to real/mock web pages, runs the auto-detection classifier to identify categories (product pages, news articles, search results, contact forms, tables, galleries), parses the data structure, and outputs a formatted JSON payload:
+
+```bash
+python scripts/demo_extraction.py
+```
+
+---
+
+## 4. Test Resource Pages
+
+The `tests/resources/` directory contains static HTML mockups used to run tests locally with zero network dependency:
+* `form_demo.html`: Form widgets (text, dropdown, radios, checkboxes, file uploads).
+* `popup_demo.html`: Links and scripts triggering popup tabs/windows.
+* `alert_demo.html`: Standard JS triggers (`alert()`, `confirm()`, `prompt()`).
+* `download_demo.html`: Anchor links triggering native file downloads.
