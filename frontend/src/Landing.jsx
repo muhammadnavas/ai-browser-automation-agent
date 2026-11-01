@@ -277,65 +277,28 @@ function NodeCanvas() {
       });
 
       /* ── 5. Central Hub (Agent Core) ── */
-      const hubPulse = 1 + Math.sin(phase * 2) * 0.08;
-      const hubR = 32 * hubPulse;
+      // Keep the center node deliberately minimal: one quiet ring and a solid core.
+      const hubR = 30;
 
-      // Core outer aura
-      const hubHalo = ctx.createRadialGradient(cx, cy, 0, cx, cy, hubR * 2.8);
-      hubHalo.addColorStop(0, 'rgba(101, 230, 164, 0.28)');
-      hubHalo.addColorStop(0.5, 'rgba(101, 230, 164, 0.08)');
-      hubHalo.addColorStop(1, 'transparent');
       ctx.beginPath();
-      ctx.arc(cx, cy, hubR * 2.8, 0, Math.PI * 2);
-      ctx.fillStyle = hubHalo;
-      ctx.fill();
-
-      // Outer radar ring
-      ctx.beginPath();
-      ctx.arc(cx, cy, hubR + 10, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(101, 230, 164, 0.45)';
+      ctx.arc(cx, cy, hubR + 5, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(101, 230, 164, 0.42)';
       ctx.lineWidth = 1;
       ctx.stroke();
 
-      // Rotating tick marks
-      for (let k = 0; k < 6; k++) {
-        const tickA = phase * 0.8 + (k * Math.PI) / 3;
-        const tx1 = cx + Math.cos(tickA) * (hubR + 8);
-        const ty1 = cy + Math.sin(tickA) * (hubR + 8);
-        const tx2 = cx + Math.cos(tickA) * (hubR + 14);
-        const ty2 = cy + Math.sin(tickA) * (hubR + 14);
-        ctx.beginPath();
-        ctx.moveTo(tx1, ty1);
-        ctx.lineTo(tx2, ty2);
-        ctx.strokeStyle = 'rgba(101, 230, 164, 0.8)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-
-      // Hub body
       ctx.beginPath();
       ctx.arc(cx, cy, hubR, 0, Math.PI * 2);
       ctx.fillStyle = '#08120c';
       ctx.fill();
       ctx.strokeStyle = '#65e6a4';
-      ctx.lineWidth = 2;
-      ctx.shadowColor = '#65e6a4';
-      ctx.shadowBlur = 12;
+      ctx.lineWidth = 1.5;
       ctx.stroke();
-      ctx.shadowBlur = 0;
 
-      // Hub inner symbol (Crosshair / Agent Core)
+      // Simple center indicator; no pulse, aura, ticks, or crosshair.
       ctx.beginPath();
-      ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 7.5, 0, Math.PI * 2);
       ctx.fillStyle = '#65e6a4';
       ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(cx - 16, cy); ctx.lineTo(cx + 16, cy);
-      ctx.moveTo(cx, cy - 16); ctx.lineTo(cx, cy + 16);
-      ctx.strokeStyle = 'rgba(101, 230, 164, 0.5)';
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
 
       /* ── 6. Render Satellite Nodes ── */
       computedNodes.forEach((nd, i) => {
