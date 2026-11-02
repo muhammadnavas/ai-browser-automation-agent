@@ -1433,7 +1433,7 @@ class TaskManager:
                                     task.initial_plan = list(revised_plan)
                                     task.plan = list(revised_plan)
                                     task.current_plan_step = 0
-                                    task.plan_status = "replanned"
+                                    task.plan_status = "executing"
                                     task.updated_at = time.time()
                                     logger.info(
                                         "Task %s adaptively replanned to version %s after failed step %s.",
