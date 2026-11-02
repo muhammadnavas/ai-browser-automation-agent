@@ -50,6 +50,17 @@ XAI_VISION_MIN_INTERVAL_SECONDS=3
 XAI_VISION_MAX_IMAGE_BYTES=4000000
 ```
 
+When `OLLAMA_ENABLED=true`, the agent uses the configured local Ollama model for text planning and next-action reasoning first. If Ollama is unavailable or errors, it falls back to Gemini and then Groq/Grok text reasoning. Grok Vision remains a separate visual-reasoning path and continues to receive the current screenshot when configured.
+
+To prepare the local model, install Ollama and run:
+
+```bash
+ollama pull qwen2.5:7b
+ollama serve
+```
+
+Keep Ollama running while the backend is active. Set `OLLAMA_BASE_URL` to a reachable Ollama server; when the backend runs in Docker, `localhost` refers to the container, not the host machine.
+
 When `XAI_API_KEY` is configured and a Chrome screenshot is available, the planner sends one current screenshot together with DOM, form, and visual-layout context to Grok Vision for its next-action decision. Screenshot SHA-256 deduplication prevents sending an identical image again; requests are spaced by `XAI_VISION_MIN_INTERVAL_SECONDS` (default 3 seconds), and images larger than `XAI_VISION_MAX_IMAGE_BYTES` (default 4 MB) are skipped. Skipped or failed vision calls use the normal text reasoning chain. Screenshots are still captured for task evidence, but duplicate frames are not resent to Grok. Without the xAI key, existing Gemini/Groq and heuristic behavior is unchanged.
 
 ### 3. Start the API server
