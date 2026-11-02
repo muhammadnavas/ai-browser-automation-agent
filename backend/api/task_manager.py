@@ -434,6 +434,14 @@ class TaskManager:
             task.plan_metadata["cache_details"] = cache_info
             task.plan_metadata["plan"] = plan or []
             task.plan_metadata["initial_plan"] = plan or []
+            task.plan_metadata.setdefault("plan_version", 1)
+            task.plan_metadata.setdefault("adaptive_replan_count", 0)
+            task.plan_metadata.setdefault("plan_versions", [{
+                "version": 1,
+                "reason": "initial_plan",
+                "created_at": time.time(),
+                "milestones": list(plan or []),
+            }])
 
             task.updated_at = time.time()
             await self.broadcast_task_update(task_id)
