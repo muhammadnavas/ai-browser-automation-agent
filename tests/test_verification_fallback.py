@@ -147,6 +147,32 @@ async def test_extension_checkbox_postcondition_checks_live_checked_state(tm):
     assert "Checkbox state verified" in message
 
 
+
+def test_extension_action_precondition_rejects_missing_target(tm):
+    action = BrowserAction(action=ActionType.CLICK, element_id=9)
+    ok, message = tm._verify_extension_action_precondition(
+        action, {"elements": [{"index": 1, "selector": "#other", "visible": True}]}
+    )
+    assert ok is False
+    assert "no longer present" in message
+
+
+def test_extension_action_precondition_rejects_disabled_target(tm):
+    action = BrowserAction(action=ActionType.FILL, selector="#email")
+    ok, message = tm._verify_extension_action_precondition(
+        action, {"elements": [{"index": 2, "selector": "#email", "disabled": True}]}
+    )
+    assert ok is False
+    assert "disabled" in message
+
+
+def test_extension_action_precondition_allows_text_targeted_double_click(tm):
+    action = BrowserAction(action=ActionType.DOUBLE_CLICK, text="Project folder")
+    ok, message = tm._verify_extension_action_precondition(action, {"elements": []})
+    assert ok is True
+    assert "Text-targeted" in message
+
+
 # ===========================================================================
 # 1. Successful Navigation when Model is Unavailable
 # ===========================================================================
