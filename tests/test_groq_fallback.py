@@ -159,3 +159,44 @@ async def test_adaptive_replan_rejects_invalid_plan_shape():
                 page_info={"url": "https://example.com"},
                 recent_errors=["Previous action failed"],
             )
+
+
+
+@pytest.mark.asyncio
+async def test_adaptive_replan_accepts_explicit_completion_verification_milestone():
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    planner.ollama_enabled = True
+    with patch.object(
+        planner,
+        "_call_llm",
+        return_value='["Verify the requested outcome and finish"]',
+    ):
+        revised = await planner.replan_remaining_plan(
+            goal="Find the latest Python release",
+            current_plan=["Open search", "Search Python"],
+            completed_history=[{"step": 1, "action": "extract", "description": "Found release details"}],
+            page_info={"url": "https://www.python.org/downloads/"},
+            recent_errors=["A final extraction action timed out"],
+        )
+
+    assert revised == ["Verify the requested outcome and finish"]
+
+
+@pytest.mark.asyncio
+async def test_adaptive_replan_accepts_milestones_object_response():
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    planner.ollama_enabled = True
+    with patch.object(
+        planner,
+        "_call_llm",
+        return_value='{"milestones":["Inspect current page","Verify the result"]}',
+    ):
+        revised = await planner.replan_remaining_plan(
+            goal="Check the result",
+            current_plan=["Open page", "Inspect result"],
+            completed_history=[],
+            page_info={"url": "https://example.com"},
+            recent_errors=["Element was not found"],
+        )
+
+    assert revised == ["Inspect current page", "Verify the result"]
