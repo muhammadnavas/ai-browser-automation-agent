@@ -1658,13 +1658,24 @@ class TaskManager:
         }
         if action.action not in target_actions:
             return True, "No element-target precondition required."
+        elements = (page_info or {}).get("elements") or []
         if action.element_id is None and not action.selector:
+            # Some extension actions intentionally target a semantic group rather
+            # than one indexed control (radio groups are addressed by name).
+            if action.action == ActionType.RADIO_BUTTON and action.radio_name:
+                group = [
+                    item for item in elements
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "") == str(action.radio_name)
+                ]
+                if group:
+                    return True, "Radio group precondition verified."
+                return False, "Action precondition failed: radio group is no longer present."
             # Text-only clicks are supported by the extension's fallback resolver.
             if action.action in (ActionType.CLICK, ActionType.DOUBLE_CLICK) and action.text:
                 return True, "Text-targeted interaction will use extension resolution."
             return False, "Action precondition failed: no element index or selector was supplied."
 
-        elements = (page_info or {}).get("elements") or []
         target = next((item for item in elements if isinstance(item, dict) and (
             (action.element_id is not None and item.get("index") == action.element_id)
             or (action.selector and item.get("selector") == action.selector)
@@ -1773,6 +1784,23 @@ class TaskManager:
                     return True, "Checkbox state verified."
                 return False, "Checkbox postcondition failed: checked state does not match."
             return False, "Checkbox postcondition inconclusive: checked state was not exposed by the extension."
+
+        if action_type == ActionType.RADIO_BUTTON:
+            elements = after.get("elements") or []
+            group = [
+                item for item in elements
+                if isinstance(item, dict)
+                and str(item.get("name") or "") == str(action.radio_name or "")
+            ]
+            if group:
+                expected_value = str(action.value or action.text or "").strip()
+                selected = next((item for item in group if item.get("checked") is True), None)
+                if selected is not None:
+                    selected_value = str(selected.get("value") or selected.get("text") or "").strip()
+                    if not expected_value or selected_value == expected_value:
+                        return True, "Radio selection verified."
+                    return False, "Radio postcondition failed: a different option is selected."
+            return False, "Radio postcondition inconclusive: selected state was not exposed by the extension."
 
         if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
             before_elements = before.get("elements") or []
