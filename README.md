@@ -33,6 +33,12 @@ Create or update `.env` in `backend/`:
 GEMINI_API_KEY=your_gemini_key_here
 GEMINI_MODEL=gemini-2.5-flash
 
+# Optional local text planner (Ollama; takes priority when enabled)
+OLLAMA_ENABLED=true
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_TIMEOUT_SECONDS=45
+
 # Secondary text fallback (Groq)
 GROQ_API_KEY=your_groq_api_key_here
 GROQ_MODEL=openai/gpt-oss-120b
