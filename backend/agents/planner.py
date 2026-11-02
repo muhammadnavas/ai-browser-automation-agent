@@ -692,8 +692,9 @@ class AIAgentPlanner:
             if now - self._last_vision_request_at < self._vision_min_interval:
                 logger.debug("Skipping Grok Vision request inside minimum request interval.")
                 return None
-            self._last_vision_image_hash = image_hash
-            self._last_vision_request_at = now
+            # Reserve neither the hash nor the throttle window here. The
+            # request may fail; only a successful VLM response should consume
+            # this screenshot's deduplication slot.
             return image_path
         except OSError as exc:
             logger.warning("Unable to inspect screenshot before Grok Vision: %s", exc)
@@ -709,7 +710,8 @@ class AIAgentPlanner:
         if mime_type not in ("image/png", "image/jpeg", "image/webp"):
             raise ValueError(f"Unsupported screenshot format for Grok Vision: {mime_type}")
         with open(image_path, "rb") as image_file:
-            encoded_image = base64.b64encode(image_file.read()).decode("ascii")
+            image_bytes = image_file.read()
+        encoded_image = base64.b64encode(image_bytes).decode("ascii")
         payload = {
             "model": self.xai_vision_model,
             "messages": [
@@ -754,6 +756,9 @@ class AIAgentPlanner:
             content = "".join(
                 part.get("text", "") for part in content if isinstance(part, dict)
             )
+        # Mark the screenshot as consumed only after the provider succeeds.
+        self._last_vision_image_hash = hashlib.sha256(image_bytes).hexdigest()
+        self._last_vision_request_at = time.monotonic()
         logger.info("Grok Vision (%s) produced a browser action.", self.xai_vision_model)
         return str(content).strip()
 
