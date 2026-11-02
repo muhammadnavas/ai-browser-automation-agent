@@ -1659,10 +1659,19 @@ class TaskManager:
         after_url = str(after.get("url") or getattr(controller, "current_url", "") or "")
 
         if action_type == ActionType.NAVIGATE:
-            target = str(action.url or action.text or "").strip().rstrip("/")
-            actual = after_url.rstrip("/")
-            if target and actual and (actual == target or domains_match(actual, target)):
-                return True, f"Navigation verified at {after_url}."
+            target = str(action.url or action.text or "").strip()
+            actual = after_url.strip()
+            if target and actual:
+                expected_parts = urlparse(target if "://" in target else f"https://{target}")
+                actual_parts = urlparse(actual)
+                expected_path = (expected_parts.path or "/").rstrip("/") or "/"
+                actual_path = (actual_parts.path or "/").rstrip("/") or "/"
+                same_destination = (
+                    (expected_parts.hostname or "").lower() == (actual_parts.hostname or "").lower()
+                    and expected_path == actual_path
+                )
+                if same_destination:
+                    return True, f"Navigation verified at {after_url}."
             return False, f"Navigation postcondition not met (expected {target or 'target URL'}, observed {after_url or 'unknown URL'})."
 
         target_selector = str(action.selector or "")
