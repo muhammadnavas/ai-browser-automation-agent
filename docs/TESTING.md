@@ -59,6 +59,18 @@ Run a specific test case inside a file:
 python -m pytest tests/test_browser_module.py -k "test_click" -v
 ```
 
+
+### Focused Phase 1 planner and action-verification tests
+
+Run the planner-provider, adaptive-replanning, and action-verification regression tests from the repository root:
+
+```bash
+python -m pytest tests/test_groq_fallback.py tests/test_verification_fallback.py -v
+```
+
+The verification tests cover extension action preconditions (target presence, visibility and enabled state) and postconditions (navigation destination, text values, selected values, and checkbox state). Clicks with ambiguous outcomes are deliberately not retried automatically because they may have caused a side effect already.
+
+
 ---
 
 ## 3. Live Headed Verification Demos
