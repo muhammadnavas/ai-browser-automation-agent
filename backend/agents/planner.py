@@ -1421,17 +1421,44 @@ If the task is already complete, return ["Verify the requested outcome and finis
 
         parsed = json.loads(raw)
         if isinstance(parsed, dict):
-            parsed = parsed.get("plan") or parsed.get("steps") or parsed.get("remaining_steps")
+            parsed = (
+                parsed.get("plan")
+                or parsed.get("steps")
+                or parsed.get("remaining_steps")
+                or parsed.get("milestones")
+                or parsed.get("execution_plan")
+            )
         if not isinstance(parsed, list):
             raise ValueError("Adaptive planner did not return a JSON list.")
+
         revised = [
-            str(item.get("description") or item.get("step") or item.get("title") or "").strip()
+            str(
+                item.get("description")
+                or item.get("milestone")
+                or item.get("step")
+                or item.get("title")
+                or item.get("action")
+                or ""
+            ).strip()
             if isinstance(item, dict) else str(item).strip()
             for item in parsed
         ]
         revised = [item for item in revised if item][:6]
-        if not 2 <= len(revised) <= 6:
-            raise ValueError("Adaptive planner must return between 2 and 6 valid milestones.")
+
+        # A single verification milestone is valid only when the model explicitly
+        # reports that the original goal is already complete. The caller still
+        # has to execute FINISH and independently verify the outcome.
+        completion_only = (
+            len(revised) == 1
+            and any(
+                phrase in revised[0].lower()
+                for phrase in ("verify the requested outcome and finish", "verify completion and finish")
+            )
+        )
+        if not 2 <= len(revised) <= 6 and not completion_only:
+            raise ValueError(
+                "Adaptive planner must return 2 to 6 milestones, or one explicit completion-verification milestone."
+            )
         logger.info("Adaptive replan generated %s remaining milestones using %s.", len(revised), self.last_llm_provider)
         return revised
 
