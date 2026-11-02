@@ -1388,6 +1388,68 @@ class TaskManager:
                             task.error = exec_description or "Task outcome could not be verified."
                         break
 
+                    # Replan only after a recoverable failure. Ambiguous side effects
+                    # are stopped above and must never be automatically retried.
+                    if consecutive_failures < 3:
+                        metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+                        replan_count = int(metadata.get("adaptive_replan_count", 0) or 0)
+                        if replan_count < 2:
+                            try:
+                                live_page_info = await controller.parse_interactive_elements()
+                                if not isinstance(live_page_info, dict):
+                                    live_page_info = page_info
+                            except Exception as refresh_error:
+                                logger.warning(
+                                    "Task %s could not refresh page before adaptive replanning: %s",
+                                    task_id, refresh_error,
+                                )
+                                live_page_info = page_info
+
+                            try:
+                                revised_plan = await planner.replan_remaining_plan(
+                                    goal=req.goal,
+                                    current_plan=list(task.initial_plan or task.plan or []),
+                                    completed_history=trajectory_history,
+                                    page_info=live_page_info,
+                                    recent_errors=list(getattr(task.context, "recent_errors", []) or []),
+                                    task_context=task.context,
+                                )
+                                if revised_plan:
+                                    metadata.setdefault("original_plan", list(task.initial_plan or []))
+                                    versions = metadata.setdefault("plan_versions", [])
+                                    versions.append({
+                                        "version": replan_count + 2,
+                                        "reason": "recoverable_action_failure",
+                                        "failed_step": step_num,
+                                        "failed_action": action.action.value,
+                                        "created_at": time.time(),
+                                        "milestones": list(revised_plan),
+                                    })
+                                    metadata["adaptive_replan_count"] = replan_count + 1
+                                    metadata["plan_version"] = replan_count + 2
+                                    metadata["replan_reason"] = "recoverable_action_failure"
+                                    metadata["plan"] = list(revised_plan)
+                                    task.plan_metadata = metadata
+                                    task.initial_plan = list(revised_plan)
+                                    task.plan = list(revised_plan)
+                                    task.current_plan_step = 0
+                                    task.plan_status = "replanned"
+                                    task.updated_at = time.time()
+                                    logger.info(
+                                        "Task %s adaptively replanned to version %s after failed step %s.",
+                                        task_id, replan_count + 2, step_num,
+                                    )
+                                    await self.broadcast_task_update(task_id)
+                                    await self._save_cached_task_state(task_id)
+                            except Exception as replan_error:
+                                # Keep the previous plan and continue with the normal
+                                # per-step planner; replanning is an enhancement, not
+                                # a reason to discard a recoverable task.
+                                logger.warning(
+                                    "Adaptive replanning failed for task %s; retaining existing plan: %s",
+                                    task_id, replan_error,
+                                )
+
                     if consecutive_failures >= 3:
                         logger.error(
                             f"Task {task_id} stopping after {consecutive_failures} consecutive unrecoverable step failures."
