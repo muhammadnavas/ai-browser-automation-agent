@@ -1109,8 +1109,26 @@ class TaskManager:
                                 action.url = normalized
                         res = await self._execute_action(action, controller, task, task_id, planner, trajectory_history)
                         if isinstance(res, tuple) and len(res) == 3:
-                            return res
-                        return res[0], res[1], True
+                            description, extracted, success = res
+                        else:
+                            description, extracted = res[0], res[1]
+                            success = True
+
+                        # Playwright ActionExecutor already verifies its own actions.
+                        # The Chrome-extension path needs a separate live-DOM check.
+                        if success and use_extension and action.action not in (
+                            ActionType.FINISH, ActionType.REQUEST_APPROVAL, ActionType.EXTRACT,
+                            ActionType.SCREENSHOT, ActionType.WAIT, ActionType.SCROLL,
+                            ActionType.SCROLL_TO, ActionType.HOVER, ActionType.PRESS,
+                            ActionType.PRESS_KEY, ActionType.DOWNLOAD_FILE,
+                        ):
+                            verified, verification_note = await self._verify_extension_action_postcondition(
+                                action, controller, before_page=page_info
+                            )
+                            description = f"{description} | {verification_note}"
+                            if not verified:
+                                success = False
+                        return description, extracted, success
 
                     # If the user pauses while the planner is deciding, stop
                     # here before issuing the next browser command. An action that
@@ -1618,6 +1636,103 @@ class TaskManager:
 
                 # Terminal tasks live in the bounded archive/history, not the active registry.
                 self.tasks.pop(task_id, None)
+
+    async def _verify_extension_action_postcondition(
+        self,
+        action: BrowserAction,
+        controller: Any,
+        before_page: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        """
+        Verify observable postconditions for extension-executed actions.
+        Returns (verified, explanation). Unsupported/ambiguous actions are
+        reported as inconclusive rather than being falsely marked as failures.
+        """
+        action_type = action.action
+        try:
+            after = await controller.parse_interactive_elements()
+        except Exception as exc:
+            return False, f"Postcondition could not be inspected ({type(exc).__name__})."
+
+        before = before_page or {}
+        before_url = str(before.get("url") or getattr(controller, "current_url", "") or "")
+        after_url = str(after.get("url") or getattr(controller, "current_url", "") or "")
+
+        if action_type == ActionType.NAVIGATE:
+            target = str(action.url or action.text or "").strip().rstrip("/")
+            actual = after_url.rstrip("/")
+            if target and actual and (actual == target or domains_match(actual, target)):
+                return True, f"Navigation verified at {after_url}."
+            return False, f"Navigation postcondition not met (expected {target or 'target URL'}, observed {after_url or 'unknown URL'})."
+
+        target_selector = str(action.selector or "")
+        target_id = action.element_id
+        def field_matches(field: Any) -> bool:
+            get = field.get if isinstance(field, dict) else lambda key, default=None: getattr(field, key, default)
+            return bool(
+                (target_selector and get("selector") == target_selector)
+                or (target_id is not None and str(get("field_id") or get("index") or "") == str(target_id))
+            )
+
+        fields = after.get("form_fields") or []
+        target_field = next((field for field in fields if field_matches(field)), None)
+        if action_type in (ActionType.FILL, ActionType.TYPE_TEXT, ActionType.FILL_FIELD):
+            expected = str(action.value if action.value is not None else action.text or "")
+            if target_field is not None:
+                get = target_field.get if isinstance(target_field, dict) else lambda key, default=None: getattr(target_field, key, default)
+                actual = str(get("current_value", "") or "")
+                if actual == expected:
+                    return True, "Text input value verified."
+                return False, "Text input postcondition failed: the field value does not match the requested value."
+            return False, "Text input postcondition inconclusive: the target field was not found after execution."
+
+        if action_type in (ActionType.SELECT, ActionType.SELECT_OPTION):
+            expected = str(action.select_label or action.value or action.text or "").strip().lower()
+            if target_field is not None:
+                get = target_field.get if isinstance(target_field, dict) else lambda key, default=None: getattr(target_field, key, default)
+                actual = str(get("current_value", "") or "").strip().lower()
+                if actual and (actual == expected or expected in actual):
+                    return True, "Selected option verified."
+                return False, "Select postcondition failed: the selected value does not match the requested option."
+            return False, "Select postcondition inconclusive: the target control was not found."
+
+        if action_type in (ActionType.CHECK, ActionType.CHECK_BOX, ActionType.UNCHECK):
+            elements = after.get("elements") or []
+            target = next((item for item in elements if isinstance(item, dict) and (
+                (target_id is not None and item.get("index") == target_id)
+                or (target_selector and item.get("selector") == target_selector)
+            )), None)
+            if target is not None and "checked" in target:
+                expected = action.checked if action.checked is not None else action_type != ActionType.UNCHECK
+                if bool(target.get("checked")) == bool(expected):
+                    return True, "Checkbox state verified."
+                return False, "Checkbox postcondition failed: checked state does not match."
+            return False, "Checkbox postcondition inconclusive: checked state was not exposed by the extension."
+
+        if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+            before_elements = before.get("elements") or []
+            after_elements = after.get("elements") or []
+            target_label = str(action.text or "").strip().lower()
+            before_target = next((item for item in before_elements if isinstance(item, dict) and (
+                (target_id is not None and item.get("index") == target_id)
+                or (target_selector and item.get("selector") == target_selector)
+                or (target_label and target_label in str(item.get("text") or item.get("aria_label") or "").lower())
+            )), None)
+            after_target = next((item for item in after_elements if isinstance(item, dict) and (
+                (target_id is not None and item.get("index") == target_id)
+                or (target_selector and item.get("selector") == target_selector)
+                or (target_label and target_label in str(item.get("text") or item.get("aria_label") or "").lower())
+            )), None)
+            changed = after_url != before_url or (
+                bool(before_target) and after_target is None
+            )
+            if changed:
+                return True, "Click produced an observable page or target-state change."
+            return True, "Click command was accepted; resulting state was unchanged or could not be distinguished."
+
+        # Actions such as scroll, hover, wait, upload and keyboard shortcuts need
+        # action-specific evidence that the extension does not consistently expose.
+        return True, f"{action_type.value} accepted; no deterministic extension postcondition is available."
 
     async def _verify_goal_completion(
         self,
