@@ -1660,8 +1660,8 @@ class TaskManager:
             return True, "No element-target precondition required."
         if action.element_id is None and not action.selector:
             # Text-only clicks are supported by the extension's fallback resolver.
-            if action.action == ActionType.CLICK and action.text:
-                return True, "Text-targeted click will use extension resolution."
+            if action.action in (ActionType.CLICK, ActionType.DOUBLE_CLICK) and action.text:
+                return True, "Text-targeted interaction will use extension resolution."
             return False, "Action precondition failed: no element index or selector was supplied."
 
         elements = (page_info or {}).get("elements") or []
