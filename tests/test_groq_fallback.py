@@ -63,3 +63,38 @@ async def test_live_groq_task_decomposition_and_action():
     )
     assert action is not None
     assert action.action in (ActionType.TYPE_TEXT, ActionType.FILL, ActionType.CLICK, ActionType.NAVIGATE)
+
+
+def test_ollama_provider_configuration_and_response():
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    planner.ollama_enabled = True
+    planner.ollama_base_url = "http://localhost:11434"
+    planner.ollama_model = "qwen2.5:7b"
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "message": {"content": '{"action":"extract"}'}
+    }
+    mock_response.raise_for_status.return_value = None
+
+    with patch("backend.agents.planner.httpx.post", return_value=mock_response) as mock_post:
+        result = planner._call_ollama("Return JSON", "application/json")
+
+    assert result == '{"action":"extract"}'
+    args, kwargs = mock_post.call_args
+    assert args[0] == "http://localhost:11434/api/chat"
+    assert kwargs["json"]["model"] == "qwen2.5:7b"
+    assert kwargs["json"]["format"] == "json"
+    assert kwargs["json"]["stream"] is False
+
+
+def test_ollama_is_preferred_when_enabled():
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    planner.ollama_enabled = True
+
+    with patch.object(planner, "_call_ollama", return_value='["Local plan"]') as mock_ollama:
+        result = planner._call_llm("Plan this", "application/json")
+
+    assert result == '["Local plan"]'
+    assert planner.last_llm_provider == "ollama"
+    mock_ollama.assert_called_once()
