@@ -1684,7 +1684,23 @@ class TaskManager:
             )
 
         fields = after.get("form_fields") or []
+        # Element indexes belong to the interactive-elements snapshot, while
+        # FormField.field_id is the HTML id. Resolve index -> selector first.
+        target_selector_from_index = None
+        if target_id is not None and not target_selector:
+            indexed_element = next((
+                item for item in (after.get("elements") or [])
+                if isinstance(item, dict) and item.get("index") == target_id
+            ), None)
+            if indexed_element:
+                target_selector_from_index = indexed_element.get("selector")
         target_field = next((field for field in fields if field_matches(field)), None)
+        if target_field is None and target_selector_from_index:
+            target_field = next((
+                field for field in fields
+                if (field.get("selector") if isinstance(field, dict) else getattr(field, "selector", None))
+                == target_selector_from_index
+            ), None)
         if action_type in (ActionType.FILL, ActionType.TYPE_TEXT, ActionType.FILL_FIELD):
             expected = str(action.value if action.value is not None else action.text or "")
             if target_field is not None:
