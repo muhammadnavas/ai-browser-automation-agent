@@ -103,6 +103,7 @@ def test_ollama_is_preferred_when_enabled():
 @pytest.mark.asyncio
 async def test_adaptive_replan_uses_live_context_and_returns_remaining_milestones():
     planner = AIAgentPlanner(api_key="", groq_api_key="")
+    planner.ollama_enabled = True
     captured = {}
 
     def fake_llm(prompt, response_mime_type="application/json"):
@@ -148,6 +149,7 @@ async def test_adaptive_replan_uses_live_context_and_returns_remaining_milestone
 @pytest.mark.asyncio
 async def test_adaptive_replan_rejects_invalid_plan_shape():
     planner = AIAgentPlanner(api_key="", groq_api_key="")
+    planner.ollama_enabled = True
     with patch.object(planner, "_call_llm", return_value='["Only one step"]'):
         with pytest.raises(ValueError, match="between 2 and 6"):
             await planner.replan_remaining_plan(
