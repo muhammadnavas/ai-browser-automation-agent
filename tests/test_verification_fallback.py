@@ -119,6 +119,34 @@ async def test_extension_click_postcondition_does_not_claim_success_from_missing
     assert verified is True
     assert "unchanged" in message
 
+
+@pytest.mark.asyncio
+async def test_extension_fill_postcondition_resolves_element_index_to_selector(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com",
+        "elements": [{"index": 7, "selector": "#search", "tag": "input"}],
+        "form_fields": [{"selector": "#search", "current_value": "agent automation"}],
+    })
+    action = BrowserAction(action=ActionType.FILL, element_id=7, text="agent automation")
+    verified, message = await tm._verify_extension_action_postcondition(action, controller, {})
+    assert verified is True
+    assert "value verified" in message
+
+
+@pytest.mark.asyncio
+async def test_extension_checkbox_postcondition_checks_live_checked_state(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com",
+        "elements": [{"index": 3, "selector": "#terms", "checked": True}],
+    })
+    action = BrowserAction(action=ActionType.CHECK_BOX, element_id=3, checked=True)
+    verified, message = await tm._verify_extension_action_postcondition(action, controller, {})
+    assert verified is True
+    assert "Checkbox state verified" in message
+
+
 # ===========================================================================
 # 1. Successful Navigation when Model is Unavailable
 # ===========================================================================
