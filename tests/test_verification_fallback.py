@@ -477,3 +477,37 @@ async def test_normal_operation_when_model_is_available(tm, mock_controller):
     assert verified is True
     assert "Outcome verified" in msg
     assert "Application ID #12345" in msg
+
+
+
+def test_extension_radio_precondition_accepts_named_group(tm):
+    action = BrowserAction(action=ActionType.RADIO_BUTTON, radio_name="work_mode", value="remote")
+    ok, message = tm._verify_extension_action_precondition(
+        action,
+        {"elements": [
+            {"index": 1, "tag": "input", "type": "radio", "name": "work_mode", "value": "remote", "visible": True},
+            {"index": 2, "tag": "input", "type": "radio", "name": "work_mode", "value": "office", "visible": True},
+        ]},
+    )
+    assert ok is True
+    assert "Radio group" in message
+
+
+@pytest.mark.asyncio
+async def test_extension_radio_postcondition_verifies_selected_option(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com",
+        "elements": [
+            {"index": 1, "name": "work_mode", "value": "remote", "checked": True},
+            {"index": 2, "name": "work_mode", "value": "office", "checked": False},
+        ],
+    })
+    action = BrowserAction(
+        action=ActionType.RADIO_BUTTON,
+        radio_name="work_mode",
+        value="remote",
+    )
+    verified, message = await tm._verify_extension_action_postcondition(action, controller, {})
+    assert verified is True
+    assert "Radio selection verified" in message
