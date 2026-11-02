@@ -60,6 +60,65 @@ def mock_planner_no_llm():
     return planner
 
 
+
+# ===========================================================================
+# Extension action postcondition verification
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_extension_navigation_postcondition_requires_target_url(tm):
+    controller = MagicMock()
+    controller.current_url = "https://example.com"
+    controller.parse_interactive_elements = AsyncMock(return_value={"url": "https://example.com"})
+    action = BrowserAction(action=ActionType.NAVIGATE, url="https://example.com")
+    verified, message = await tm._verify_extension_action_postcondition(
+        action, controller, before_page={"url": "about:blank"}
+    )
+    assert verified is True
+    assert "Navigation verified" in message
+
+
+@pytest.mark.asyncio
+async def test_extension_fill_postcondition_checks_live_field_value(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com",
+        "form_fields": [{"selector": "#email", "current_value": "navas@example.com"}],
+    })
+    action = BrowserAction(action=ActionType.FILL, selector="#email", text="navas@example.com")
+    verified, message = await tm._verify_extension_action_postcondition(action, controller, {})
+    assert verified is True
+    assert "value verified" in message
+
+
+@pytest.mark.asyncio
+async def test_extension_fill_postcondition_rejects_mismatched_value(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com",
+        "form_fields": [{"selector": "#email", "current_value": "old@example.com"}],
+    })
+    action = BrowserAction(action=ActionType.FILL, selector="#email", text="new@example.com")
+    verified, message = await tm._verify_extension_action_postcondition(action, controller, {})
+    assert verified is False
+    assert "does not match" in message
+
+
+@pytest.mark.asyncio
+async def test_extension_click_postcondition_does_not_claim_success_from_missing_evidence(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com",
+        "elements": [{"index": 1, "text": "Continue", "selector": "#continue"}],
+    })
+    action = BrowserAction(action=ActionType.CLICK, selector="#continue", text="Continue")
+    verified, message = await tm._verify_extension_action_postcondition(
+        action, controller,
+        before_page={"url": "https://example.com", "elements": [{"index": 1, "text": "Continue", "selector": "#continue"}]},
+    )
+    assert verified is True
+    assert "unchanged" in message
+
 # ===========================================================================
 # 1. Successful Navigation when Model is Unavailable
 # ===========================================================================
