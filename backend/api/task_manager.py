@@ -1098,6 +1098,12 @@ class TaskManager:
                     policy = RetryPolicy(max_retries=3, base_delay=1.0, max_delay=6.0, backoff_factor=2.0)
 
                     async def run_action():
+                        if use_extension:
+                            precondition_ok, precondition_note = self._verify_extension_action_precondition(
+                                action, page_info
+                            )
+                            if not precondition_ok:
+                                return precondition_note, None, False
                         if action.action == ActionType.NAVIGATE:
                             target = action.url or action.text or ""
                             if target:
@@ -1636,6 +1642,40 @@ class TaskManager:
 
                 # Terminal tasks live in the bounded archive/history, not the active registry.
                 self.tasks.pop(task_id, None)
+
+    def _verify_extension_action_precondition(
+        self,
+        action: BrowserAction,
+        page_info: Optional[Dict[str, Any]],
+    ) -> tuple[bool, str]:
+        """Check that a targeted extension control exists and is actionable."""
+        target_actions = {
+            ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.TYPE_TEXT,
+            ActionType.FILL, ActionType.FILL_FIELD, ActionType.SELECT,
+            ActionType.SELECT_OPTION, ActionType.CHECK, ActionType.CHECK_BOX,
+            ActionType.UNCHECK, ActionType.RADIO_BUTTON, ActionType.UPLOAD,
+            ActionType.UPLOAD_FILE,
+        }
+        if action.action not in target_actions:
+            return True, "No element-target precondition required."
+        if action.element_id is None and not action.selector:
+            # Text-only clicks are supported by the extension's fallback resolver.
+            if action.action == ActionType.CLICK and action.text:
+                return True, "Text-targeted click will use extension resolution."
+            return False, "Action precondition failed: no element index or selector was supplied."
+
+        elements = (page_info or {}).get("elements") or []
+        target = next((item for item in elements if isinstance(item, dict) and (
+            (action.element_id is not None and item.get("index") == action.element_id)
+            or (action.selector and item.get("selector") == action.selector)
+        )), None)
+        if target is None:
+            return False, "Action precondition failed: target control is no longer present in the latest page snapshot."
+        if target.get("visible") is False:
+            return False, "Action precondition failed: target control is not visible."
+        if target.get("disabled") is True:
+            return False, "Action precondition failed: target control is disabled."
+        return True, "Target control preconditions verified."
 
     async def _verify_extension_action_postcondition(
         self,
