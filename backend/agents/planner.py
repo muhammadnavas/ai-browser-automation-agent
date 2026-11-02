@@ -1778,7 +1778,7 @@ Output format example:
                 logger.info(f"Using heuristic planner for Drive task (bypassing LLM). Action: {heuristic_action.action}, mid_flow={_mid_flow}")
                 action = heuristic_action
 
-        if action is None and (self.client or self.groq_api_key):
+        if action is None and (self.ollama_enabled or self.client or self.groq_api_key):
             try:
                 action = await self._llm_decide_action(
                     goal, step_number, max_steps, page_info,
