@@ -98,3 +98,62 @@ def test_ollama_is_preferred_when_enabled():
     assert result == '["Local plan"]'
     assert planner.last_llm_provider == "ollama"
     mock_ollama.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_adaptive_replan_uses_live_context_and_returns_remaining_milestones():
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    captured = {}
+
+    def fake_llm(prompt, response_mime_type="application/json"):
+        captured["prompt"] = prompt
+        captured["mime_type"] = response_mime_type
+        return '["Inspect the updated page", "Use the alternative search control", "Verify the results"]'
+
+    with patch.object(planner, "_call_llm", side_effect=fake_llm):
+        revised = await planner.replan_remaining_plan(
+            goal="Find the latest Python release",
+            current_plan=["Open search", "Search Python", "Extract release details"],
+            completed_history=[{
+                "step": 1,
+                "action": "navigate",
+                "description": "Opened search page",
+                "url": "https://example.com",
+            }],
+            page_info={
+                "url": "https://example.com/search",
+                "title": "Search",
+                "headings": ["Search results"],
+                "elements": [{
+                    "index": 2,
+                    "tag": "input",
+                    "aria_label": "Search query",
+                    "placeholder": "Search",
+                }],
+            },
+            recent_errors=["Search button selector was not found"],
+        )
+
+    assert revised == [
+        "Inspect the updated page",
+        "Use the alternative search control",
+        "Verify the results",
+    ]
+    assert "Find the latest Python release" in captured["prompt"]
+    assert "Search button selector was not found" in captured["prompt"]
+    assert "https://example.com/search" in captured["prompt"]
+    assert captured["mime_type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_adaptive_replan_rejects_invalid_plan_shape():
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    with patch.object(planner, "_call_llm", return_value='["Only one step"]'):
+        with pytest.raises(ValueError, match="between 2 and 6"):
+            await planner.replan_remaining_plan(
+                goal="Test task",
+                current_plan=["Step one"],
+                completed_history=[],
+                page_info={"url": "https://example.com"},
+                recent_errors=["Previous action failed"],
+            )
