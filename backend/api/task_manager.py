@@ -760,6 +760,28 @@ class TaskManager:
                         )
                 user_approval_input = None   # consume after use
 
+                # EXTRACT is only valid when the user explicitly requested data
+                # extraction/research. Do not let an LLM or heuristic planner turn
+                # navigation, email, or form workflows into unsolicited extraction.
+                task_intent = planner._analyze_task_intent(req.goal)
+                explicit_extract_task = (
+                    task_intent.get("category_key") == "search_extraction"
+                    or any(
+                        token in (req.goal or "").lower()
+                        for token in ("extract", "scrape", "summarize", "research", "compare", "collect data", "gather data")
+                    )
+                )
+                if action.action == ActionType.EXTRACT and not explicit_extract_task:
+                    logger.warning(
+                        "Suppressing unsolicited EXTRACT action for task %s (goal=%r)",
+                        task_id, req.goal[:160],
+                    )
+                    action = BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=700,
+                        reasoning="Page inspection is internal. The user did not request data extraction; waiting briefly before continuing the requested workflow.",
+                    )
+
                 # Dynamically update current plan milestone index
                 if task.initial_plan:
                     active_plan_idx = planner.determine_active_plan_step(
