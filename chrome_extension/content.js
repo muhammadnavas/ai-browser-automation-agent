@@ -775,13 +775,24 @@
         });
       } catch (e) {}
 
-      // Respect each file input's accept contract. Never place a CSV into an
-      // image-only photograph field (or broadcast one file into every upload field).
+      // Match the file to the actual question as well as the input's accept
+      // attribute. Google Forms often omits a useful accept value on its hidden
+      // upload input, so MIME-only filtering can otherwise send a CSV to a
+      // required photograph question and leave the form invalid.
       const uniqueInputs = Array.from(new Set(fileInputs));
       const compatibleInputs = uniqueInputs.filter((inp) => {
         const accept = String(inp.getAttribute("accept") || "").trim().toLowerCase();
-        if (!accept) return true;
         const ext = "." + fileName.split(".").pop().toLowerCase();
+        const question = inp.closest('[role="listitem"], .Qr7Oae, [data-params], form');
+        const questionText = String(question?.innerText || question?.textContent || "").toLowerCase();
+        const imageQuestion = /photograph|photo|image|picture/.test(questionText);
+        const imageFile = fileType.toLowerCase().startsWith("image/") ||
+          [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"].includes(ext);
+
+        // Never assign a non-image file to a photo/image question, even when
+        // the page's hidden input has no accept attribute.
+        if (imageQuestion && !imageFile) return false;
+        if (!accept) return true;
         return accept.split(",").map((part) => part.trim()).some((rule) => {
           if (rule.startsWith(".")) return ext === rule;
           if (rule.endsWith("/*")) return fileType.toLowerCase().startsWith(rule.slice(0, -1));
