@@ -2113,6 +2113,32 @@ class TaskManager:
                 == target_selector_from_index
             ), None)
         if action_type in (ActionType.FILL, ActionType.TYPE_TEXT, ActionType.FILL_FIELD):
+            # The extension may safely resolve a Google Forms field by its
+            # question title even when a prior numeric element index is stale.
+            # Verify against that same semantic label, not the old index.
+            raw_label = str(
+                getattr(action, "field_label", None)
+                or getattr(action, "label", None)
+                or ""
+            ).strip().lower()
+            if not raw_label:
+                reasoning = str(getattr(action, "reasoning", None) or "")
+                quoted = re.search(r"""['"“]([^'"”]+)['"”]\s+(?:field|question|input)""", reasoning, re.I)
+                described = re.search(
+                    r"(?:fill|enter|type|populate|update)\\s+(?:in\\s+)?(?:the\\s+)?[\\\"'“]?([^\\\"'”]+?)[\\\"'”]?\\s+(?:field|question|input)\\b",
+                    reasoning, re.I
+                )
+                raw_label = str((quoted.group(1) if quoted else "") or (described.group(1) if described else "")).strip().lower()
+            if raw_label:
+                normalize_label = lambda value: re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+                semantic_matches = [
+                    field for field in fields
+                    if normalize_label(
+                        field.get("label", "") if isinstance(field, dict) else getattr(field, "label", "")
+                    ) == normalize_label(raw_label)
+                ]
+                if len(semantic_matches) == 1:
+                    target_field = semantic_matches[0]
             expected = str(action.value if action.value is not None else action.text or "")
             if target_field is not None:
                 get = target_field.get if isinstance(target_field, dict) else lambda key, default=None: getattr(target_field, key, default)
