@@ -306,7 +306,25 @@ async function handleBackendMessage(msg) {
   if (type === "open_auth_tab") {
     try {
       const authUrl = msg.url || "https://accounts.google.com/ServiceLogin?service=mail&continue=https%3A%2F%2Fmail.google.com%2Fmail%2F";
-      const tab = await chrome.tabs.create({ url: authUrl, active: true });
+      // Reuse the task's existing tab. Creating a new tab for every recovery
+      // attempt leaves duplicate Gmail tabs and splits the user's session flow.
+      let tab = null;
+      const existingTabId = taskTabMap.get(task_id);
+      if (existingTabId !== undefined) {
+        try {
+          tab = await chrome.tabs.get(existingTabId);
+          await chrome.tabs.update(existingTabId, { url: authUrl, active: true });
+        } catch (tabError) {
+          console.warn("AI Agent: existing task tab unavailable during sign-in recovery:", tabError);
+          tab = null;
+        }
+      }
+      if (!tab) {
+        tab = await chrome.tabs.create({ url: authUrl, active: true });
+        taskTabMap.set(task_id, tab.id);
+        tabTaskMap.set(tab.id, task_id);
+        await saveMappings();
+      }
       if (tab.windowId !== undefined) {
         const win = await chrome.windows.get(tab.windowId);
         if (win.state === "minimized") {
@@ -314,9 +332,6 @@ async function handleBackendMessage(msg) {
         }
         await chrome.windows.update(tab.windowId, { focused: true });
       }
-      taskTabMap.set(task_id, tab.id);
-      tabTaskMap.set(tab.id, task_id);
-      await saveMappings();
       await waitForTabLoaded(tab.id, 15000);
       const openedTab = await chrome.tabs.get(tab.id);
       sendWsMessage({
