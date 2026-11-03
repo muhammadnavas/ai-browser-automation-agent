@@ -1532,11 +1532,35 @@ If the task is already complete, return ["Verify the requested outcome and finis
                 return appr_idx
             return find_milestone_idx(["review", "verify"], total_milestones - 2)
 
-        # 2. Submit stage
-        if action_type == ActionType.CLICK and any(
-            k in str(current_action.reasoning).lower() for k in ["submit", "send", "apply", "finish", "checkout", "done"]
-        ):
-            return find_milestone_idx(["submit", "finalize", "checkout", "apply", "finish"], total_milestones - 1)
+        # 2. Compose is an early email-workflow milestone, not a send/submit.
+        # Planner reasoning often mentions "send an email" while describing the
+        # Compose click; do not mistake that intent for an actual Send action.
+        if action_type == ActionType.CLICK:
+            action_text = " ".join(str(value or "") for value in (
+                getattr(current_action, "text", ""),
+                getattr(current_action, "selector", ""),
+                getattr(current_action, "reasoning", ""),
+            )).lower()
+            if "compose" in action_text or "new message" in action_text or "new email" in action_text:
+                compose_idx = find_milestone_idx(["compose", "new email", "new message", "draft"], -1)
+                if compose_idx >= 0:
+                    return compose_idx
+
+            # Only advance to submission when the action target itself indicates
+            # the Send/Submit control, not merely because the overall goal says
+            # "send an email".
+            explicit_submit_target = any(
+                term in " ".join(str(value or "") for value in (
+                    getattr(current_action, "text", ""),
+                    getattr(current_action, "selector", ""),
+                )).lower()
+                for term in ("send button", "submit button", "send email", "submit", "checkout", "place order")
+            )
+            reasoning = str(getattr(current_action, "reasoning", "") or "").lower()
+            if explicit_submit_target or any(
+                phrase in reasoning for phrase in ("click the send button", "click send", "submit the form", "confirm submission")
+            ):
+                return find_milestone_idx(["submit", "send", "finalize", "checkout", "apply", "finish"], total_milestones - 1)
 
         # 3. Extraction / Report stage
         if action_type == ActionType.EXTRACT:
