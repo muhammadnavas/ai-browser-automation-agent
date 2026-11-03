@@ -556,8 +556,8 @@ class TaskManager:
                     # task immediately: pause and let the user recover the same
                     # connected Chrome tab, then resume from a fresh DOM snapshot.
                     message = (
-                        "Google redirected Gmail to an internal cookie-rotation page. The agent opened "
-                        "a separate Google sign-in tab in Chrome. Complete sign-in in that tab, "
+                        "Google redirected Gmail to an internal cookie-rotation page. The task's existing Chrome tab "
+                        "is being redirected to Google's sign-in flow. Complete sign-in in that tab, "
                         "wait for Gmail to open, then return here and approve to resume. "
                         "No email has been composed or sent yet."
                     )
