@@ -552,7 +552,9 @@ async function handleBackendMessage(msg) {
   // ── 5. DOM Inspection ──
   if (type === "inspect_dom") {
     try {
-      await focusTaskTab(tabId);
+      // DOM inspection is safe in an inactive tab. Never activate/focus the
+      // task tab here: the planner inspects repeatedly between actions, and
+      // focusing on every inspection steals the user's active Chrome tab.
       const response = await sendContentMessage(tabId, {
         type: "inspect_dom",
         show_badges: msg.show_badges,
