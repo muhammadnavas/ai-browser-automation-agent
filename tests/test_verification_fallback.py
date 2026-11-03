@@ -173,6 +173,54 @@ def test_extension_action_precondition_allows_text_targeted_double_click(tm):
     assert "Text-targeted" in message
 
 
+def test_extension_locator_self_healing_rebinds_unique_semantic_match(tm):
+    action = BrowserAction(action=ActionType.CLICK, element_id=2, selector="#old-save")
+    previous = {"elements": [{
+        "index": 2, "selector": "#old-save", "tag": "button",
+        "aria_label": "Save changes", "text": "Save",
+    }]}
+    current = {"elements": [{
+        "index": 8, "selector": "button[data-action='save']", "tag": "button",
+        "aria_label": "Save changes", "text": "Save", "visible": True,
+    }]}
+
+    healed, message = tm._heal_extension_action_target(action, previous, current)
+
+    assert healed is True
+    assert action.element_id == 8
+    assert action.selector == "button[data-action='save']"
+    assert "unique live-DOM semantic match" in message
+
+
+def test_extension_locator_self_healing_refuses_ambiguous_matches(tm):
+    action = BrowserAction(action=ActionType.CLICK, element_id=2, selector="#old-save")
+    previous = {"elements": [{
+        "index": 2, "selector": "#old-save", "tag": "button",
+        "aria_label": "Save changes",
+    }]}
+    current = {"elements": [
+        {"index": 8, "selector": "#save-one", "tag": "button", "aria_label": "Save changes"},
+        {"index": 9, "selector": "#save-two", "tag": "button", "aria_label": "Save changes"},
+    ]}
+
+    healed, message = tm._heal_extension_action_target(action, previous, current)
+
+    assert healed is False
+    assert action.element_id == 2
+    assert "ambiguous" in message
+
+
+def test_extension_locator_self_healing_requires_stable_identity(tm):
+    action = BrowserAction(action=ActionType.CLICK, element_id=2)
+    previous = {"elements": [{"index": 2, "selector": "#dynamic-123", "tag": "button"}]}
+    current = {"elements": [{"index": 8, "selector": "#dynamic-456", "tag": "button"}]}
+
+    healed, message = tm._heal_extension_action_target(action, previous, current)
+
+    assert healed is False
+    assert "stable semantic label" in message
+
+
 # ===========================================================================
 # 1. Successful Navigation when Model is Unavailable
 # ===========================================================================
