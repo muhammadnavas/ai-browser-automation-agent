@@ -1116,6 +1116,10 @@ class TaskManager:
                 if (
                     action.action == ActionType.REQUEST_APPROVAL
                     and not (req.auto_approve_captcha and captcha_or_payment == "captcha")
+                    and not (
+                        task.context.form_confirmed
+                        and captcha_or_payment is None
+                    )
                 ):
                     if hasattr(controller, "unlock_ui"):
                         await controller.unlock_ui()
@@ -1160,6 +1164,15 @@ class TaskManager:
                     if task.approval_request:
                         user_approval_input = task.approval_request.user_input or ""
 
+                    # A user-approved custom review is the authorization
+                    # for this form workflow. Persist it so the planner cannot
+                    # repeatedly ask for the same approval on subsequent steps.
+                    if captcha_or_payment is None:
+                        task.context.confirm_form()
+                    if user_approval_input:
+                        task.context.record_error(
+                            f"Human review feedback: {user_approval_input}"
+                        )
                     task.status = TaskStatus.RUNNING
                     task.approval_request = None
 
@@ -2141,7 +2154,13 @@ class TaskManager:
                     target_field = semantic_matches[0]
             expected = str(action.value if action.value is not None else action.text or "")
             if target_field is not None:
-                get = target_field.get if isinstance(target_field, dict) else lambda key, default=None: getattr(target_field, key, default)
+                # FormField is a Pydantic model, not a dict. Keep access
+                # consistent for both raw extension dictionaries and models.
+                get = (
+                    target_field.get
+                    if isinstance(target_field, dict)
+                    else lambda key, default=None: getattr(target_field, key, default)
+                )
                 actual = str(get("current_value", "") or "")
                 if actual == expected:
                     return True, "Text input value verified."
