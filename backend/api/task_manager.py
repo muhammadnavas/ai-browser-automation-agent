@@ -1189,9 +1189,11 @@ class TaskManager:
                                     if action.element_id and el.get("index") == action.element_id:
                                         accept_types = el.get("accept")
                                         break
-                            # Include the live target's accessible label. The visible
-                            # Google Forms Add file button often carries the question
-                            # label (for example, "Upload Recent Photograph").
+                            # Include the live target's accessible label and, when
+                            # available, the hidden file input's real accept rules.
+                            # Google Forms keeps these inputs out of the visible DOM
+                            # element list, so reading only the Add file button loses
+                            # the MIME/extension restrictions.
                             target_context = ""
                             if page_info and page_info.get("elements"):
                                 for target in page_info["elements"]:
@@ -1204,6 +1206,23 @@ class TaskManager:
                                         ))
                                         accept_types = target.get("accept") or accept_types
                                         break
+                            target_words = {
+                                word for word in re.findall(r"[a-z]{3,}", target_context.lower())
+                                if word not in {"upload", "file", "add", "button", "click"}
+                            }
+                            file_inputs = (page_info or {}).get("file_inputs") or []
+                            ranked_inputs = []
+                            for file_input in file_inputs:
+                                question_text = str(file_input.get("question_text") or "").lower()
+                                overlap = sum(1 for word in target_words if word in question_text)
+                                if file_input.get("accept"):
+                                    ranked_inputs.append((overlap, file_input.get("accept")))
+                            if ranked_inputs:
+                                ranked_inputs.sort(key=lambda item: item[0], reverse=True)
+                                # Prefer a semantically matched input; if the page
+                                # exposes only one file input, its accept is authoritative.
+                                if ranked_inputs[0][0] > 0 or len(ranked_inputs) == 1:
+                                    accept_types = ranked_inputs[0][1]
                             context_text = f"{action.reasoning or ''} {action.text or ''} {target_context} {getattr(task, 'error', '') or ''}"
                             real_file = get_user_system_file(
                                 goal=task.goal or "",
