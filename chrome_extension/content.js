@@ -70,16 +70,27 @@
       return (el.innerText || el.value || "").trim();
     }
 
-    // 8. Walk up to parent container looking for heading or label class
-    let parent = el.parentElement;
-    for (let i = 0; i < 4 && parent; i++) {
-      const heading = parent.querySelector('[role="heading"],[class*="Title"],[class*="label"]');
-      if (heading && heading !== el && heading.innerText?.trim()) {
-        return heading.innerText.trim();
-      }
-      parent = parent.parentElement;
+    // 8. Google Forms: resolve the title from the nearest question card only.
+    // A broad ancestor search can accidentally borrow the previous/next
+    // question title and cause values to be written into the wrong field.
+    const questionCard = el.closest('.Qr7Oae,[role="listitem"],[data-params]');
+    if (questionCard) {
+      const title = questionCard.querySelector(
+        '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
+      );
+      const titleText = String(title?.innerText || title?.textContent || "")
+        .replace(/\s+/g, " ").replace(/\s*\*\s*$/, "").trim();
+      if (titleText) return titleText;
     }
 
+    // 9. Generic fallback is intentionally restricted to the immediate
+    // parent. Searching several ancestors can cross question boundaries.
+    const parent = el.parentElement;
+    if (parent) {
+      const heading = parent.querySelector(':scope > [role="heading"],:scope > [class*="Title"],:scope > [class*="label"]');
+      const text = String(heading?.innerText || heading?.textContent || "").trim();
+      if (text) return text;
+    }
     return "";
   }
 
@@ -550,20 +561,29 @@
       const quotedField = reasoning.match(/(?:the\s+)?['"“]([^'"”]+)['"”]\s+(?:field|question|input)/i);
       const fieldLabel = String(action.field_label || action.label || (quotedField && quotedField[1]) || "").trim().toLowerCase();
       if (fieldLabel) {
+        const normalize = (value) => String(value || "")
+          .toLowerCase().replace(/[＊*]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+        const wanted = normalize(fieldLabel);
         const controls = Array.from(document.querySelectorAll(
           'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]'
         )).filter(isVisibleActionTarget);
         const matches = controls.filter((control) => {
-          const names = [
-            inferLabel(control),
+          const card = control.closest('.Qr7Oae,[role="listitem"],[data-params]');
+          const cardTitle = card?.querySelector(
+            '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
+          );
+          const cardLabel = normalize(cardTitle?.innerText || cardTitle?.textContent);
+          const accessibleNames = [
             control.getAttribute("aria-label"),
             control.getAttribute("placeholder"),
-            control.getAttribute("name"),
-            control.getAttribute("id"),
-          ].filter(Boolean).map((value) => String(value).trim().toLowerCase());
-          return names.some((name) => name === fieldLabel);
+            control.labels ? Array.from(control.labels).map((label) => label.innerText).join(" ") : "",
+          ].map(normalize).filter(Boolean);
+          return cardLabel === wanted || accessibleNames.includes(wanted);
         });
         if (matches.length === 1) return matches[0];
+        // Explicit field labels must never fall through to stale numeric indexes.
+        // Ambiguous or missing labels are safer as a failed action than corrupt data.
+        return null;
       }
     }
 
@@ -748,6 +768,40 @@
   // Upload Catalog Modal & File Injection
   // ---------------------------------------------------------------------------
 
+  async function waitForUploadCompletion(input, fileName, timeoutMs = 90000) {
+    const startedAt = Date.now();
+    const question = input?.closest('[role="listitem"], .Qr7Oae, [data-params], form') || input?.parentElement || document;
+    const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const targetName = normalize(fileName);
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const retained = Boolean(
+        input?.isConnected &&
+        input.files?.length === 1 &&
+        input.files[0].name === fileName
+      );
+      const questionText = normalize(question?.innerText || question?.textContent || "");
+      const filenameVisible = questionText.includes(targetName);
+      const progressIndicators = Array.from(question?.querySelectorAll(
+        '[role="progressbar"],[aria-busy="true"],[data-uploading="true"],.uploading,.is-uploading'
+      ) || []).filter((node) => {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      });
+      const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText);
+      if (retained && filenameVisible && progressIndicators.length === 0) {
+        return { success: true, elapsed_ms: Date.now() - startedAt, confirmation: explicitDone ? "upload-complete-message" : "filename-visible-no-progress" };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return {
+      success: false,
+      error: "The file was selected, but the form did not confirm that its upload finished before the 90-second timeout.",
+      retained: Boolean(input?.files?.length === 1 && input.files[0].name === fileName),
+    };
+  }
+
   function triggerFileUploadInjection(action) {
     try {
       const fileName = action.file_name;
@@ -878,21 +932,27 @@
         };
       }
 
-      let inputSuccess = false;
+      let selectedInput = null;
       for (const { input: inp } of compatibleInputs) {
         try {
           inp.files = dt.files;
           inp.dispatchEvent(new Event("input", { bubbles: true }));
           inp.dispatchEvent(new Event("change", { bubbles: true }));
           if (inp.files && inp.files.length === 1 && inp.files[0].name === fileName) {
-            inputSuccess = true;
+            selectedInput = inp;
             break;
           }
         } catch (e) {}
       }
-      if (!inputSuccess) {
+      if (!selectedInput) {
         return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
       }
+
+      // Wait for the actual form widget to show the uploaded filename and for
+      // its progress indicators to disappear. File assignment alone is NOT
+      // proof that Google Forms/Drive finished uploading the file.
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 90000);
+      if (!uploadStatus.success) return { success: false, ...uploadStatus };
 
       // 2. Dispatch Drag & Drop events on dropzones (Google Drive, Dropbox, custom uploaders)
       const dropTargets = [
@@ -922,7 +982,8 @@
 
       return {
         success: true,
-        description: `Uploaded '${fileName}' into file inputs and dispatched drop events.`,
+        description: `Upload of '${fileName}' completed and was confirmed by the form UI.`,
+        upload_status: uploadStatus,
       };
     } catch (err) {
       console.warn("AI Agent: triggerFileUploadInjection error:", err);
