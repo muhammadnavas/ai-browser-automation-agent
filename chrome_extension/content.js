@@ -1746,6 +1746,14 @@
   // but the user must remain free to interact with the page and switch tabs.
   // The indicator deliberately uses the agent's dark green / mint palette.
   function lockUI() {
+    // Also neutralize listeners installed by the previous blocking lock
+    // implementation if this content-script context survived an extension
+    // update or hot reload.
+    LOCKED_EVENT_TYPES.forEach((type) => {
+      window.removeEventListener(type, handleAgentLockEvent, true);
+      document.removeEventListener(type, handleAgentLockEvent, true);
+    });
+
     const existing = document.getElementById("ai-agent-ui-lock");
     if (existing) return;
 
