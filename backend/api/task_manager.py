@@ -750,10 +750,10 @@ class TaskManager:
                         task.status = TaskStatus.FAILED
                         task.plan_status = "failed"
                         task.error = (
-                            "Google's sign-in challenge is still active. Approval cannot bypass it. "
-                            "The Google sign-in tab did not reach the Gmail inbox within 90 seconds. "
-                            "Check the visible Chrome sign-in tab, complete any remaining Google security steps, "
-                            "and confirm Gmail loads before starting a new task."
+                            "Google's session challenge is not yet resolved. Approval cannot bypass it. "
+                            "The original Gmail task tab did not load the Gmail app within 90 seconds after "
+                            "the recovery step. Complete any remaining Google security prompts in the separate "
+                            "recovery tab, then start a fresh task after confirming Gmail works."
                         )
                         task.updated_at = time.time()
                         await self.broadcast_task_update(task_id)
