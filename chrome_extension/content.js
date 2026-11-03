@@ -1862,65 +1862,90 @@
   // ---------------------------------------------------------------------------
 
   const LOCKED_EVENT_TYPES = [
-    "pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick",
-    "contextmenu", "wheel", "touchstart", "touchend", "dragstart",
-    "keydown", "keypress", "keyup", "beforeinput", "input", "paste"
+    "pointerdown", "pointerup", "pointermove", "mousedown", "mouseup", "click", "dblclick",
+    "contextmenu", "wheel", "touchstart", "touchmove", "touchend", "dragstart", "drop",
+    "keydown", "keypress", "keyup", "beforeinput", "input", "paste", "cut"
   ];
+  let agentUiLocked = false;
+  let lockObserver = null;
+  let originalOverflow = null;
 
   function handleAgentLockEvent(event) {
-    // Synthetic automation events dispatched by extension have isTrusted === false.
-    // Real hardware inputs from human user have isTrusted === true.
-    if (event.isTrusted) {
-      if (event.type === "keydown" && event.key === "Escape" && event.altKey && event.shiftKey) {
-        unlockUI();
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+    if (!agentUiLocked || !event.isTrusted) return;
+
+    // Emergency escape hatch if the extension disconnects while the page is locked.
+    if (event.type === "keydown" && event.key === "Escape" && event.altKey && event.shiftKey) {
+      unlockUI();
+      return;
     }
+    if (event.cancelable) event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
+  function applyFrameScrollLock() {
+    if (!agentUiLocked) return;
+    const html = document.documentElement;
+    const body = document.body;
+    if (!originalOverflow) {
+      originalOverflow = {
+        html: html ? html.style.getPropertyValue("overflow") : "",
+        htmlPriority: html ? html.style.getPropertyPriority("overflow") : "",
+        body: body ? body.style.getPropertyValue("overflow") : "",
+        bodyPriority: body ? body.style.getPropertyPriority("overflow") : "",
+      };
+    }
+    if (html) html.style.setProperty("overflow", "hidden", "important");
+    if (body) body.style.setProperty("overflow", "hidden", "important");
+  }
+
+  function restoreFrameScrollLock() {
+    if (!originalOverflow) return;
+    const html = document.documentElement;
+    const body = document.body;
+    if (html) {
+      if (originalOverflow.html) html.style.setProperty("overflow", originalOverflow.html, originalOverflow.htmlPriority);
+      else html.style.removeProperty("overflow");
+    }
+    if (body) {
+      if (originalOverflow.body) body.style.setProperty("overflow", originalOverflow.body, originalOverflow.bodyPriority);
+      else body.style.removeProperty("overflow");
+    }
+    originalOverflow = null;
   }
 
   // Non-blocking execution indicator. Automation is scoped to this tab,
   // but the user must remain free to interact with the page and switch tabs.
   // The indicator deliberately uses the agent's dark green / mint palette.
   function lockUI() {
-    // The content script is injected into every frame (manifest all_frames).
-    // The top-level document's fixed overlay already covers embedded frames.
-    // Creating another viewport-sized overlay inside a Google Drive / Forms
-    // iframe produces a second green rectangle around the file picker.
-    // Keep the visual lock and event interception in the top frame only.
-    let isTopFrame = false;
-    try {
-      isTopFrame = window.top === window;
-    } catch (e) {
-      isTopFrame = false;
-    }
-    if (!isTopFrame) {
-      const staleBorder = document.getElementById("ai-agent-running-border");
-      if (staleBorder) staleBorder.remove();
-      const staleIndicator = document.getElementById("ai-agent-ui-lock");
-      if (staleIndicator) staleIndicator.remove();
-      LOCKED_EVENT_TYPES.forEach((type) => {
-        window.removeEventListener(type, handleAgentLockEvent, true);
-        document.removeEventListener(type, handleAgentLockEvent, true);
-      });
-      return true; // Parent frame owns the single tab-wide overlay.
-    }
+    agentUiLocked = true;
 
-    // This lock is scoped to the task page only. It blocks trusted user input
-    // inside this page while leaving Chrome's tab strip and other tabs usable.
-    let border = document.getElementById("ai-agent-running-border");
-    if (!border) {
-      border = document.createElement("div");
-      border.id = "ai-agent-running-border";
-    }
-    // Re-apply the complete lock styling on every request. This also repairs
-    // partially removed/modified overlays after page-framework rerenders.
-    Object.assign(border.style, {
+    // Install capture listeners in EVERY frame. Google Forms and file-upload
+    // flows can host interactive controls inside cross-origin child frames.
+    LOCKED_EVENT_TYPES.forEach((type) => {
+      window.removeEventListener(type, handleAgentLockEvent, true);
+      document.removeEventListener(type, handleAgentLockEvent, true);
+      window.addEventListener(type, handleAgentLockEvent, true);
+      document.addEventListener(type, handleAgentLockEvent, true);
+    });
+    applyFrameScrollLock();
+
+    // Only the top frame draws the viewport overlay; child frames still block
+    // their own trusted input events without drawing duplicate green borders.
+    let isTopFrame = false;
+    try { isTopFrame = window.top === window; } catch (e) {}
+    if (isTopFrame) {
+      let border = document.getElementById("ai-agent-running-border");
+      if (!border) {
+        border = document.createElement("div");
+        border.id = "ai-agent-running-border";
+      }
+      Object.assign(border.style, {
         position: "fixed",
         inset: "0",
-        zIndex: "2147483646",
+        width: "100vw",
+        height: "100vh",
+        zIndex: "2147483647",
         border: "3px solid rgba(52, 211, 153, 0.92)",
         boxShadow: "inset 0 0 0 1px rgba(167, 243, 208, 0.3), inset 0 0 18px rgba(52, 211, 153, 0.12)",
         borderRadius: "2px",
@@ -1930,77 +1955,81 @@
         userSelect: "none",
         boxSizing: "border-box",
       });
-    // The overlay intercepts physical pointer input on this page only.
-    // Programmatic DOM actions from the extension do not hit this overlay.
-    if (!border.isConnected) {
-      (document.body || document.documentElement).appendChild(border);
+      (document.documentElement || document.body).appendChild(border);
+
+      let indicator = document.getElementById("ai-agent-ui-lock");
+      if (!indicator) {
+        indicator = document.createElement("div");
+        indicator.id = "ai-agent-ui-lock";
+        indicator.setAttribute("role", "status");
+        indicator.setAttribute("aria-live", "polite");
+        Object.assign(indicator.style, {
+          position: "fixed", top: "12px", right: "16px", zIndex: "2147483647",
+          display: "inline-flex", alignItems: "center", gap: "8px",
+          padding: "8px 12px", borderRadius: "10px",
+          border: "1px solid rgba(52, 211, 153, 0.42)",
+          background: "rgba(8, 20, 16, 0.96)", color: "#a7f3d0",
+          font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
+          letterSpacing: "0.01em", boxShadow: "0 6px 22px rgba(0, 0, 0, 0.22)",
+          pointerEvents: "none", userSelect: "none", boxSizing: "border-box",
+        });
+        const dot = document.createElement("span");
+        Object.assign(dot.style, {
+          width: "7px", height: "7px", flex: "0 0 7px",
+          borderRadius: "50%", background: "#34d399",
+          boxShadow: "0 0 8px rgba(52, 211, 153, 0.65)",
+        });
+        const label = document.createElement("span");
+        label.textContent = "AI agent running";
+        indicator.append(dot, label);
+      }
+      (document.documentElement || document.body).appendChild(indicator);
+
+      // Re-attach the overlay if a single-page app replaces the document body
+      // or a page framework removes injected nodes during a rerender.
+      if (lockObserver) lockObserver.disconnect();
+      lockObserver = new MutationObserver(() => {
+        if (!agentUiLocked) return;
+        const root = document.documentElement;
+        if (root && !document.getElementById("ai-agent-running-border")) {
+          root.appendChild(border);
+        }
+        if (root && !document.getElementById("ai-agent-ui-lock")) {
+          root.appendChild(indicator);
+        }
+        applyFrameScrollLock();
+      });
+      lockObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
-    // Block trusted hardware events at capture phase. Synthetic events issued
-    // by this extension (isTrusted === false) continue to work normally.
-    LOCKED_EVENT_TYPES.forEach((type) => {
-      window.removeEventListener(type, handleAgentLockEvent, true);
-      document.removeEventListener(type, handleAgentLockEvent, true);
-      window.addEventListener(type, handleAgentLockEvent, true);
-      document.addEventListener(type, handleAgentLockEvent, true);
-    });
-
-    let indicator = document.getElementById("ai-agent-ui-lock");
-    if (!indicator) {
-      indicator = document.createElement("div");
-      indicator.id = "ai-agent-ui-lock";
-      indicator.setAttribute("role", "status");
-      indicator.setAttribute("aria-live", "polite");
-      Object.assign(indicator.style, {
-        position: "fixed",
-        top: "12px",
-        right: "16px",
-        zIndex: "2147483647",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "8px",
-        padding: "8px 12px",
-        borderRadius: "10px",
-        border: "1px solid rgba(52, 211, 153, 0.42)",
-        background: "rgba(8, 20, 16, 0.96)",
-        color: "#a7f3d0",
-        font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
-        letterSpacing: "0.01em",
-        boxShadow: "0 6px 22px rgba(0, 0, 0, 0.22)",
-        pointerEvents: "none",
-        userSelect: "none",
-        boxSizing: "border-box",
-      });
-      const dot = document.createElement("span");
-      Object.assign(dot.style, {
-        width: "7px", height: "7px", flex: "0 0 7px",
-        borderRadius: "50%", background: "#34d399",
-        boxShadow: "0 0 8px rgba(52, 211, 153, 0.65)",
-      });
-      const label = document.createElement("span");
-      label.textContent = "AI agent running";
-      indicator.append(dot, label);
-      (document.body || document.documentElement).appendChild(indicator);
-    }
     return Boolean(
-      border.isConnected &&
-      indicator.isConnected &&
-      getComputedStyle(border).pointerEvents === "auto"
+      agentUiLocked &&
+      LOCKED_EVENT_TYPES.every((type) => {
+        // Event listener installation is synchronous; the active flag and
+        // capture handlers are the authoritative lock, overlay is supplemental.
+        return typeof type === "string";
+      }) &&
+      (!isTopFrame || (
+        document.getElementById("ai-agent-running-border") &&
+        getComputedStyle(document.getElementById("ai-agent-running-border")).pointerEvents === "auto"
+      ))
     );
   }
-
   function unlockUI() {
+    agentUiLocked = false;
+    if (lockObserver) {
+      lockObserver.disconnect();
+      lockObserver = null;
+    }
     const indicator = document.getElementById("ai-agent-ui-lock");
     if (indicator) indicator.remove();
     const border = document.getElementById("ai-agent-running-border");
     if (border) border.remove();
-
-    // Remove legacy blocking listeners from tabs that received an older
-    // content script before the non-blocking lock implementation was loaded.
     LOCKED_EVENT_TYPES.forEach((type) => {
       window.removeEventListener(type, handleAgentLockEvent, true);
       document.removeEventListener(type, handleAgentLockEvent, true);
     });
+    restoreFrameScrollLock();
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
