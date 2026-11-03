@@ -1,6 +1,6 @@
 # AI Browser Automation Agent
 
-An autonomous AI-powered browser agent that can open a browser, navigate websites, fill forms, perform searches, extract page data, and generate CSV reports — with optional Google Gemini LLM intelligence.
+An autonomous AI-powered browser agent that can open a browser, navigate websites, fill forms, perform searches, extract page data, and generate PDF reports — with optional Google Gemini LLM intelligence.
 
 ---
 
@@ -10,7 +10,7 @@ An autonomous AI-powered browser agent that can open a browser, navigate website
 - Navigates to any URL or intelligently routes to the right site based on your goal
 - Finds and fills search inputs automatically
 - Extracts page content: headings, paragraphs, links, tables
-- Generates a structured CSV report of results
+- Generates a structured PDF report of results
 - Streams real-time step updates via WebSocket
 - Pauses for human approval when encountering CAPTCHAs or payment gates
 
