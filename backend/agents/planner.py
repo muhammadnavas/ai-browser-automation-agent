@@ -1692,10 +1692,16 @@ If the task is already complete, return ["Verify the requested outcome and finis
     def _deserialize_browser_action(self, data: Dict[str, Any]) -> BrowserAction:
         """Reconstruct a BrowserAction instance from cached dictionary payload."""
         action_type = ActionType(data["action"])
+        cached_selector = data.get("selector")
+        cached_element_id = data.get("element_id")
+        if cached_element_id is None and isinstance(cached_selector, str) and cached_selector.strip().isdigit():
+            cached_element_id = int(cached_selector.strip())
+            cached_selector = None
+
         return BrowserAction(
             action=action_type,
-            element_id=data.get("element_id"),
-            selector=data.get("selector"),
+            element_id=cached_element_id,
+            selector=cached_selector,
             text=data.get("text"),
             url=data.get("url_target") or data.get("nav_url"),
             press_enter=data.get("press_enter", False),
@@ -2213,10 +2219,18 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
         # For navigate, the LLM may put the URL in "text" or "url" key — handle both
         nav_url = data.get("url") or (data.get("text") if action_type == ActionType.NAVIGATE else None)
 
+        # Normalize numeric DOM indexes that the model occasionally emits
+        # as selector strings (e.g. "10") instead of element_id.
+        element_id = data.get("element_id")
+        selector = data.get("selector")
+        if element_id is None and isinstance(selector, str) and selector.strip().isdigit():
+            element_id = int(selector.strip())
+            selector = None
+
         return BrowserAction(
             action=action_type,
-            element_id=data.get("element_id"),
-            selector=data.get("selector"),
+            element_id=element_id,
+            selector=selector,
             text=data.get("text"),
             url=nav_url,
             press_enter=data.get("press_enter", False),
