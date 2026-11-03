@@ -1742,63 +1742,66 @@
     }
   }
 
+  // Non-blocking execution indicator. Automation is scoped to this tab,
+  // but the user must remain free to interact with the page and switch tabs.
+  // The indicator deliberately uses the agent's dark green / mint palette.
   function lockUI() {
-    if (document.getElementById("ai-agent-ui-lock")) return;
+    const existing = document.getElementById("ai-agent-ui-lock");
+    if (existing) return;
 
-    const lock = document.createElement("div");
-    lock.id = "ai-agent-ui-lock";
-    Object.assign(lock.style, {
+    const indicator = document.createElement("div");
+    indicator.id = "ai-agent-ui-lock";
+    indicator.setAttribute("role", "status");
+    indicator.setAttribute("aria-live", "polite");
+    Object.assign(indicator.style, {
       position: "fixed",
-      inset: "0",
-      zIndex: "2147483646",
-      pointerEvents: "auto",
-      cursor: "not-allowed",
-      background: "rgba(2, 12, 8, 0.04)",
-      border: "3px solid rgba(52, 255, 155, 0.92)",
-      boxShadow: "inset 0 0 40px rgba(30, 255, 142, 0.22), inset 0 0 0 1px rgba(52, 255, 155, 0.35)",
-      boxSizing: "border-box",
+      top: "12px",
+      right: "16px",
+      zIndex: "2147483647",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "8px",
+      padding: "8px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(52, 211, 153, 0.38)",
+      background: "rgba(8, 20, 16, 0.94)",
+      color: "#a7f3d0",
+      font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
+      letterSpacing: "0.01em",
+      boxShadow: "0 6px 22px rgba(0, 0, 0, 0.22)",
+      pointerEvents: "none",
       userSelect: "none",
       webkitUserSelect: "none",
+      backdropFilter: "blur(10px)",
+      boxSizing: "border-box",
     });
 
-    const status = document.createElement("div");
-    status.innerHTML = "&#128274; BROWSER LOCKED BY AI AGENT &nbsp;&middot;&nbsp; ALT + SHIFT + ESC TO RELEASE";
-    Object.assign(status.style, {
-      position: "fixed",
-      top: "14px",
-      left: "50%",
-      transform: "translateX(-50%)",
-      padding: "10px 18px",
-      borderRadius: "999px",
-      border: "1px solid rgba(52, 255, 155, 0.75)",
-      background: "rgba(3, 24, 15, 0.96)",
-      color: "#6dffb4",
-      font: "700 12px/1.2 system-ui, -apple-system, sans-serif",
-      letterSpacing: "0.14em",
-      boxShadow: "0 0 20px rgba(30, 255, 142, 0.4), 0 0 45px rgba(30, 255, 142, 0.2)",
-      textShadow: "0 0 12px rgba(52, 255, 155, 0.6)",
-      pointerEvents: "none",
-      whiteSpace: "nowrap",
-      zIndex: "2147483647",
-    });
-    lock.appendChild(status);
-
-    // Capture and prevent all physical hardware user interactions on window & document
-    LOCKED_EVENT_TYPES.forEach((type) => {
-      window.addEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
-      document.addEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
+    const dot = document.createElement("span");
+    Object.assign(dot.style, {
+      width: "7px",
+      height: "7px",
+      flex: "0 0 7px",
+      borderRadius: "50%",
+      background: "#34d399",
+      boxShadow: "0 0 8px rgba(52, 211, 153, 0.65)",
     });
 
-    document.documentElement.appendChild(lock);
+    const label = document.createElement("span");
+    label.textContent = "AI agent running";
+
+    indicator.append(dot, label);
+    (document.body || document.documentElement).appendChild(indicator);
   }
 
   function unlockUI() {
-    const lock = document.getElementById("ai-agent-ui-lock");
-    if (lock) lock.remove();
+    const indicator = document.getElementById("ai-agent-ui-lock");
+    if (indicator) indicator.remove();
 
+    // Remove legacy blocking listeners from tabs that received an older
+    // content script before the non-blocking lock implementation was loaded.
     LOCKED_EVENT_TYPES.forEach((type) => {
-      window.removeEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
-      document.removeEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
+      window.removeEventListener(type, handleAgentLockEvent, true);
+      document.removeEventListener(type, handleAgentLockEvent, true);
     });
   }
 
