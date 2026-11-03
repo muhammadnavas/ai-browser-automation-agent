@@ -12,6 +12,7 @@ Protects against:
 - Unsafe redirects and DNS rebinding paths
 """
 
+import asyncio
 import ipaddress
 import logging
 import socket
@@ -158,6 +159,35 @@ def validate_url_security(url: str, resolve_dns: bool = True) -> Tuple[bool, str
     normalized = parsed.geturl()
     return True, "Safe", normalized
 
+async def install_navigation_guard(page) -> None:
+    """
+    Install a Playwright request guard on a page.
 
-# Navigation enforcement is performed by TaskManager before commands are sent
-# to the Chrome extension. Keep this module browser-engine agnostic.
+    Every HTTP(S) request is validated, not only the first page.goto URL, so
+    redirects and page-initiated requests cannot reach prohibited internal
+    destinations. DNS resolution runs in a worker thread to avoid blocking the
+    asyncio event loop.
+    """
+    if page is None or not hasattr(page, "route"):
+        raise TypeError("install_navigation_guard requires a Playwright Page")
+
+    async def guard_request(route) -> None:
+        request = route.request
+        target_url = getattr(request, "url", "") or ""
+        try:
+            is_safe, reason, _ = await asyncio.to_thread(
+                validate_url_security, target_url, True
+            )
+        except Exception as exc:
+            logger.warning("URL security validation failed closed for %s: %s", target_url, exc)
+            await route.abort("blockedbyclient")
+            return
+
+        if not is_safe:
+            logger.warning("Blocked browser request to %s: %s", target_url, reason)
+            await route.abort("blockedbyclient")
+            return
+
+        await route.continue_()
+
+    await page.route("**/*", guard_request)
