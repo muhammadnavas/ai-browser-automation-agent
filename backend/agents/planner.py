@@ -29,6 +29,16 @@ from services.cache_service import CacheService, default_cache_service
 logger = logging.getLogger("AIAgentPlanner")
 
 
+def normalize_action_target(data: Dict[str, Any]) -> Tuple[Optional[int], Optional[str]]:
+    """Normalize numeric snapshot indexes mistakenly emitted as CSS selectors."""
+    element_id = data.get("element_id")
+    selector = data.get("selector")
+    if element_id is None and isinstance(selector, str) and selector.strip().isdigit():
+        element_id = int(selector.strip())
+        selector = None
+    return element_id, selector
+
+
 # ---------------------------------------------------------------------------
 # URL & Navigation Intent Helpers
 # ---------------------------------------------------------------------------
@@ -1692,11 +1702,7 @@ If the task is already complete, return ["Verify the requested outcome and finis
     def _deserialize_browser_action(self, data: Dict[str, Any]) -> BrowserAction:
         """Reconstruct a BrowserAction instance from cached dictionary payload."""
         action_type = ActionType(data["action"])
-        cached_selector = data.get("selector")
-        cached_element_id = data.get("element_id")
-        if cached_element_id is None and isinstance(cached_selector, str) and cached_selector.strip().isdigit():
-            cached_element_id = int(cached_selector.strip())
-            cached_selector = None
+        cached_element_id, cached_selector = normalize_action_target(data)
 
         return BrowserAction(
             action=action_type,
@@ -2226,11 +2232,7 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
 
         # Normalize numeric DOM indexes that the model occasionally emits
         # as selector strings (e.g. "10") instead of element_id.
-        element_id = data.get("element_id")
-        selector = data.get("selector")
-        if element_id is None and isinstance(selector, str) and selector.strip().isdigit():
-            element_id = int(selector.strip())
-            selector = None
+        element_id, selector = normalize_action_target(data)
 
         return BrowserAction(
             action=action_type,
