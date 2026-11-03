@@ -1820,7 +1820,10 @@
     if (!border) {
       border = document.createElement("div");
       border.id = "ai-agent-running-border";
-      Object.assign(border.style, {
+    }
+    // Re-apply the complete lock styling on every request. This also repairs
+    // partially removed/modified overlays after page-framework rerenders.
+    Object.assign(border.style, {
         position: "fixed",
         inset: "0",
         zIndex: "2147483646",
@@ -1833,8 +1836,9 @@
         userSelect: "none",
         boxSizing: "border-box",
       });
-      // The overlay intercepts physical pointer input on this page only.
-      // Programmatic DOM actions from the extension do not hit this overlay.
+    // The overlay intercepts physical pointer input on this page only.
+    // Programmatic DOM actions from the extension do not hit this overlay.
+    if (!border.isConnected) {
       (document.body || document.documentElement).appendChild(border);
     }
 
@@ -1884,6 +1888,11 @@
       indicator.append(dot, label);
       (document.body || document.documentElement).appendChild(indicator);
     }
+    return Boolean(
+      border.isConnected &&
+      indicator.isConnected &&
+      getComputedStyle(border).pointerEvents === "auto"
+    );
   }
 
   function unlockUI() {
@@ -1914,8 +1923,12 @@
           const result = await executeAction(message.action || {});
           sendResponse(result);
         } else if (message.type === "lock_ui") {
-          lockUI();
-          sendResponse({ success: true });
+          const locked = lockUI();
+          sendResponse({
+            success: locked,
+            data: { locked, lock_element: "ai-agent-running-border" },
+            error: locked ? undefined : "Task-tab interaction overlay could not be installed.",
+          });
         } else if (message.type === "unlock_ui") {
           unlockUI();
           sendResponse({ success: true });
