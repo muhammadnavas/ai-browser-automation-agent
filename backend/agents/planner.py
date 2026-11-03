@@ -940,6 +940,11 @@ class AIAgentPlanner:
             category_key = "document_download"
             category_label = "Document & File Download"
             tools.extend(["File Downloader", "File Verification", "CSV Report Generator"])
+        elif _has_keyword(goal_lower, ["compose email", "write an email", "send an email", "draft an email", "new email", "reply to an email"]):
+            category_key = "email_composition"
+            category_label = "Email Composition & Sending"
+            tools.extend(["Interactive Element Control", "Form Discovery", "Human Approval Gate", "Send Verification"])
+            requires_human_approval = True
         elif is_nav_goal and not _has_keyword(goal_lower, ["upload", "attach", "create", "new folder", "share"]):
             category_key = "navigation"
             category_label = "Direct URL Navigation & Interaction" if (has_click_intent or click_target) else "Direct URL Navigation"
@@ -2183,12 +2188,21 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
         logger.debug(f"LLM raw response (step {step_number}): {raw_text[:300]}")
         data = json.loads(raw_text)
 
-        action_str = data.get("action", "extract")
+        action_str = data.get("action")
         try:
-            action_type = ActionType(action_str)
+            action_type = ActionType(action_str) if action_str else ActionType.WAIT
         except ValueError:
-            logger.warning(f"Unknown action '{action_str}' from LLM — defaulting to extract.")
-            action_type = ActionType.EXTRACT
+            logger.warning("Unknown action '%s' from LLM — using WAIT instead of an unintended extraction.", action_str)
+            action_type = ActionType.WAIT
+
+        explicit_extraction_intent = _has_keyword(
+            goal.lower(),
+            ["extract", "scrape", "summarize", "summary", "collect data", "gather data",
+             "research", "compare", "list results", "get headlines", "find articles"],
+        )
+        if action_type == ActionType.EXTRACT and not explicit_extraction_intent:
+            logger.info("Suppressing unsolicited EXTRACT action for non-extraction task: %s", goal[:160])
+            action_type = ActionType.WAIT
 
         # For navigate, the LLM may put the URL in "text" or "url" key — handle both
         nav_url = data.get("url") or (data.get("text") if action_type == ActionType.NAVIGATE else None)
@@ -2406,29 +2420,12 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                         reasoning="User has approved the entered values. Clicking the Submit button to submit the form.",
                     )
 
-        # ── Step 3: Direct URL Navigation or Click Verification & Finish ──
-        # If we arrived at the target domain and any requested click action is completed (or wasn't requested):
+        # ── Step 3: Navigation verification / Finish ──
+        # DOM inspection above is internal state collection, not user-requested extraction.
         is_nav_or_generic = intent.get("category_key") in ("navigation", "generic")
-        # Never finish early if the task has upload/file intent — keep working
         has_upload_intent = _has_keyword(goal_lower, ["upload", "attach", "create", "new folder", "share", "drive"])
         on_target = (target_url and domains_match(url, target_url)) or (target_url and has_navigated) or has_clicked or has_interacted
         if on_target and is_nav_or_generic and not has_upload_intent:
-            if not has_extracted:
-                verify_reason = (
-                    f"Extracting page content to verify result after clicking '{click_target}'."
-                    if has_clicked
-                    else f"Extracting page content to verify successful navigation to {target_url or url}."
-                )
-                return BrowserAction(
-                    action=ActionType.EXTRACT,
-                    reasoning=verify_reason,
-                    extracted_data={
-                        "task_goal": goal,
-                        "page_title": page_info.get("title"),
-                        "url": page_info.get("url"),
-                        "status": "Success",
-                    },
-                )
             finish_reason = (
                 f"Successfully opened {target_url or url} and completed '{click_target}'."
                 if has_clicked
