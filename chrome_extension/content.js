@@ -818,11 +818,17 @@
       // upload input, so MIME-only filtering can otherwise send a CSV to a
       // required photograph question and leave the form invalid.
       const uniqueInputs = Array.from(new Set(fileInputs));
-      const compatibleInputs = uniqueInputs.filter((inp) => {
+      const inputMetadata = uniqueInputs.map((inp) => {
+        const question = inp.closest('[role="listitem"], .Qr7Oae, [data-params], form');
+        return {
+          input: inp,
+          question,
+          questionText: String(question?.innerText || question?.textContent || "").toLowerCase(),
+        };
+      });
+      const compatibleInputs = inputMetadata.filter(({ input: inp, questionText }) => {
         const accept = String(inp.getAttribute("accept") || "").trim().toLowerCase();
         const ext = "." + fileName.split(".").pop().toLowerCase();
-        const question = inp.closest('[role="listitem"], .Qr7Oae, [data-params], form');
-        const questionText = String(question?.innerText || question?.textContent || "").toLowerCase();
         const imageQuestion = /photograph|photo|image|picture/.test(questionText);
         const imageFile = fileType.toLowerCase().startsWith("image/") ||
           [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"].includes(ext);
@@ -837,6 +843,34 @@
           return fileType.toLowerCase() === rule;
         });
       });
+
+      // A compatible MIME type is not enough: the file must go into the
+      // intended question, not the first compatible file input on the page.
+      const intentText = [
+        action.reasoning, action.text, action.label, action.field_label,
+        action.select_label
+      ].filter(Boolean).join(" ").toLowerCase();
+      const intentWords = new Set(intentText.match(/[a-z]{3,}/g) || []);
+      ["upload", "file", "add", "button", "click", "choose", "attach", "please"].forEach((word) => intentWords.delete(word));
+      if (intentWords.size) {
+        const ranked = compatibleInputs.map((entry) => ({
+          ...entry,
+          score: Array.from(intentWords).filter((word) => entry.questionText.includes(word)).length,
+        })).sort((a, b) => b.score - a.score);
+        if (ranked.length && ranked[0].score > 0) {
+          const bestScore = ranked[0].score;
+          const best = ranked.filter((entry) => entry.score === bestScore);
+          if (best.length !== 1) {
+            return { success: false, error: "Multiple file questions match the upload instruction; refusing to guess the target." };
+          }
+          compatibleInputs.splice(0, compatibleInputs.length, best[0]);
+        } else if (compatibleInputs.length > 1) {
+          return { success: false, error: "Could not identify which file question should receive this file; refusing to upload into the first compatible input." };
+        }
+      } else if (compatibleInputs.length > 1) {
+        return { success: false, error: "Upload target is ambiguous; refusing to assign the file to an arbitrary input." };
+      }
+
       if (!compatibleInputs.length) {
         return {
           success: false,
@@ -845,7 +879,7 @@
       }
 
       let inputSuccess = false;
-      for (const inp of compatibleInputs) {
+      for (const { input: inp } of compatibleInputs) {
         try {
           inp.files = dt.files;
           inp.dispatchEvent(new Event("input", { bubbles: true }));
