@@ -353,7 +353,7 @@ AVAILABLE ACTIONS (use exactly these strings in "action"):
 ═══════════════════════════════════════════════════════════
   navigate        → Go to a URL. Set "text" to the full URL.
   fill            → Fill/Type into a field. Use "selector" (preferred CSS) or "element_id", "text" = value to type.
-  click           → Click an element (button, link, option, etc.). Use "element_id" (integer) or "selector" (CSS).
+  click           → Click an element (button, link, option, etc.). Prefer "element_id" from the latest DOM snapshot; use "selector" only when no element_id is available. Never reuse selectors from earlier page snapshots.
   select          → Select a dropdown option. Use "selector" + "select_label" (visible option text) or "value" (option value attribute).
   check           → Check a checkbox. Use "selector", "checked": true.
   uncheck         → Uncheck a checkbox. Use "selector", "checked": false.
