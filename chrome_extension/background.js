@@ -677,19 +677,38 @@ async function handleBackendMessage(msg) {
   }
 
   // ── 8. Lock UI ──
-  if (type === "lock_ui") {
+  if (type === "lock_ui" || type === "unlock_ui") {
+    const command = type;
     try {
       await ensureContentScriptInjected(tabId);
-      const result = await sendContentMessage(tabId, { type: "lock_ui" });
-      if (!result || result.success !== true || result.data?.locked !== true) {
-        throw new Error(result?.error || "Content script did not confirm the task-tab lock.");
+      // Send the command to every frame, not only the top document. Google Forms
+      // and upload widgets can put interactive controls inside child frames.
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        world: "ISOLATED",
+        func: (lockCommand) => {
+          const detail = { command: lockCommand, result: false };
+          window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
+          return detail.result;
+        },
+        args: [command],
+      });
+      if (command === "lock_ui") {
+        const failedFrames = (results || []).filter((frame) => frame.result !== true);
+        if (!results?.length || failedFrames.length) {
+          throw new Error(`Lock was not confirmed in ${failedFrames.length || "any"} frame(s).`);
+        }
       }
       sendWsMessage({
         id,
         task_id,
         type: "response",
         success: true,
-        data: result.data,
+        data: {
+          locked: command === "lock_ui",
+          frames: results?.length || 0,
+          confirmed_frames: (results || []).filter((frame) => frame.result === true).length,
+        },
       });
     } catch (err) {
       sendWsMessage({
@@ -697,31 +716,7 @@ async function handleBackendMessage(msg) {
         task_id,
         type: "response",
         success: false,
-        error: `Failed to lock UI: ${err.message}`,
-      });
-    }
-    return;
-  }
-
-  // ── 9. Unlock UI ──
-  if (type === "unlock_ui") {
-    try {
-      await ensureContentScriptInjected(tabId);
-      const result = await sendContentMessage(tabId, { type: "unlock_ui" });
-      sendWsMessage({
-        id,
-        task_id,
-        type: "response",
-        success: result ? result.success : true,
-        data: result,
-      });
-    } catch (err) {
-      sendWsMessage({
-        id,
-        task_id,
-        type: "response",
-        success: false,
-        error: `Failed to unlock UI: ${err.message}`,
+        error: `Failed to ${command === "lock_ui" ? "lock" : "unlock"} UI: ${err.message}`,
       });
     }
     return;
