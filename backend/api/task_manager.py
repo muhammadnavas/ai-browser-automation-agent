@@ -1189,7 +1189,22 @@ class TaskManager:
                                     if action.element_id and el.get("index") == action.element_id:
                                         accept_types = el.get("accept")
                                         break
-                            context_text = f"{action.reasoning or ''} {action.text or ''} {getattr(task, 'error', '') or ''}"
+                            # Include the live target's accessible label. The visible
+                            # Google Forms Add file button often carries the question
+                            # label (for example, "Upload Recent Photograph").
+                            target_context = ""
+                            if page_info and page_info.get("elements"):
+                                for target in page_info["elements"]:
+                                    if (
+                                        (action.element_id and target.get("index") == action.element_id)
+                                        or (action.selector and target.get("selector") == action.selector)
+                                    ):
+                                        target_context = " ".join(str(target.get(key) or "") for key in (
+                                            "label", "text", "aria_label", "title", "name"
+                                        ))
+                                        accept_types = target.get("accept") or accept_types
+                                        break
+                            context_text = f"{action.reasoning or ''} {action.text or ''} {target_context} {getattr(task, 'error', '') or ''}"
                             real_file = get_user_system_file(
                                 goal=task.goal or "",
                                 context_text=context_text,
