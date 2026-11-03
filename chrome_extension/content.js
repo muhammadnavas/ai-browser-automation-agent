@@ -1265,25 +1265,13 @@
       const actionText = (action.text || "").toLowerCase();
       const actionReason = (action.reasoning || "").toLowerCase();
 
+      const isFileInputTarget = Boolean(el && el.tagName === "INPUT" && el.type === "file");
       const isFileUploadClick = (
-        actionReason.includes("file upload") ||
-        actionReason.includes("upload file") ||
-        actionReason.includes("add file") ||
-        actionReason.includes("attach file") ||
-        actionReason.includes("upload photograph") ||
-        actionText.includes("file upload") ||
-        actionText.includes("upload file") ||
-        actionText.includes("add file") ||
-        actionText.includes("attach file") ||
-        elText.includes("file upload") ||
-        elText.includes("upload file") ||
-        elText.includes("add file") ||
-        elText.includes("attach file") ||
-        elAria.includes("file upload") ||
-        elAria.includes("upload file") ||
-        elAria.includes("add file") ||
-        elAria.includes("attach file") ||
-        Boolean(action.file_base64)
+        isFileInputTarget ||
+        /^(add file|choose file|browse|upload file|attach file)$/i.test(actionText.trim()) ||
+        /^(add file|choose file|browse|upload file|attach file)$/i.test(elText.trim()) ||
+        /^(add file|choose file|browse|upload file|attach file)$/i.test(elAria.trim()) ||
+        Boolean(action.file_base64 && /upload|attach|file/i.test(actionText))
       );
 
       if (isFileUploadClick) {
