@@ -1417,7 +1417,8 @@ class TaskManager:
                                 "your request has been sent", "we have received your",
                             )
                             error_markers = (
-                                "this field is required", "please enter a valid",
+                                "this field is required", "this is a required question",
+                                "this question is required", "please enter a valid",
                                 "fix the following errors", "submission failed",
                                 "invalid email address", "must be filled out",
                                 "please correct the errors", "there was a problem",
