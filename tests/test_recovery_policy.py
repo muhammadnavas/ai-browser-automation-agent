@@ -124,3 +124,25 @@ async def test_terminal_task_checkpoint_is_not_restored(cached_status):
     assert restored is False
     assert task.current_step == 0
     assert task.status == TaskStatus.PENDING
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "page_info", "expected"),
+    [
+        ({"url": "https://example.com/form", "step": 3},
+         {"url": "https://example.com/form"}, True),
+        ({"url": "https://example.com/form", "step": 3},
+         {"url": "https://example.com/dashboard"}, False),
+        ({"url": "https://example.com/form", "step": 3},
+         {"url": ""}, False),
+        (None, {"url": "https://example.com/form"}, False),
+    ],
+)
+def test_live_page_must_match_saved_resume_checkpoint(checkpoint, page_info, expected):
+    from api.task_manager import TaskManager
+
+    valid, message = TaskManager._validate_resume_checkpoint(checkpoint, page_info)
+
+    assert valid is expected
+    if not expected:
+        assert message
