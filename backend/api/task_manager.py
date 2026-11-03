@@ -2125,7 +2125,7 @@ class TaskManager:
                 reasoning = str(getattr(action, "reasoning", None) or "")
                 quoted = re.search(r"""['"“]([^'"”]+)['"”]\s+(?:field|question|input)""", reasoning, re.I)
                 described = re.search(
-                    r"(?:fill|enter|type|populate|update)\\s+(?:in\\s+)?(?:the\\s+)?[\\\"'“]?([^\\\"'”]+?)[\\\"'”]?\\s+(?:field|question|input)\\b",
+                    r"""(?:fill|enter|type|populate|update)\s+(?:in\s+)?(?:the\s+)?["'“]?([^"'”]+?)["'”]?\s+(?:field|question|input)\b""",
                     reasoning, re.I
                 )
                 raw_label = str((quoted.group(1) if quoted else "") or (described.group(1) if described else "")).strip().lower()
