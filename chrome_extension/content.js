@@ -542,6 +542,31 @@
   }
 
   function findTargetElement(action) {
+    // Resolve form fields by the label stated in the planner's reasoning before
+    // trusting a numeric index. Google Forms rebuilds controls as questions expand.
+    const actionKind = String(action.action || "").toLowerCase();
+    if (["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind)) {
+      const reasoning = String(action.reasoning || "");
+      const quotedField = reasoning.match(/(?:the\\s+)?['"“]([^'"”]+)['"”]\\s+(?:field|question|input)/i);
+      const fieldLabel = String(action.field_label || action.label || (quotedField && quotedField[1]) || "").trim().toLowerCase();
+      if (fieldLabel) {
+        const controls = Array.from(document.querySelectorAll(
+          'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]'
+        )).filter(isVisibleActionTarget);
+        const matches = controls.filter((control) => {
+          const names = [
+            inferLabel(control),
+            control.getAttribute("aria-label"),
+            control.getAttribute("placeholder"),
+            control.getAttribute("name"),
+            control.getAttribute("id"),
+          ].filter(Boolean).map((value) => String(value).trim().toLowerCase());
+          return names.some((name) => name === fieldLabel);
+        });
+        if (matches.length === 1) return matches[0];
+      }
+    }
+
     // Prefer live Gmail compose controls over stale snapshot indexes/selectors.
     const gmailTarget = findGmailTarget(action);
     if (gmailTarget) return gmailTarget;
