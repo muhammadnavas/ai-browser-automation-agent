@@ -1885,6 +1885,29 @@
   // but the user must remain free to interact with the page and switch tabs.
   // The indicator deliberately uses the agent's dark green / mint palette.
   function lockUI() {
+    // The content script is injected into every frame (manifest all_frames).
+    // The top-level document's fixed overlay already covers embedded frames.
+    // Creating another viewport-sized overlay inside a Google Drive / Forms
+    // iframe produces a second green rectangle around the file picker.
+    // Keep the visual lock and event interception in the top frame only.
+    let isTopFrame = false;
+    try {
+      isTopFrame = window.top === window;
+    } catch (e) {
+      isTopFrame = false;
+    }
+    if (!isTopFrame) {
+      const staleBorder = document.getElementById("ai-agent-running-border");
+      if (staleBorder) staleBorder.remove();
+      const staleIndicator = document.getElementById("ai-agent-ui-lock");
+      if (staleIndicator) staleIndicator.remove();
+      LOCKED_EVENT_TYPES.forEach((type) => {
+        window.removeEventListener(type, handleAgentLockEvent, true);
+        document.removeEventListener(type, handleAgentLockEvent, true);
+      });
+      return true; // Parent frame owns the single tab-wide overlay.
+    }
+
     // This lock is scoped to the task page only. It blocks trusted user input
     // inside this page while leaving Chrome's tab strip and other tabs usable.
     let border = document.getElementById("ai-agent-running-border");
