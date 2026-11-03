@@ -401,11 +401,16 @@ class TaskManager:
 
         try:
             # ── Phase 0: Generate plan and broadcast it before any browser action ──
-            task.plan_status = "planning"
-            task.plan_metadata = planner.get_plan_metadata(
-                goal=req.goal,
-                start_url=req.start_url or "",
-            )
+            task.plan_status = "restoring" if restored_checkpoint else "planning"
+            if not restored_checkpoint or not isinstance(task.plan_metadata, dict):
+                task.plan_metadata = planner.get_plan_metadata(
+                    goal=req.goal,
+                    start_url=req.start_url or "",
+                )
+            else:
+                # Keep checkpointed plan versions and recovery history intact.
+                task.plan_metadata.setdefault("goal", req.goal)
+                task.plan_metadata.setdefault("start_url", req.start_url or "")
             task.updated_at = time.time()
             await self.broadcast_task_update(task_id)
 
@@ -450,12 +455,13 @@ class TaskManager:
             task.plan_metadata["initial_plan"] = plan or []
             task.plan_metadata.setdefault("plan_version", 1)
             task.plan_metadata.setdefault("adaptive_replan_count", 0)
-            task.plan_metadata.setdefault("plan_versions", [{
-                "version": 1,
-                "reason": "initial_plan",
-                "created_at": time.time(),
-                "milestones": list(plan or []),
-            }])
+            if not task.plan_metadata.get("plan_versions"):
+                task.plan_metadata["plan_versions"] = [{
+                    "version": 1,
+                    "reason": "initial_plan",
+                    "created_at": time.time(),
+                    "milestones": list(plan or []),
+                }]
 
             task.updated_at = time.time()
             await self.broadcast_task_update(task_id)
