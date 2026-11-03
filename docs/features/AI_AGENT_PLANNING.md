@@ -124,6 +124,22 @@ When security barriers (CAPTCHA, Cloudflare Turnstile, payment forms) appear:
 
 ---
 
+## Phase 2 — Page Understanding & Interaction Strategy
+
+The task loop now classifies each fresh browser snapshot before planning. The
+deterministic classifier reports a page state (normal, loading, authentication,
+security challenge, navigation error, empty state, modal dialog, or browser
+error) and an interaction strategy (DOM, visual, or hybrid).
+
+- Authentication pages pause for user sign-in through the connected Chrome session.
+- DOM strategy prefers semantic DOM reasoning and avoids sending screenshots to
+  Grok Vision unnecessarily.
+- Visual and hybrid strategies retain current-frame Grok Vision reasoning when
+  configured; text reasoning remains the fallback.
+- Page content is treated as untrusted evidence, not as instructions.
+
+Automated unit coverage lives in `backend/tests/test_page_state.py`.
+
 ## 8. Basic Usage Example
 
 ### Submitting a Task via Python API:
