@@ -963,7 +963,7 @@ class TaskManager:
                 # 5. Human approval gate
                 if (
                     action.action == ActionType.REQUEST_APPROVAL
-                    and not req.auto_approve_captcha
+                    and not (req.auto_approve_captcha and captcha_or_payment == "captcha")
                 ):
                     if hasattr(controller, "unlock_ui"):
                         await controller.unlock_ui()
@@ -982,8 +982,8 @@ class TaskManager:
                         task_id=task_id,
                         type=approval_type,
                         prompt_message=(
-                            f"Human action required: Please solve "
-                            f"{captcha_label} on the browser."
+                            action.text
+                            or f"Human action required: Please solve {captcha_label} on the browser."
                         ),
                         screenshot_url=screenshot_url,
                     )
