@@ -11,7 +11,7 @@ The project combines LLM-based planning, live page context, browser automation, 
 - **Hybrid AI reasoning:** Ollama for optional local text planning, Gemini and Groq as configured text fallbacks, xAI Grok Vision for a separate screenshot-based reasoning path, and heuristic planning for supported flows.
 - **Context-aware planning** based on the goal, current page, interactive elements, and recent action history.
 - **Adaptive replanning** after eligible recoverable failures, using refreshed page context.
-- **Action verification** with extension-mode precondition checks and supported postcondition checks.
+- **Action verification and self-healing locators** with extension-mode precondition/postcondition checks. Stale targets are rebound only when the refreshed DOM contains one unique visible, enabled semantic match; ambiguous matches are rejected.
 - **Human-in-the-loop safeguards** for sensitive or ambiguous checkpoints.
 - **Live task updates** streamed to the frontend over WebSockets.
 - **Task artifacts**, including screenshots and generated reports.
@@ -235,7 +235,7 @@ Run the full test suite:
 python -m pytest -v
 ~~~
 
-The focused tests cover planner provider behavior, adaptive replanning, and supported browser-extension action preconditions and postconditions.
+The focused tests cover planner provider behavior, adaptive replanning, browser-extension action preconditions and postconditions, and conservative stale-locator recovery.
 
 **Test status:** these commands are provided for local verification. Run them in your environment before treating the current implementation as validated; no passing test result is implied by this README.
 
