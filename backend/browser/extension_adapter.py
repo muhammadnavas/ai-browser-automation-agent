@@ -246,6 +246,18 @@ class ExtensionBrowserAdapter:
         self._current_url = data.get("url", url)
         return data
 
+    async def open_recovery_tab(self, url: str) -> dict:
+        """Open the detected Google recovery URL in a separate tab without remapping the task tab."""
+        result = await self.manager.send_command(
+            task_id=self.task_id,
+            command_type="open_recovery_tab",
+            payload={"url": url},
+            timeout=20.0,
+        )
+        if not result or not result.get("success"):
+            raise RuntimeError((result or {}).get("error", "Chrome did not open the Google recovery tab."))
+        return result.get("data") or {}
+
     async def focus_tab(self) -> None:
         """Bring this task's Chrome tab to the foreground for manual recovery."""
         await self.manager.send_command(
