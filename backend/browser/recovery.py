@@ -331,23 +331,48 @@ async def _fallback_select(
 # ---------------------------------------------------------------------------
 
 def classify_browser_error(error: Any) -> str:
-    """Map browser failures to stable diagnostic categories."""
+    """Map browser failures to stable diagnostic categories.
+
+    Match specific locator/connection conditions before generic timeout or
+    navigation tokens so recovery policy receives the most useful category.
+    """
     message = str(error or "").lower()
-    if any(token in message for token in ("strict mode violation", "not found", "no element", "no elements", "detached", "stale")):
+    if any(token in message for token in (
+        "strict mode violation", "no element", "no elements", "detached",
+        "stale element", "stale locator", "waiting for locator",
+        "waiting for selector", "locator not found", "selector not found",
+    )):
         return "locator_or_stale_state"
-    if any(token in message for token in ("timeout", "timed out", "waiting for")):
-        return "timeout"
-    if "waiting for locator" in message or "waiting for selector" in message:
-        return "locator_or_stale_state"
-    if "locator" in message:
-        return "locator_or_stale_state"
-    if any(token in message for token in ("navigation", "net::err", "chrome-error", "target closed", "page closed")):
-        return "navigation_or_page_state"
-    if any(token in message for token in ("extension disconnected", "websocket", "connection closed")):
+    if any(token in message for token in (
+        "extension disconnected", "websocket", "connection closed",
+        "connection reset", "failed to fetch", "failed to connect",
+    )):
         return "extension_connection"
-    if any(token in message for token in ("permission", "forbidden", "unauthorized", "captcha", "payment")):
+    if any(token in message for token in (
+        "permission", "forbidden", "unauthorized", "captcha",
+        "payment approval", "approval required", "access denied",
+        "http 401", "http 403",
+    )):
         return "approval_or_permission"
+    if any(token in message for token in (
+        "timeout", "timed out", "deadline exceeded", "waiting for",
+    )):
+        return "timeout"
+    if any(token in message for token in (
+        "navigation", "net::err", "chrome-error", "target closed",
+        "page closed", "dns_probe", "name_not_resolved",
+    )):
+        return "navigation_or_page_state"
     return "unknown"
+
+
+def should_retry_browser_error(error: Any) -> bool:
+    """Return whether another bounded recovery attempt is useful and safe."""
+    return classify_browser_error(error) in {
+        "locator_or_stale_state",
+        "timeout",
+        "navigation_or_page_state",
+    }
 
 
 # Actions whose repeated execution can create duplicate or irreversible side effects.
@@ -581,6 +606,15 @@ async def execute_with_retry_and_fallback(
         ):
             logger.info(f"Task {task_id} cancelled after attempt {attempt}. Aborting.")
             return "Task execution was cancelled by user.", None, False, ["Task cancelled by user."]
+
+        # Do not spend retries on failures that require user intervention or
+        # a restored extension connection. Unknown failures are surfaced rather
+        # than repeatedly issuing commands without a diagnosed recovery path.
+        if not should_retry_browser_error(last_error):
+            recovery_log.append(
+                f"Recovery stopped: failure category '{error_category}' is not automatically retryable."
+            )
+            break
 
         # If not successful and retries remain, back off exponentially
         if attempt < policy.max_retries:
