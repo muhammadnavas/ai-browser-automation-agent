@@ -52,32 +52,32 @@ def classify_page_state(page_info: Dict[str, Any]) -> Dict[str, Any]:
     )
     challenge = (
         _matches(r"(captcha|challenge-platform|/sorry/)", url)
-        or _matches(r"\\b(captcha|verify you are human|checking your browser|complete the security check)\\b",
+        or _matches(r"\b(captcha|verify you are human|checking your browser|complete the security check)\b",
                     title + " " + headings + " " + body[:2500])
     )
     auth_path = _matches(r"/(login|log-in|signin|sign-in|authenticate|oauth)(/|$)", path)
     auth_copy = _matches(
-        r"\\b(sign in to continue|log in to continue|enter your password|"
-        r"your session has expired|authentication required)\\b",
+        r"\b(sign in to continue|log in to continue|enter your password|"
+        r"your session has expired|authentication required)\b",
         title + " " + headings + " " + body[:2500],
     )
-    auth_title = _matches(r"^(sign in|log in|login|sign-in)(\\s*[-|:].*)?$", title)
+    auth_title = _matches(r"^(sign in|log in|login|sign-in)(\s*[-|:].*)?$", title)
 
     error_copy = _matches(
-        r"\\b(page not found|this site can.t be reached|site can.t be reached|"
-        r"server not found|dns_probe_finished|err_connection_refused)\\b",
+        r"\b(page not found|this site can.t be reached|site can.t be reached|"
+        r"server not found|dns_probe_finished|err_connection_refused)\b",
         title + " " + headings + " " + body[:1500],
-    ) or _matches(r"^404(\\s|$|[-:])", title)
+    ) or _matches(r"^404(\s|$|[-:])", title)
 
     empty_copy = _matches(
-        r"\\b(no results found|no results to show|nothing found|no matches found|"
-        r"your search returned no results|0 results)\\b",
+        r"\b(no results found|no results to show|nothing found|no matches found|"
+        r"your search returned no results|0 results)\b",
         title + " " + headings + " " + body[:2500],
     )
     loading_copy = _matches(
-        r"^(loading|please wait|just a moment|loading\\.{0,3})$",
+        r"^(loading|please wait|just a moment|loading\.{0,3})$",
         title,
-    ) or _matches(r"\\b(loading|please wait|just a moment)\\b", headings)
+    ) or _matches(r"\b(loading|please wait|just a moment)\b", headings)
 
     if browser_error:
         state, reason = "browser_error", "The active tab is blank or showing a browser navigation error."
