@@ -214,6 +214,23 @@ async function sendContentMessage(tabId, message) {
   }
 }
 
+async function focusTaskTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab || tab.windowId === undefined) {
+    throw new Error("The agent task tab is not attached to a Chrome window.");
+  }
+  const win = await chrome.windows.get(tab.windowId);
+  if (win.state === "minimized") {
+    await chrome.windows.update(tab.windowId, { state: "maximized" });
+  }
+  await chrome.windows.update(tab.windowId, { focused: true });
+  const activeTab = await chrome.tabs.update(tabId, { active: true });
+  if (!activeTab.active) {
+    throw new Error("Chrome did not activate the agent task tab.");
+  }
+  return activeTab;
+}
+
 async function waitForTabLoaded(tabId, timeoutMs = 12000) {
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -497,6 +514,7 @@ async function handleBackendMessage(msg) {
   // ── 5. DOM Inspection ──
   if (type === "inspect_dom") {
     try {
+      await focusTaskTab(tabId);
       const response = await sendContentMessage(tabId, {
         type: "inspect_dom",
         show_badges: msg.show_badges,
@@ -525,6 +543,7 @@ async function handleBackendMessage(msg) {
   // ── 6. Execute Browser Action ──
   if (type === "execute_action") {
     try {
+      await focusTaskTab(tabId);
       const action = msg.action || {};
 
       // FINISH is a task-control action, not a page interaction. It must not
