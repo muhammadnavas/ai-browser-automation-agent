@@ -432,6 +432,18 @@
             z_index: window.getComputedStyle(el).zIndex,
           })),
       },
+      // Include hidden file inputs separately: they are intentionally omitted
+      // from the visible-element list, but their accept rules determine which
+      // file the backend must select for the corresponding upload question.
+      file_inputs: Array.from(document.querySelectorAll('input[type="file"]')).map((input) => {
+        const question = input.closest('[role="listitem"], .Qr7Oae, [data-params], form, [role="dialog"]');
+        return {
+          accept: input.getAttribute("accept") || "",
+          question_text: String(question?.innerText || question?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 500),
+          name: input.getAttribute("name") || "",
+          multiple: Boolean(input.multiple),
+        };
+      }),
       form_fields: formFields,
       compact_forms: compactForms,
     };
