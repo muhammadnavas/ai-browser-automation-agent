@@ -1169,6 +1169,11 @@ class TaskManager:
                     getattr(controller, "current_url", "")
                     or (getattr(getattr(controller, "current_page", None), "url", "") or "")
                 ) if is_submit_action else ""
+                # Upload steps need a post-action screenshot as well as the
+                # pre-action screenshot captured at the top of the loop. This is
+                # the evidence that shows the selected file chip/preview (or the
+                # still-open picker when the upload did not actually complete).
+                is_upload_step = False
                 if action.action == ActionType.REQUEST_APPROVAL:
                     exec_description = f"User granted approval. Input: {user_approval_input}"
                     extracted_item = None
@@ -1520,6 +1525,21 @@ class TaskManager:
                                 "recovered" if action_success else "unresolved",
                                 str(recovery_entry)[:500],
                             )
+
+                if is_upload_step:
+                    try:
+                        post_action_path, post_action_url = await controller.capture_screenshot(task_id, step_num)
+                        if post_action_path:
+                            screenshot_path, screenshot_url = post_action_path, post_action_url
+                            exec_description += " | Captured post-upload state for report evidence."
+                        else:
+                            exec_description += " | Post-upload screenshot unavailable; retained pre-action evidence."
+                    except Exception as screenshot_error:
+                        logger.warning(
+                            "Post-upload screenshot failed for task %s step %s: %s",
+                            task_id, step_num, screenshot_error,
+                        )
+                        exec_description += " | Post-upload screenshot capture failed."
 
                 if action_success:
                     if task.initial_plan:
@@ -2561,6 +2581,10 @@ Task evidence:
         if task_id in self.tasks:
             task = self.tasks[task_id]
             if task.approval_request:
+                # Count each approval request once. Repeated network/UI submissions
+                # for the same request must not inflate the report metric.
+                if approved and task.approval_request.status == "pending":
+                    task.human_approval_count = int(getattr(task, "human_approval_count", 0) or 0) + 1
                 task.approval_request.status = "approved" if approved else "rejected"
                 task.approval_request.user_input = user_input
 
