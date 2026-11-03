@@ -431,7 +431,84 @@
   // Action Execution Engine
   // ---------------------------------------------------------------------------
 
+  function isVisibleActionTarget(el) {
+    if (!el || !el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 &&
+      style.display !== "none" && style.visibility !== "hidden" &&
+      style.opacity !== "0" && !el.disabled &&
+      el.getAttribute("aria-disabled") !== "true";
+  }
+
+  function findGmailTarget(action) {
+    if (location.hostname !== "mail.google.com") return null;
+    const kind = String(action.action || "").toLowerCase();
+    const context = [
+      action.reasoning, action.label, action.field_label,
+      action.text, action.selector
+    ].filter(Boolean).join(" ").toLowerCase();
+
+    if (kind === "click" && /compose/.test(context)) {
+      const candidates = [
+        '[role="button"][gh="cm"]',
+        'div[role="button"][aria-label="Compose"]',
+        'button[aria-label="Compose"]',
+        '[role="button"][data-tooltip="Compose"]'
+      ];
+      for (const selector of candidates) {
+        const el = Array.from(document.querySelectorAll(selector)).find(isVisibleActionTarget);
+        if (el) return el;
+      }
+      const byText = Array.from(document.querySelectorAll('button,[role="button"]'))
+        .find((el) => isVisibleActionTarget(el) &&
+          (el.innerText || el.getAttribute("aria-label") || "").trim().toLowerCase() === "compose");
+      if (byText) return byText;
+    }
+
+    if (["fill", "type_text", "fill_field"].includes(kind)) {
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .M9'))
+        .filter(isVisibleActionTarget);
+      const dialog = dialogs[dialogs.length - 1] || document;
+      const editable = (selectors) => {
+        for (const selector of selectors) {
+          const el = Array.from(dialog.querySelectorAll(selector)).find(isVisibleActionTarget);
+          if (el) return el;
+        }
+        return null;
+      };
+
+      if (/recipient|\bto\b|email address/.test(context) || /[^\s@]+@[^\s@]+\.[^\s@]+/.test(String(action.text || ""))) {
+        const recipient = editable([
+          'input[name="to"]',
+          'input[aria-label="To recipients"]',
+          'input[aria-label^="To "]',
+          'input[placeholder="Recipients"]',
+          'input[peoplekit-id]'
+        ]);
+        if (recipient) return recipient;
+      }
+      if (/subject/.test(context)) {
+        const subject = editable(['input[name="subjectbox"]', 'input[aria-label="Subject"]']);
+        if (subject) return subject;
+      }
+      if (/message body|email body|body text|message content/.test(context)) {
+        const body = editable([
+          '[contenteditable="true"][aria-label*="Message Body"]',
+          '[contenteditable="true"][g_editable="true"]',
+          '[role="textbox"][contenteditable="true"]'
+        ]);
+        if (body) return body;
+      }
+    }
+    return null;
+  }
+
   function findTargetElement(action) {
+    // Prefer live Gmail compose controls over stale snapshot indexes/selectors.
+    const gmailTarget = findGmailTarget(action);
+    if (gmailTarget) return gmailTarget;
+
     // The planner sometimes serializes an inspected numeric element index as
     // "selector": "10" instead of "element_id": 10. Resolve that form against
     // the latest DOM snapshot before treating it as a CSS selector.
