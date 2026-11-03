@@ -744,7 +744,10 @@
           bytes = new Uint8Array(0);
         }
       } else {
-        bytes = new Uint8Array(0);
+        return { success: false, error: "Upload payload is empty; refusing to inject an empty file." };
+      }
+      if (!bytes || bytes.length === 0) {
+        return { success: false, error: "Upload payload decoded to zero bytes." };
       }
 
       const blob = new Blob([bytes], { type: fileType });
@@ -772,18 +775,41 @@
         });
       } catch (e) {}
 
+      // Respect each file input's accept contract. Never place a CSV into an
+      // image-only photograph field (or broadcast one file into every upload field).
+      const uniqueInputs = Array.from(new Set(fileInputs));
+      const compatibleInputs = uniqueInputs.filter((inp) => {
+        const accept = String(inp.getAttribute("accept") || "").trim().toLowerCase();
+        if (!accept) return true;
+        const ext = "." + fileName.split(".").pop().toLowerCase();
+        return accept.split(",").map((part) => part.trim()).some((rule) => {
+          if (rule.startsWith(".")) return ext === rule;
+          if (rule.endsWith("/*")) return fileType.toLowerCase().startsWith(rule.slice(0, -1));
+          return fileType.toLowerCase() === rule;
+        });
+      });
+      if (!compatibleInputs.length) {
+        return {
+          success: false,
+          error: `File '${fileName}' (${fileType}) is incompatible with the page's file input accept types.`,
+        };
+      }
+
       let inputSuccess = false;
-      fileInputs.forEach((inp) => {
+      for (const inp of compatibleInputs) {
         try {
           inp.files = dt.files;
           inp.dispatchEvent(new Event("input", { bubbles: true }));
           inp.dispatchEvent(new Event("change", { bubbles: true }));
-          try {
-            if (inp._valueTracker) inp._valueTracker.setValue(Date.now().toString());
-          } catch (e) {}
-          inputSuccess = true;
+          if (inp.files && inp.files.length === 1 && inp.files[0].name === fileName) {
+            inputSuccess = true;
+            break;
+          }
         } catch (e) {}
-      });
+      }
+      if (!inputSuccess) {
+        return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
+      }
 
       // 2. Dispatch Drag & Drop events on dropzones (Google Drive, Dropbox, custom uploaders)
       const dropTargets = [
@@ -1101,9 +1127,16 @@
 
     // 6. Inject the file into Google Drive
     const uploadRes = triggerFileUploadInjection(action);
+    if (!uploadRes?.success) {
+      return {
+        success: false,
+        error: uploadRes?.error || "File upload could not be verified.",
+        details: uploadRes,
+      };
+    }
     return {
       success: true,
-      description: `Opened upload catalog, selected '${fileName}', and uploaded file.`,
+      description: `Selected '${fileName}' and verified it was assigned to a compatible file input.`,
       details: uploadRes,
     };
   }
