@@ -115,12 +115,17 @@ When security barriers (CAPTCHA, Cloudflare Turnstile, payment forms) appear:
 
 ---
 
-## 7. Verification & Retry Status
+## 7. Verification & Retry
 
-> [!IMPORTANT]
-> **Implementation Status: Partially Implemented**
-> - **Current Capabilities**: Low-level browser actions return boolean flags (`ok=True/False`), and `browser.waiter` provides polling utilities (`wait_for_condition`, `wait_for_url_change`, `settle_page`). Step durations and errors are recorded in execution logs.
-> - **Current Limitations**: The system does **not** currently feature an autonomous retry loop with exponential backoff for failed steps, nor does it have an automated post-action state assertion engine that verifies DOM state before advancing.
+The execution loop includes bounded retry and recovery behavior:
+
+- Failed actions are passed through `execute_with_retry_and_fallback` with a bounded retry policy and exponential backoff.
+- The Playwright action executor performs action-level verification.
+- The Chrome Extension path checks action preconditions against the current DOM snapshot and verifies postconditions against a fresh snapshot for supported actions.
+- Failed verification is recorded as an unsuccessful action so the recovery path can inspect the updated page and replan.
+- Final `FINISH` actions pass through goal-completion verification before the task is marked successful.
+
+These checks are not a guarantee that every website interaction is recoverable. Dynamic pages, third-party dialogs, and actions without a reliable observable postcondition still require runtime testing and may need human intervention.
 
 ---
 
