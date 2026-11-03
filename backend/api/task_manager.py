@@ -1185,7 +1185,25 @@ class TaskManager:
                                 action, page_info
                             )
                             if not precondition_ok:
-                                return precondition_note, None, False
+                                # Refresh once and attempt a conservative semantic rebind.
+                                # Never guess when multiple controls share the same label.
+                                try:
+                                    refreshed_page = await controller.parse_interactive_elements()
+                                    healed, heal_note = self._heal_extension_action_target(
+                                        action, page_info, refreshed_page
+                                    )
+                                    if healed:
+                                        retry_ok, retry_note = self._verify_extension_action_precondition(
+                                            action, refreshed_page
+                                        )
+                                        if retry_ok:
+                                            precondition_note = f"{heal_note} {retry_note}"
+                                        else:
+                                            return f"{heal_note} {retry_note}", None, False
+                                    else:
+                                        return f"{precondition_note} {heal_note}", None, False
+                                except Exception as exc:
+                                    return f"{precondition_note} Locator refresh failed: {type(exc).__name__}.", None, False
                         if action.action == ActionType.NAVIGATE:
                             target = action.url or action.text or ""
                             if target:
@@ -1724,6 +1742,64 @@ class TaskManager:
 
                 # Terminal tasks live in the bounded archive/history, not the active registry.
                 self.tasks.pop(task_id, None)
+
+    def _heal_extension_action_target(
+        self,
+        action: BrowserAction,
+        previous_page: Optional[Dict[str, Any]],
+        current_page: Optional[Dict[str, Any]],
+    ) -> tuple[bool, str]:
+        """Rebind a stale element index/selector only when one semantic match exists."""
+        previous_elements = (previous_page or {}).get("elements") or []
+        current_elements = (current_page or {}).get("elements") or []
+        old_target = next((
+            item for item in previous_elements
+            if isinstance(item, dict) and (
+                (action.element_id is not None and item.get("index") == action.element_id)
+                or (action.selector and item.get("selector") == action.selector)
+            )
+        ), None)
+        if not isinstance(old_target, dict):
+            return False, "Locator recovery skipped: the previous target metadata is unavailable."
+
+        identity_fields = ("aria_label", "label", "placeholder", "name", "text")
+        def norm(value: Any) -> str:
+            return re.sub(r"\\s+", " ", str(value or "")).strip().casefold()
+
+        identities = {
+            key: norm(old_target.get(key))
+            for key in identity_fields
+            if norm(old_target.get(key))
+        }
+        tag = norm(old_target.get("tag"))
+        control_type = norm(old_target.get("type"))
+        if not identities:
+            return False, "Locator recovery skipped: the previous target has no stable semantic label."
+
+        candidates = []
+        for item in current_elements:
+            if not isinstance(item, dict) or item.get("visible") is False or item.get("disabled") is True:
+                continue
+            if tag and norm(item.get("tag")) != tag:
+                continue
+            if control_type and norm(item.get("type")) != control_type:
+                continue
+            if any(norm(item.get(key)) == value for key, value in identities.items()):
+                candidates.append(item)
+
+        if len(candidates) != 1:
+            return False, (
+                "Locator recovery was ambiguous: "
+                f"found {len(candidates)} matching visible controls; no action was issued."
+            )
+
+        replacement = candidates[0]
+        action.element_id = replacement.get("index")
+        action.selector = replacement.get("selector") or None
+        return True, (
+            "Recovered stale locator using a unique live-DOM semantic match "
+            f"(element index {action.element_id})."
+        )
 
     def _verify_extension_action_precondition(
         self,
