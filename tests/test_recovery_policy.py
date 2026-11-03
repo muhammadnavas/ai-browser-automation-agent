@@ -83,3 +83,44 @@ async def test_unknown_failure_stops_without_repeated_primary_execution():
     assert execute.await_count == 1
     assert success is False
     assert any("category 'unknown'" in item for item in recovery_log)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached_status", ["completed", "failed", "cancelled"])
+async def test_terminal_task_checkpoint_is_not_restored(cached_status):
+    from api.task_manager import TaskManager
+    from models.schemas import TaskResponse, TaskStatus
+
+    class FakeCache:
+        def generate_key(self, **kwargs):
+            return "checkpoint:terminal"
+
+        async def get_validated(self, key, validator):
+            payload = {
+                "task_id": "task-terminal",
+                "agent_version": "1.0.0",
+                "status": cached_status,
+                "current_step": 5,
+                "initial_plan": ["Open", "Submit"],
+            }
+            return payload if validator(payload) else None
+
+    manager = TaskManager(cache_service=FakeCache())
+    task = TaskResponse(
+        task_id="task-terminal",
+        goal="Test terminal checkpoint",
+        status=TaskStatus.PENDING,
+        created_at=1.0,
+        updated_at=1.0,
+        max_steps=10,
+        steps=[],
+        extracted_data=[],
+        reports={},
+    )
+    manager.tasks[task.task_id] = task
+
+    restored = await manager._restore_cached_task_state(task.task_id)
+
+    assert restored is False
+    assert task.current_step == 0
+    assert task.status == TaskStatus.PENDING
