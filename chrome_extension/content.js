@@ -2000,6 +2000,20 @@
         applyFrameScrollLock();
       });
       lockObserver.observe(document.documentElement, { childList: true, subtree: true });
+      // Propagate the lock to existing and newly inserted child browsing contexts.
+      const broadcastToFrames = (root) => {
+        const frames = [];
+        if (root?.matches?.("iframe,frame")) frames.push(root);
+        if (root?.querySelectorAll) frames.push(...root.querySelectorAll("iframe,frame"));
+        frames.forEach((frame) => {
+          const notify = () => {
+            try { frame.contentWindow?.postMessage({ __aiAgentLockCommand: true, command: "lock_ui" }, "*"); } catch (e) {}
+          };
+          frame.addEventListener("load", notify, { once: true });
+          notify();
+        });
+      };
+      broadcastToFrames(document);
     }
 
     return Boolean(
@@ -2031,6 +2045,27 @@
     });
     restoreFrameScrollLock();
   }
+
+  // Background worker can broadcast lock commands into every frame. The
+  // namespaced event is dispatched in the extension isolated world, not by page JS.
+  window.addEventListener("ai-agent-ui-lock-command", (event) => {
+    const command = event.detail?.command;
+    if (command === "lock_ui") {
+      const locked = lockUI();
+      event.detail.result = locked;
+    } else if (command === "unlock_ui") {
+      unlockUI();
+      event.detail.result = true;
+    }
+  });
+
+  // Also receive lock state from the parent frame for iframes created after
+  // the initial lock broadcast (Google Forms can create upload/auth frames late).
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent || !event.data?.__aiAgentLockCommand) return;
+    if (event.data.command === "lock_ui") lockUI();
+    else if (event.data.command === "unlock_ui") unlockUI();
+  });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
