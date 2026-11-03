@@ -366,7 +366,7 @@ class TaskManager:
             return
 
         task = self.tasks[task_id]
-        await self._restore_cached_task_state(task_id)
+        restored_checkpoint = await self._restore_cached_task_state(task_id)
         task.status = TaskStatus.RUNNING
         task.updated_at = time.time()
         await self.broadcast_task_update(task_id)
@@ -393,8 +393,10 @@ class TaskManager:
         trajectory_history: List[Dict[str, Any]] = []
         user_approval_input: Optional[str] = None   # stores last human approval reply
 
-        # Reset in-flight context memory for this execution run
-        task.context.clear()
+        # Preserve checkpointed context when resuming an existing task. Clearing it
+        # here would discard the very history needed for safe continuation.
+        if not restored_checkpoint:
+            task.context.clear()
         finish_verified = False
 
         try:
@@ -408,15 +410,27 @@ class TaskManager:
             await self.broadcast_task_update(task_id)
 
             plan_start_time = time.time()
-            plan = await planner.generate_plan(
-                goal=req.goal,
-                start_url=req.start_url or "",
-            )
-            plan_duration_ms = round((time.time() - plan_start_time) * 1000, 1)
-            task.initial_plan = plan or []
-            task.plan = plan or []
-            task.plan_status = "planned"
-            task.current_plan_step = 0
+            if restored_checkpoint and task.initial_plan:
+                # Reuse the persisted milestone plan instead of replacing it with a
+                # newly generated plan that would no longer align with saved progress.
+                plan = list(task.initial_plan)
+                plan_duration_ms = 0.0
+                task.plan = list(plan)
+                task.plan_status = "restored"
+                logger.info(
+                    "Task %s restored checkpoint at action %s / plan milestone %s.",
+                    task_id, task.current_step, task.current_plan_step,
+                )
+            else:
+                plan = await planner.generate_plan(
+                    goal=req.goal,
+                    start_url=req.start_url or "",
+                )
+                plan_duration_ms = round((time.time() - plan_start_time) * 1000, 1)
+                task.initial_plan = plan or []
+                task.plan = plan or []
+                task.plan_status = "planned"
+                task.current_plan_step = 0
 
             # Attach plan cache and reuse details to plan_metadata
             cache_info = getattr(planner, "last_plan_cache_result", None) or {
@@ -469,7 +483,10 @@ class TaskManager:
                 if effective_start_url:
                     await controller.navigate(effective_start_url)
 
-            step_num = 1
+            # current_step is the last fully recorded action; continue at the next
+            # step number. The extension opens a fresh task tab, so the planner must
+            # inspect the live page before acting rather than replaying old commands.
+            step_num = max(1, int(task.current_step or 0) + 1) if restored_checkpoint else 1
             consecutive_failures = 0
             task.plan_status = "executing"
             self.cancel_events[task_id] = asyncio.Event()
