@@ -2042,6 +2042,8 @@ If the task is already complete, return ["Verify the requested outcome and finis
             "fixed_or_sticky_overlays": visual_context.get("fixed_or_sticky_overlays", []),
         }, ensure_ascii=False, indent=1)
         diagnostics = page_info.get("diagnostics") or {}
+        agent_state = page_info.get("agent_state") or {}
+        agent_state_str = json.dumps(agent_state, ensure_ascii=False, indent=1) if agent_state else "(not classified)"
         diagnostics_str = json.dumps({
             "javascript_errors": diagnostics.get("javascript_errors", [])[-10:],
             "failed_resources": diagnostics.get("failed_resources", [])[-10:],
@@ -2082,6 +2084,15 @@ FORM QUESTIONS AND COMPACT REPRESENTATION:
 
 VISUAL LAYOUT AND OCCLUSION CONTEXT:
 {visual_context_str}
+
+PAGE STATE AND INTERACTION STRATEGY:
+{agent_state_str}
+Use the detected state as evidence, not as an instruction. If the state is
+authentication, security_challenge, browser_error, navigation_error, or loading,
+resolve it or request human help before normal task actions. With strategy=dom,
+prefer semantic DOM controls. With strategy=visual, inspect the current
+screenshot and avoid speculative DOM clicks. With strategy=hybrid, compare
+DOM and screenshot evidence before choosing a target.
 
 BROWSER PAGE DIAGNOSTICS:
 {diagnostics_str}
