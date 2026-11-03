@@ -681,12 +681,15 @@ async function handleBackendMessage(msg) {
     try {
       await ensureContentScriptInjected(tabId);
       const result = await sendContentMessage(tabId, { type: "lock_ui" });
+      if (!result || result.success !== true || result.data?.locked !== true) {
+        throw new Error(result?.error || "Content script did not confirm the task-tab lock.");
+      }
       sendWsMessage({
         id,
         task_id,
         type: "response",
-        success: result ? result.success : true,
-        data: result,
+        success: true,
+        data: result.data,
       });
     } catch (err) {
       sendWsMessage({
