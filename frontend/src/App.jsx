@@ -1676,7 +1676,6 @@ export default function App() {
             <div className="switcher-left">
               <div className="switcher-label">
                 <span>Tasks</span>
-                <span className="switcher-count-badge">{allTasks.length}</span>
               </div>
               <div className="task-tabs">
                 {visibleTabs.map((task) => (
