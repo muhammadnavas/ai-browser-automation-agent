@@ -65,7 +65,7 @@ python -m pytest tests/test_browser_module.py -k "test_click" -v
 Run the planner-provider, adaptive-replanning, and action-verification regression tests from the repository root:
 
 ```bash
-python -m pytest tests/test_groq_fallback.py tests/test_verification_fallback.py -v
+python -m pytest tests/test_groq_fallback.py tests/test_verification_fallback.py tests/test_recovery_policy.py -v
 ```
 
 The verification tests cover extension action preconditions (target presence, visibility and enabled state), supported postconditions (navigation destination, text values, selected values, checkbox/radio state), and conservative self-healing of stale extension locators. Locator recovery is accepted only for one unique visible, enabled semantic match; ambiguous matches are rejected. Clicks with ambiguous outcomes are deliberately not retried automatically because they may have caused a side effect already.
@@ -107,3 +107,6 @@ The `tests/resources/` directory contains static HTML mockups used to run tests 
 * `popup_demo.html`: Links and scripts triggering popup tabs/windows.
 * `alert_demo.html`: Standard JS triggers (`alert()`, `confirm()`, `prompt()`).
 * `download_demo.html`: Anchor links triggering native file downloads.
+
+
+Recovery policy tests also verify that locator/timeout/navigation failures remain eligible for bounded retries, while extension disconnects, approval/permission failures, and unknown errors stop without repeatedly issuing the action.
