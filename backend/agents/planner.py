@@ -1108,7 +1108,7 @@ class AIAgentPlanner:
                             "message": f"⚡ Plan Cache HIT (Redis): Reused {len(plan_steps)}-step plan from Redis cache",
                             "details": f"Redis Key: {redis_key} • State validated • Instant reuse without AI latency",
                         }
-                        return plan_steps
+                        return self._filter_unrequested_report_steps(goal, plan_steps)
                 else:
                     logger.info(f"Redis plan MISS for goal: '{goal}' — proceeding with fresh generation.")
 
@@ -1141,19 +1141,21 @@ A user has requested the following autonomous browser task:
 GOAL: "{goal}"
 START URL: {start_url or intent_info['target_domain'] or "(determine target site based on goal)"}
 TASK INTENT: {intent_info['category_label']}
-AVAILABLE AGENT TOOLS: {tools_str}, Multi-tab controller, Playwright Action Executor, CSV Report Generator.
+AVAILABLE AGENT TOOLS: {tools_str}, Multi-tab controller, Playwright Action Executor.
 
 Before any browser interaction begins, construct a clear, strategic, task-specific high-level execution plan.
-Each step should represent a meaningful milestone for THIS specific task (e.g. mention specific search terms, target fields, documents to upload, human approval gates, or extraction targets).
+Include ONLY actions and deliverables explicitly requested by the user or strictly necessary to complete that request. Available agent capabilities are NOT user requirements.
 
 Guidelines:
-1. Focus on strategic task milestones (e.g. navigate to target, inspect form/results, enter specific search/data, upload documents if required, review with human before final submit, extract data, generate report).
-2. Do NOT write generic mouse actions (e.g. avoid "Click button" or "Type in input"). Instead write high-level intent (e.g. "Fill applicant contact and employment details").
-3. Keep the plan between 4 and 8 concise steps (max 15 words per step).
-4. Output ONLY a valid JSON array of strings.
+1. Focus on milestones needed for this exact goal (navigation, inspection, requested interactions, verification, and any explicitly requested output).
+2. Do NOT add reports, CSV files, summaries, exports, downloads, screenshots, or other artifacts unless the user explicitly asks for them or they are essential to the stated goal.
+3. Do NOT infer extra deliverables from the available tools or examples. Do not turn a normal form submission into a report-generation task.
+4. Do NOT write generic mouse actions (e.g. avoid "Click button" or "Type in input"). Use high-level intent.
+5. Keep the plan between 3 and 8 concise steps (max 15 words per step).
+6. Output ONLY a valid JSON array of strings.
 
 Output format example:
-["Open the target page", "Search for target query", "Inspect and filter results", "Extract required details", "Generate final CSV summary report"]
+["Open the target page", "Inspect the form and identify required fields", "Fill the requested information", "Review values with the user", "Submit and verify the confirmation message"]
 """
             try:
                 raw = await asyncio.to_thread(self._call_llm, prompt, "application/json")
@@ -1255,7 +1257,24 @@ Output format example:
                 "details": f"Cached in Redis (Key: {redis_key or 'agent_cache:plan:...'}) for instant future reuse",
             }
 
-        return plan
+        return self._filter_unrequested_report_steps(goal, plan)
+
+    @staticmethod
+    def _filter_unrequested_report_steps(goal: str, steps: List[str]) -> List[str]:
+        """Remove report/export milestones unless the user explicitly requested an artifact."""
+        goal_lower = (goal or "").lower()
+        explicitly_requests_artifact = any(
+            term in goal_lower
+            for term in ("report", "csv", "spreadsheet", "excel", "export", "download the results", "save the results")
+        )
+        if explicitly_requests_artifact:
+            return steps
+        artifact_terms = ("report", "csv", "spreadsheet", "excel export", "export results", "summary report")
+        filtered = [
+            step for step in steps
+            if not any(term in str(step).lower() for term in artifact_terms)
+        ]
+        return filtered or steps
 
     def _heuristic_plan(self, goal: str, start_url: str = "") -> List[str]:
         """
@@ -1325,7 +1344,6 @@ Output format example:
                 "Locate requested document or statement download link",
                 "Trigger secure file download via browser downloader",
                 "Verify downloaded file integrity in downloads directory",
-                "Generate final task confirmation report",
             ])
             return plan
 
@@ -1339,7 +1357,7 @@ Output format example:
                 f"Enter search query for '{clean_q or goal}'",
                 "Wait for results to load and inspect entries",
                 "Extract and compile relevant information",
-                "Verify task completion and generate summary report",
+                "Verify the requested information was collected",
             ])
             return plan
 
@@ -1351,8 +1369,7 @@ Output format example:
         plan.extend([
             "Inspect page structure and available interactive elements",
             "Execute the primary automated workflow actions",
-            "Extract results and verify completion",
-            "Finish and present final summary report",
+            "Complete the requested actions and verify their outcomes",
         ])
         return plan
 
