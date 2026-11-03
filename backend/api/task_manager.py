@@ -697,11 +697,7 @@ class TaskManager:
                     logger.warning("Task %s remains on Google's internal cookie-rotation endpoint: %s", task_id, _current_url)
                     if hasattr(controller, "unlock_ui"):
                         await controller.unlock_ui()
-                    try:
-                        if hasattr(controller, "focus_tab"):
-                            await controller.focus_tab()
-                    except Exception as focus_error:
-                        logger.warning("Could not focus original Gmail tab for %s: %s", task_id, focus_error)
+                    # Do not steal browser focus while waiting for manual recovery.
                     task.status = TaskStatus.WAITING_APPROVAL
                     task.plan_status = "waiting_approval"
                     task.error = message
