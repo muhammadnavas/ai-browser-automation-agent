@@ -306,25 +306,19 @@ async function handleBackendMessage(msg) {
   if (type === "open_auth_tab") {
     try {
       const authUrl = msg.url || "https://accounts.google.com/ServiceLogin?service=mail&continue=https%3A%2F%2Fmail.google.com%2Fmail%2F";
-      // Reuse the task's existing tab. Creating a new tab for every recovery
-      // attempt leaves duplicate Gmail tabs and splits the user's session flow.
-      let tab = null;
-      const existingTabId = taskTabMap.get(task_id);
-      if (existingTabId !== undefined) {
-        try {
-          tab = await chrome.tabs.get(existingTabId);
-          await chrome.tabs.update(existingTabId, { url: authUrl, active: true });
-        } catch (tabError) {
-          console.warn("AI Agent: existing task tab unavailable during sign-in recovery:", tabError);
-          tab = null;
-        }
+      // Create a separate, visible tab so the user can clearly see and complete
+      // Google's security challenge. Keep the new tab mapped to this task so
+      // subsequent focus/inspection commands target the recovered session.
+      const oldTabId = taskTabMap.get(task_id);
+      const tab = await chrome.tabs.create({ url: authUrl, active: true });
+
+      if (oldTabId !== undefined && oldTabId !== tab.id) {
+        tabTaskMap.delete(oldTabId);
       }
-      if (!tab) {
-        tab = await chrome.tabs.create({ url: authUrl, active: true });
-        taskTabMap.set(task_id, tab.id);
-        tabTaskMap.set(tab.id, task_id);
-        await saveMappings();
-      }
+      taskTabMap.set(task_id, tab.id);
+      tabTaskMap.set(tab.id, task_id);
+      await saveMappings();
+
       if (tab.windowId !== undefined) {
         const win = await chrome.windows.get(tab.windowId);
         if (win.state === "minimized") {
@@ -332,16 +326,23 @@ async function handleBackendMessage(msg) {
         }
         await chrome.windows.update(tab.windowId, { focused: true });
       }
+
       await waitForTabLoaded(tab.id, 15000);
       const openedTab = await chrome.tabs.get(tab.id);
       sendWsMessage({
         id, task_id, type: "response", success: true,
-        data: { tab_id: tab.id, url: openedTab.url || authUrl, active: openedTab.active },
+        data: {
+          tab_id: tab.id,
+          url: openedTab.url || authUrl,
+          active: openedTab.active,
+          window_id: openedTab.windowId,
+        },
       });
     } catch (err) {
+      console.error("AI Agent: failed to create visible Google sign-in tab:", err);
       sendWsMessage({
         id, task_id, type: "response", success: false,
-        error: `Could not open Google sign-in tab: ${err.message}`,
+        error: `Could not create a visible Google sign-in tab: ${err.message}`,
       });
     }
     return;
