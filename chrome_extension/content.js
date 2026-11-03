@@ -1746,16 +1746,8 @@
   // but the user must remain free to interact with the page and switch tabs.
   // The indicator deliberately uses the agent's dark green / mint palette.
   function lockUI() {
-    // Also neutralize listeners installed by the previous blocking lock
-    // implementation if this content-script context survived an extension
-    // update or hot reload.
-    LOCKED_EVENT_TYPES.forEach((type) => {
-      window.removeEventListener(type, handleAgentLockEvent, true);
-      document.removeEventListener(type, handleAgentLockEvent, true);
-    });
-
-    // Antigravity-style task outline: visual-only and never intercepts
-    // pointer, keyboard, scrolling, or tab interaction.
+    // This lock is scoped to the task page only. It blocks trusted user input
+    // inside this page while leaving Chrome's tab strip and other tabs usable.
     let border = document.getElementById("ai-agent-running-border");
     if (!border) {
       border = document.createElement("div");
@@ -1764,61 +1756,66 @@
         position: "fixed",
         inset: "0",
         zIndex: "2147483646",
-        border: "3px solid rgba(52, 211, 153, 0.9)",
-        boxShadow: "inset 0 0 0 1px rgba(167, 243, 208, 0.28), inset 0 0 18px rgba(52, 211, 153, 0.10)",
+        border: "3px solid rgba(52, 211, 153, 0.92)",
+        boxShadow: "inset 0 0 0 1px rgba(167, 243, 208, 0.3), inset 0 0 18px rgba(52, 211, 153, 0.12)",
         borderRadius: "2px",
+        background: "transparent",
+        pointerEvents: "auto",
+        cursor: "not-allowed",
+        userSelect: "none",
+        boxSizing: "border-box",
+      });
+      // The overlay intercepts physical pointer input on this page only.
+      // Programmatic DOM actions from the extension do not hit this overlay.
+      (document.body || document.documentElement).appendChild(border);
+    }
+
+    // Block trusted hardware events at capture phase. Synthetic events issued
+    // by this extension (isTrusted === false) continue to work normally.
+    LOCKED_EVENT_TYPES.forEach((type) => {
+      window.removeEventListener(type, handleAgentLockEvent, true);
+      document.removeEventListener(type, handleAgentLockEvent, true);
+      window.addEventListener(type, handleAgentLockEvent, true);
+      document.addEventListener(type, handleAgentLockEvent, true);
+    });
+
+    let indicator = document.getElementById("ai-agent-ui-lock");
+    if (!indicator) {
+      indicator = document.createElement("div");
+      indicator.id = "ai-agent-ui-lock";
+      indicator.setAttribute("role", "status");
+      indicator.setAttribute("aria-live", "polite");
+      Object.assign(indicator.style, {
+        position: "fixed",
+        top: "12px",
+        right: "16px",
+        zIndex: "2147483647",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "8px",
+        padding: "8px 12px",
+        borderRadius: "10px",
+        border: "1px solid rgba(52, 211, 153, 0.42)",
+        background: "rgba(8, 20, 16, 0.96)",
+        color: "#a7f3d0",
+        font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
+        letterSpacing: "0.01em",
+        boxShadow: "0 6px 22px rgba(0, 0, 0, 0.22)",
         pointerEvents: "none",
         userSelect: "none",
         boxSizing: "border-box",
       });
-      (document.body || document.documentElement).appendChild(border);
+      const dot = document.createElement("span");
+      Object.assign(dot.style, {
+        width: "7px", height: "7px", flex: "0 0 7px",
+        borderRadius: "50%", background: "#34d399",
+        boxShadow: "0 0 8px rgba(52, 211, 153, 0.65)",
+      });
+      const label = document.createElement("span");
+      label.textContent = "AI agent running";
+      indicator.append(dot, label);
+      (document.body || document.documentElement).appendChild(indicator);
     }
-
-    const existing = document.getElementById("ai-agent-ui-lock");
-    if (existing) return;
-
-    const indicator = document.createElement("div");
-    indicator.id = "ai-agent-ui-lock";
-    indicator.setAttribute("role", "status");
-    indicator.setAttribute("aria-live", "polite");
-    Object.assign(indicator.style, {
-      position: "fixed",
-      top: "12px",
-      right: "16px",
-      zIndex: "2147483647",
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "8px",
-      padding: "8px 12px",
-      borderRadius: "10px",
-      border: "1px solid rgba(52, 211, 153, 0.38)",
-      background: "rgba(8, 20, 16, 0.94)",
-      color: "#a7f3d0",
-      font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
-      letterSpacing: "0.01em",
-      boxShadow: "0 6px 22px rgba(0, 0, 0, 0.22)",
-      pointerEvents: "none",
-      userSelect: "none",
-      webkitUserSelect: "none",
-      backdropFilter: "blur(10px)",
-      boxSizing: "border-box",
-    });
-
-    const dot = document.createElement("span");
-    Object.assign(dot.style, {
-      width: "7px",
-      height: "7px",
-      flex: "0 0 7px",
-      borderRadius: "50%",
-      background: "#34d399",
-      boxShadow: "0 0 8px rgba(52, 211, 153, 0.65)",
-    });
-
-    const label = document.createElement("span");
-    label.textContent = "AI agent running";
-
-    indicator.append(dot, label);
-    (document.body || document.documentElement).appendChild(indicator);
   }
 
   function unlockUI() {
