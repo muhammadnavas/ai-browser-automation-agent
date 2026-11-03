@@ -634,44 +634,55 @@ class TaskManager:
                 if _current_url:
                     task.context.record_visit(_current_url)
 
+                # Google can briefly traverse RotateCookiesPage during Gmail
+                # navigation and then return to the authenticated Gmail app.
+                # Confirm the live URL before treating that transient redirect
+                # as a blocking account challenge.
+                if "accounts.google.com/RotateCookiesPage" in _current_url:
+                    for _challenge_check in range(3):
+                        await asyncio.sleep(1)
+                        try:
+                            live_info = await controller.parse_interactive_elements()
+                            live_url = (
+                                live_info.get("url")
+                                or getattr(controller, "current_url", "")
+                                or ""
+                            )
+                            if live_url and "accounts.google.com/RotateCookiesPage" not in live_url:
+                                page_info = live_info
+                                _current_url = live_url
+                                if _current_url.startswith(("https://mail.google.com/", "http://mail.google.com/")):
+                                    logger.info(
+                                        "Task %s: Google cookie-rotation redirect was transient; Gmail is live at %s",
+                                        task_id, _current_url
+                                    )
+                                break
+                        except Exception as challenge_check_error:
+                            logger.debug(
+                                "Could not confirm transient Google redirect for %s: %s",
+                                task_id, challenge_check_error
+                            )
+
                 if "accounts.google.com/RotateCookiesPage" in _current_url:
                     # Google requires the account owner to resolve this session
                     # challenge. Do not attempt to bypass it or fail the whole
                     # task immediately: pause and let the user recover the same
                     # connected Chrome tab, then resume from a fresh DOM snapshot.
                     message = (
-                        "Gmail reached Google's cookie-rotation page. A separate recovery tab will open with the "
-                        "exact detected URL; the original Gmail task tab will remain mapped and untouched. "
-                        "Complete any security step Google presents in the recovery tab. Then return here and "
-                        "approve so the agent can reload Gmail and verify the session. Approval alone cannot "
-                        "bypass Google's checks. No email has been composed or sent yet."
+                        "Gmail is still on Google's internal cookie-rotation endpoint after repeated live checks. "
+                        "This endpoint is not a user-facing recovery form and may appear blank; the agent will not "
+                        "open duplicate blank tabs or attempt to bypass Google's session controls. Open Gmail "
+                        "manually in the original task tab. Once Gmail is usable, return here and approve to resume. "
+                        "No email has been composed or sent yet."
                     )
-                    logger.warning("Task %s paused on Google's cookie-rotation page: %s", task_id, _current_url)
+                    logger.warning("Task %s remains on Google's internal cookie-rotation endpoint: %s", task_id, _current_url)
                     if hasattr(controller, "unlock_ui"):
                         await controller.unlock_ui()
-
-                    # Open the exact observed URL in a second tab. The extension
-                    # deliberately does not remap task_id, so the original Gmail
-                    # tab remains the source of truth for session verification.
                     try:
-                        if not hasattr(controller, "open_recovery_tab"):
-                            raise RuntimeError("The connected Chrome extension does not support separate recovery tabs.")
-                        recovery_tab = await controller.open_recovery_tab(_current_url)
-                        logger.info(
-                            "Opened separate Google recovery tab for task %s: tab_id=%s url=%s",
-                            task_id, recovery_tab.get("tab_id"), recovery_tab.get("url")
-                        )
-                    except Exception as recovery_tab_error:
-                        logger.exception("Could not open separate Google recovery tab for %s", task_id)
-                        task.status = TaskStatus.FAILED
-                        task.plan_status = "failed"
-                        task.error = (
-                            "Google's cookie-rotation page was detected, but a separate recovery tab could not "
-                            f"be opened: {recovery_tab_error}. Reload the Chrome extension and retry."
-                        )
-                        task.updated_at = time.time()
-                        await self.broadcast_task_update(task_id)
-                        break
+                        if hasattr(controller, "focus_tab"):
+                            await controller.focus_tab()
+                    except Exception as focus_error:
+                        logger.warning("Could not focus original Gmail tab for %s: %s", task_id, focus_error)
                     task.status = TaskStatus.WAITING_APPROVAL
                     task.plan_status = "waiting_approval"
                     task.error = message
