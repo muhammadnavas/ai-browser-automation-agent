@@ -356,6 +356,7 @@ def classify_browser_error(error: Any) -> str:
         return "approval_or_permission"
     if any(token in message for token in (
         "timeout", "timed out", "deadline exceeded", "waiting for",
+        "did not become ready", "not become ready",
     )):
         return "timeout"
     if any(token in message for token in (

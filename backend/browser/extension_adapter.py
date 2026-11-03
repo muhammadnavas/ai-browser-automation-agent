@@ -290,6 +290,8 @@ class ExtensionBrowserAdapter:
         self._current_url = data.get("url", initial_url or "")
         self.is_running = True
         logger.info(f"Task {self.task_id} initialized with Chrome tab #{tab_id}")
+        if initial_url and initial_url != "about:blank":
+            await self.lock_ui()
 
     async def navigate(self, url: str) -> str:
         """Navigates the task's Chrome tab to the specified URL."""
@@ -307,6 +309,7 @@ class ExtensionBrowserAdapter:
 
         data = resp.get("data", {})
         self._current_url = data.get("url", url)
+        await self.lock_ui()
         return self._current_url
 
     async def parse_interactive_elements(self) -> Dict[str, Any]:
@@ -462,6 +465,10 @@ class ExtensionBrowserAdapter:
     async def stop(self) -> None:
         """Releases the task tab and cleans up."""
         self.is_running = False
+        try:
+            await self.unlock_ui()
+        except Exception:
+            pass
         try:
             await self.clear_badges()
         except Exception:

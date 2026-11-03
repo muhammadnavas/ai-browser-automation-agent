@@ -661,6 +661,54 @@ async function handleBackendMessage(msg) {
     }
     return;
   }
+
+  // ── 8. Lock UI ──
+  if (type === "lock_ui") {
+    try {
+      await ensureContentScriptInjected(tabId);
+      const result = await sendContentMessage(tabId, { type: "lock_ui" });
+      sendWsMessage({
+        id,
+        task_id,
+        type: "response",
+        success: result ? result.success : true,
+        data: result,
+      });
+    } catch (err) {
+      sendWsMessage({
+        id,
+        task_id,
+        type: "response",
+        success: false,
+        error: `Failed to lock UI: ${err.message}`,
+      });
+    }
+    return;
+  }
+
+  // ── 9. Unlock UI ──
+  if (type === "unlock_ui") {
+    try {
+      await ensureContentScriptInjected(tabId);
+      const result = await sendContentMessage(tabId, { type: "unlock_ui" });
+      sendWsMessage({
+        id,
+        task_id,
+        type: "response",
+        success: result ? result.success : true,
+        data: result,
+      });
+    } catch (err) {
+      sendWsMessage({
+        id,
+        task_id,
+        type: "response",
+        success: false,
+        error: `Failed to unlock UI: ${err.message}`,
+      });
+    }
+    return;
+  }
 }
 
 // ---------------------------------------------------------------------------

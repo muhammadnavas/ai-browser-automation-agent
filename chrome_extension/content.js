@@ -157,6 +157,19 @@
   // ---------------------------------------------------------------------------
 
   function inspectPageDOM(showBadges) {
+    const lockEl = document.getElementById("ai-agent-ui-lock");
+    const prevLockPointerEvents = lockEl ? lockEl.style.pointerEvents : null;
+    if (lockEl) lockEl.style.pointerEvents = "none";
+    try {
+      return _inspectPageDOMInternal(showBadges);
+    } finally {
+      if (lockEl && prevLockPointerEvents !== null) {
+        lockEl.style.pointerEvents = prevLockPointerEvents;
+      }
+    }
+  }
+
+  function _inspectPageDOMInternal(showBadges) {
     // 1. Remove old overlays
     document.querySelectorAll(".ai-agent-badge").forEach((e) => e.remove());
 
@@ -1314,23 +1327,40 @@
       }
 
       // A Gmail Compose click is asynchronous: wait for the actual compose
-      // dialog and recipient control before allowing the next planner snapshot.
+      // dialog and recipient/body control before allowing the next planner snapshot.
       if (location.hostname === "mail.google.com" && /compose/i.test(
         [action.text, action.reasoning, action.selector].filter(Boolean).join(" ")
       )) {
-        const deadline = Date.now() + 7000;
+        const deadline = Date.now() + 10000;
         let composeReady = false;
+        const composeFieldSelectors = [
+          'input[name="to"]',
+          'input[aria-label*="To" i]',
+          'input[aria-label*="Recipients" i]',
+          'input[placeholder*="Recipients" i]',
+          'input[peoplekit-id]',
+          'input[role="combobox"]',
+          'div[role="combobox"]',
+          'textarea[name="to"]',
+          '[contenteditable="true"][aria-label*="Message Body" i]',
+          '[contenteditable="true"][g_editable="true"]',
+          'input[name="subjectbox"]'
+        ].join(", ");
+
         while (Date.now() < deadline) {
-          const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .M9'))
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .M9, [aria-label*="New Message" i], [aria-label*="Compose" i], [aria-label*="Draft" i], div.AD, div.inboxsdk__compose'))
             .filter(isVisibleActionTarget);
-          composeReady = dialogs.some((dialog) =>
-            dialog.querySelector('input[name="to"], input[aria-label="To recipients"], input[placeholder="Recipients"]')
-          );
-          if (composeReady) break;
+          const hasFieldInDialog = dialogs.some((dialog) => dialog.querySelector(composeFieldSelectors));
+          const hasVisibleFieldDirect = Array.from(document.querySelectorAll(composeFieldSelectors)).some(isVisibleActionTarget);
+
+          if (hasFieldInDialog || hasVisibleFieldDirect) {
+            composeReady = true;
+            break;
+          }
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
         if (!composeReady) {
-          return { success: false, error: "Gmail Compose was clicked, but the compose recipient field did not become ready within 7 seconds. Refresh the DOM and recover; do not click Compose again blindly." };
+          return { success: false, error: "Gmail Compose was clicked, but the compose recipient field did not become ready within 10 seconds. Refresh the DOM and recover; do not click Compose again blindly." };
         }
       }
 
@@ -1692,11 +1722,23 @@
   // Message Listener (from background.js)
   // ---------------------------------------------------------------------------
 
-  function handleAgentLockEscape(event) {
-    if (event.key === "Escape" && event.altKey && event.shiftKey) {
+  const LOCKED_EVENT_TYPES = [
+    "pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick",
+    "contextmenu", "wheel", "touchstart", "touchend", "dragstart",
+    "keydown", "keypress", "keyup", "beforeinput", "input", "paste"
+  ];
+
+  function handleAgentLockEvent(event) {
+    // Synthetic automation events dispatched by extension have isTrusted === false.
+    // Real hardware inputs from human user have isTrusted === true.
+    if (event.isTrusted) {
+      if (event.type === "keydown" && event.key === "Escape" && event.altKey && event.shiftKey) {
+        unlockUI();
+        return;
+      }
       event.preventDefault();
+      event.stopPropagation();
       event.stopImmediatePropagation();
-      unlockUI();
     }
   }
 
@@ -1711,51 +1753,53 @@
       zIndex: "2147483646",
       pointerEvents: "auto",
       cursor: "not-allowed",
-      background: "rgba(2, 12, 8, 0.035)",
-      border: "2px solid rgba(52, 255, 155, 0.88)",
-      boxShadow: "inset 0 0 34px rgba(30, 255, 142, 0.16), inset 0 0 0 1px rgba(52, 255, 155, 0.28)",
+      background: "rgba(2, 12, 8, 0.04)",
+      border: "3px solid rgba(52, 255, 155, 0.92)",
+      boxShadow: "inset 0 0 40px rgba(30, 255, 142, 0.22), inset 0 0 0 1px rgba(52, 255, 155, 0.35)",
       boxSizing: "border-box",
+      userSelect: "none",
+      webkitUserSelect: "none",
     });
 
     const status = document.createElement("div");
-    status.textContent = "AI AGENT CONTROL ACTIVE  ·  ALT + SHIFT + ESC TO RELEASE";
+    status.innerHTML = "&#128274; BROWSER LOCKED BY AI AGENT &nbsp;&middot;&nbsp; ALT + SHIFT + ESC TO RELEASE";
     Object.assign(status.style, {
       position: "fixed",
       top: "14px",
       left: "50%",
       transform: "translateX(-50%)",
-      padding: "9px 15px",
+      padding: "10px 18px",
       borderRadius: "999px",
-      border: "1px solid rgba(52, 255, 155, 0.55)",
-      background: "rgba(3, 24, 15, 0.94)",
+      border: "1px solid rgba(52, 255, 155, 0.75)",
+      background: "rgba(3, 24, 15, 0.96)",
       color: "#6dffb4",
-      font: "600 11px/1.2 system-ui, sans-serif",
-      letterSpacing: "0.12em",
-      boxShadow: "0 0 18px rgba(30, 255, 142, 0.32), 0 0 42px rgba(30, 255, 142, 0.14)",
-      textShadow: "0 0 10px rgba(52, 255, 155, 0.5)",
+      font: "700 12px/1.2 system-ui, -apple-system, sans-serif",
+      letterSpacing: "0.14em",
+      boxShadow: "0 0 20px rgba(30, 255, 142, 0.4), 0 0 45px rgba(30, 255, 142, 0.2)",
+      textShadow: "0 0 12px rgba(52, 255, 155, 0.6)",
       pointerEvents: "none",
       whiteSpace: "nowrap",
+      zIndex: "2147483647",
     });
     lock.appendChild(status);
 
-    // Block physical interaction with the page while the agent owns this tab.
-    // Synthetic DOM events dispatched by the extension continue to work.
-    ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick",
-      "contextmenu", "wheel", "touchstart", "touchend", "dragstart"].forEach((type) => {
-      lock.addEventListener(type, (event) => {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-      }, { capture: true });
+    // Capture and prevent all physical hardware user interactions on window & document
+    LOCKED_EVENT_TYPES.forEach((type) => {
+      window.addEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
+      document.addEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
     });
 
     document.documentElement.appendChild(lock);
-    document.addEventListener("keydown", handleAgentLockEscape, true);
   }
 
   function unlockUI() {
     const lock = document.getElementById("ai-agent-ui-lock");
     if (lock) lock.remove();
-    document.removeEventListener("keydown", handleAgentLockEscape, true);
+
+    LOCKED_EVENT_TYPES.forEach((type) => {
+      window.removeEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
+      document.removeEventListener(type, handleAgentLockEvent, { capture: true, passive: false });
+    });
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
