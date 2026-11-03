@@ -115,3 +115,5 @@ Checkpoint restoration preserves the saved plan, action counters, and structured
 
 
 Checkpoint recovery regression tests verify that saved progress, plan milestones, and task context are restored, while terminal checkpoints (completed, failed, cancelled) are rejected. Restored plan-version metadata is preserved during startup. Continuation uses a fresh extension task tab and must inspect live page state; it does not recreate a prior authenticated tab or guarantee safe recovery from an unknown in-flight side effect.
+
+Live resume validation stores the last confirmed action's page URL in the execution checkpoint. On restoration, the agent opens that URL in a new extension-managed tab, inspects the page, and compares the actual URL before allowing another action. Missing or mismatched checkpoints fail closed. This verifies URL continuity only; it does not prove that every server-side effect or page-local state was preserved.
