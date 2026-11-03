@@ -2111,12 +2111,12 @@ class TaskManager:
         if action_type in (ActionType.UPLOAD, ActionType.UPLOAD_FILE):
             expected_names = []
             if getattr(action, "file_name", None):
-                expected_names.append(str(action.file_name).replace("\\\\", "/").split("/")[-1].lower())
+                expected_names.append(str(action.file_name).replace("\\", "/").split("/")[-1].lower())
             for path in (getattr(action, "upload_paths", None) or []):
-                expected_names.append(str(path).replace("\\\\", "/").split("/")[-1].lower())
+                expected_names.append(str(path).replace("\\", "/").split("/")[-1].lower())
             if target_field is not None:
                 get = target_field.get if isinstance(target_field, dict) else lambda key, default=None: getattr(target_field, key, default)
-                actual = str(get("current_value", "") or "").replace("\\\\", "/").split("/")[-1].lower()
+                actual = str(get("current_value", "") or "").replace("\\", "/").split("/")[-1].lower()
                 if actual and (not expected_names or any(name in actual for name in expected_names)):
                     return True, "Uploaded filename is visible in the target file input."
                 return False, "Upload postcondition failed: the expected filename is not present in the target file input."
