@@ -547,7 +547,7 @@
     const actionKind = String(action.action || "").toLowerCase();
     if (["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind)) {
       const reasoning = String(action.reasoning || "");
-      const quotedField = reasoning.match(/(?:the\\s+)?['"“]([^'"”]+)['"”]\\s+(?:field|question|input)/i);
+      const quotedField = reasoning.match(/(?:the\s+)?['"“]([^'"”]+)['"”]\s+(?:field|question|input)/i);
       const fieldLabel = String(action.field_label || action.label || (quotedField && quotedField[1]) || "").trim().toLowerCase();
       if (fieldLabel) {
         const controls = Array.from(document.querySelectorAll(
