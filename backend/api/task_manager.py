@@ -1924,7 +1924,7 @@ class TaskManager:
 
         identity_fields = ("aria_label", "label", "placeholder", "name", "text")
         def norm(value: Any) -> str:
-            return re.sub(r"\\s+", " ", str(value or "")).strip().casefold()
+            return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
         identities = {
             key: norm(old_target.get(key))
@@ -2004,12 +2004,12 @@ class TaskManager:
             # Rebind dynamic upload controls from live page text instead of
             # rejecting a stale index before the extension can inspect the DOM.
             if action.action == ActionType.CLICK and re.search(
-                r"add\\s+file|choose\\s+file|browse|upload\\s+file|attach\\s+file",
+                r"add\s+file|choose\s+file|browse|upload\s+file|attach\s+file",
                 f"{action_text} {reasoning}", re.IGNORECASE
             ):
                 return True, "Stale upload locator; live semantic resolution will be used."
             if action.action in (ActionType.FILL, ActionType.FILL_FIELD, ActionType.TYPE_TEXT, ActionType.SELECT, ActionType.SELECT_OPTION):
-                label_match = re.search(r"""['"“]([^'"”]+)['"”]\\s+(?:field|question|input)""", reasoning, re.IGNORECASE)
+                label_match = re.search(r"""['"“]([^'"”]+)['"”]\s+(?:field|question|input)""", reasoning, re.IGNORECASE)
                 if label_match:
                     wanted = label_match.group(1).strip().lower()
                     fields = (page_info or {}).get("form_fields") or []
