@@ -592,6 +592,20 @@
       }
     }
 
+    // Google Forms re-renders question cards and changes nth-of-type
+    // selectors as sections/files load. For a fill action, never trust a
+    // positional CSS selector when the planner did not identify the question.
+    // Returning null forces a fresh inspection/replan instead of corrupting a
+    // neighbouring field.
+    if (
+      ["fill", "fill_field", "type_text"].includes(actionKind) &&
+      location.hostname === "docs.google.com" &&
+      /\\/forms\\//.test(location.pathname) &&
+      !fieldLabel
+    ) {
+      return null;
+    }
+
     // Prefer live Gmail compose controls over stale snapshot indexes/selectors.
     const gmailTarget = findGmailTarget(action);
     if (gmailTarget) return gmailTarget;
