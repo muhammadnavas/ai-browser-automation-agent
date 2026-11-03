@@ -581,7 +581,9 @@ async function handleBackendMessage(msg) {
   // ── 6. Execute Browser Action ──
   if (type === "execute_action") {
     try {
-      await focusTaskTab(tabId);
+      // Execute against the mapped task tab without activating it. This lets
+      // the user keep working in other Chrome tabs while automation continues.
+      // Explicit focus is reserved for user-requested recovery flows only.
       const action = msg.action || {};
 
       // FINISH is a task-control action, not a page interaction. It must not
