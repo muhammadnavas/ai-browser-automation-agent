@@ -241,7 +241,10 @@ def generate_clean_mock_file(category: str = "image", filename: Optional[str] = 
             # Clean header text
             draw.rectangle([100, 340, 320, 375], fill=(255, 255, 255), outline=(59, 130, 246))
             draw.text((120, 350), "STUDENT PHOTOGRAPH", fill=(30, 41, 59))
-            img.save(target_path, format="JPEG", quality=92)
+            if target_path.lower().endswith(".png"):
+                img.save(target_path, format="PNG")
+            else:
+                img.save(target_path, format="JPEG", quality=92)
             logger.info(f"Generated clean mock portrait photograph at: {target_path}")
             return target_path
         except Exception as e:
@@ -429,10 +432,41 @@ def get_user_system_file(
     ]
 
     valid_extensions: Set[str] = (
-        CATEGORY_EXTENSIONS.get(target_category, ALL_VALID_EXTENSIONS)
+        set(CATEGORY_EXTENSIONS.get(target_category, ALL_VALID_EXTENSIONS))
         if target_category
-        else ALL_VALID_EXTENSIONS
+        else set(ALL_VALID_EXTENSIONS)
     )
+
+    # Honor the actual file input accept attribute, not just the question text.
+    # This prevents selecting a JPEG when the target input only accepts PDF/PNG.
+    if accept_types:
+        accepted_extensions: Set[str] = set()
+        mime_extensions = {
+            "image/jpeg": {".jpg", ".jpeg"},
+            "image/png": {".png"},
+            "image/webp": {".webp"},
+            "application/pdf": {".pdf"},
+            "text/csv": {".csv"},
+            "application/zip": {".zip"},
+        }
+        for raw_rule in accept_types.split(","):
+            rule = raw_rule.strip().lower()
+            if not rule:
+                continue
+            if rule.startswith("."):
+                accepted_extensions.add(rule)
+            elif rule == "image/*":
+                accepted_extensions.update(CATEGORY_EXTENSIONS["image"])
+            elif rule in mime_extensions:
+                accepted_extensions.update(mime_extensions[rule])
+        if accepted_extensions:
+            valid_extensions.intersection_update(accepted_extensions)
+            if not valid_extensions:
+                logger.warning(
+                    "No supported local/mock file extension matches accept='%s' and category='%s'",
+                    accept_types, target_category
+                )
+                return None
 
     # 3. Recursive directory traversal (travel into folders!)
     candidates: List[Tuple[float, str, str, str]] = []  # (score, path, filename, folder_name)
@@ -531,7 +565,14 @@ def get_user_system_file(
 
     # 5. Guaranteed Fallback: dynamically generate clean mock file of correct category
     cat_to_generate = target_category or "image"
-    logger.info(f"No local candidate found on system. Generating guaranteed mock file for category '{cat_to_generate}'.")
+    if accept_types and valid_extensions:
+        # Pick a generator-supported extension that is explicitly accepted.
+        preferred = next((ext for ext in (".png", ".jpg", ".jpeg", ".pdf", ".csv") if ext in valid_extensions), None)
+        if preferred and cat_to_generate == "image":
+            target_filename = f"mock_photograph{preferred}"
+        elif preferred and cat_to_generate in ("document", "resume") and preferred == ".pdf":
+            target_filename = "mock_document.pdf"
+    logger.info(f"No local candidate found on system. Generating mock file for category '{cat_to_generate}' with accepted extensions {sorted(valid_extensions)}.")
     generated_path = generate_clean_mock_file(category=cat_to_generate, filename=target_filename, context_text=combined_context)
     return _format_file_info(generated_path)
 
