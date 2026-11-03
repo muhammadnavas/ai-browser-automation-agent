@@ -559,7 +559,12 @@
     if (["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind)) {
       const reasoning = String(action.reasoning || "");
       const quotedField = reasoning.match(/(?:the\s+)?['"“]([^'"”]+)['"”]\s+(?:field|question|input)/i);
-      const fieldLabel = String(action.field_label || action.label || (quotedField && quotedField[1]) || "").trim().toLowerCase();
+      const describedField = reasoning.match(/(?:fill|enter|type|populate|update)\s+(?:in\s+)?(?:the\s+)?["'“]?([^"'”]+?)["'”]?\s+(?:field|question|input)\b/i);
+      const fieldLabel = String(
+        action.field_label || action.label ||
+        (quotedField && quotedField[1]) ||
+        (describedField && describedField[1]) || ""
+      ).trim().toLowerCase();
       if (fieldLabel) {
         const normalize = (value) => String(value || "")
           .toLowerCase().replace(/[＊*]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
@@ -1702,6 +1707,14 @@
       target.focus();
       animateVirtualCursor(target);
       const textToType = String(val ?? "");
+      const currentText = target.isContentEditable ? (target.textContent || "") : String(target.value ?? "");
+      if (currentText.trim() === textToType.trim()) {
+        return {
+          success: true,
+          description: `Field '${inferLabel(target) || action.field_label || action.label || "target"}' already contains the requested value; left unchanged.`,
+          details: { unchanged: true, verified_value: currentText },
+        };
+      }
 
       // Use the native value setter so framework-controlled inputs (including
       // Google Forms) observe the update. Character-by-character synthetic
