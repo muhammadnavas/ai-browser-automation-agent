@@ -600,7 +600,7 @@
     if (
       ["fill", "fill_field", "type_text"].includes(actionKind) &&
       location.hostname === "docs.google.com" &&
-      /\\/forms\\//.test(location.pathname) &&
+      /\/forms\//.test(location.pathname) &&
       !fieldLabel
     ) {
       return null;
