@@ -1584,7 +1584,7 @@
         target.dispatchEvent(new Event("change", { bubbles: true }));
 
         // Verify the value before reporting success.
-        const actualValue = target.isContentEditable ? (el.textContent || "") : (target.value ?? "");
+        const actualValue = target.isContentEditable ? (target.textContent || "") : (target.value ?? "");
         if (String(actualValue).trim() !== textToType.trim()) {
           return { success: false, error: "Field value did not match the requested text after input." };
         }
