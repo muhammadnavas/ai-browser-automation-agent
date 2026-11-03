@@ -450,20 +450,31 @@
     ].filter(Boolean).join(" ").toLowerCase();
 
     if (kind === "click" && /compose/.test(context)) {
+      // Gmail re-renders its toolbar frequently. Resolve Compose from the live
+      // page instead of trusting an index/selector captured by an earlier scan.
       const candidates = [
         '[role="button"][gh="cm"]',
-        'div[role="button"][aria-label="Compose"]',
+        '[gh="cm"]',
+        '[role="button"][data-tooltip="Compose"]',
+        '[data-tooltip="Compose"]',
+        '[role="button"][aria-label="Compose"]',
+        '[aria-label="Compose"]',
         'button[aria-label="Compose"]',
-        '[role="button"][data-tooltip="Compose"]'
+        '[role="button"][aria-label^="Compose "]',
+        '[data-testid="compose"]'
       ];
       for (const selector of candidates) {
         const el = Array.from(document.querySelectorAll(selector)).find(isVisibleActionTarget);
-        if (el) return el;
+        if (el) return el.closest('[role="button"],button') || el;
       }
-      const byText = Array.from(document.querySelectorAll('button,[role="button"]'))
+      const byText = Array.from(document.querySelectorAll('button,[role="button"],[gh="cm"],.T-I'))
         .find((el) => isVisibleActionTarget(el) &&
-          (el.innerText || el.getAttribute("aria-label") || "").trim().toLowerCase() === "compose");
+          (el.innerText || el.getAttribute("aria-label") || el.getAttribute("data-tooltip") || "")
+            .trim().toLowerCase() === "compose");
       if (byText) return byText;
+      // Critical: do not fall through to a stale numeric element index. A
+      // failed semantic lookup must fail safely rather than click another control.
+      return null;
     }
 
     if (["fill", "type_text", "fill_field"].includes(kind)) {
@@ -508,6 +519,18 @@
     // Prefer live Gmail compose controls over stale snapshot indexes/selectors.
     const gmailTarget = findGmailTarget(action);
     if (gmailTarget) return gmailTarget;
+
+    // If the planner explicitly intended Compose but Gmail's current DOM did
+    // not expose a matching control, never fall back to a stale index.
+    const gmailClickContext = [
+      action.reasoning, action.label, action.field_label, action.text,
+      action.selector, action.goal
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (
+      location.hostname === "mail.google.com" &&
+      String(action.action || "").toLowerCase() === "click" &&
+      /compose/.test(gmailClickContext)
+    ) return null;
 
     // The planner sometimes serializes an inspected numeric element index as
     // "selector": "10" instead of "element_id": 10. Resolve that form against
