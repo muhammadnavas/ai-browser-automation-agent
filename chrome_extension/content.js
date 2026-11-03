@@ -285,6 +285,7 @@
         visible: true,
         center_hit: centerHit,
         placeholder: el.placeholder || "",
+        accept: el.getAttribute("accept") || "",
         href: el.href || "",
         value: tag === "select" ? el.options[el.selectedIndex]?.value || "" : el.value || "",
         rect: {
