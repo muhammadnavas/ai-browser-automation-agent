@@ -149,7 +149,22 @@ class TaskManager:
                     return False
                 if str(cached_obj.get("agent_version", "")).strip().lower() != self.agent_version.strip().lower():
                     return False
-                if "status" not in cached_obj or "current_step" not in cached_obj:
+                # Only interrupted/in-progress checkpoints are resumable. Never
+                # resurrect a completed, failed, or cancelled task from stale cache.
+                if cached_obj.get("status") not in {
+                    TaskStatus.PAUSED.value,
+                    TaskStatus.RUNNING.value,
+                    TaskStatus.WAITING_APPROVAL.value,
+                }:
+                    return False
+                if "current_step" not in cached_obj:
+                    return False
+                try:
+                    if int(cached_obj["current_step"]) < 0:
+                        return False
+                except (TypeError, ValueError):
+                    return False
+                if not isinstance(cached_obj.get("initial_plan"), list):
                     return False
                 return True
 
