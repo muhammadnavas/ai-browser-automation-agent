@@ -701,26 +701,22 @@ class TaskManager:
                     task.status = TaskStatus.RUNNING
                     task.plan_status = "recovering_session"
                     task.error = (
-                        "Approval received. Bringing the Google sign-in tab to the foreground. "
-                        "Complete Google's prompt there; the agent will resume when Gmail loads."
+                        "Approval received. Checking the original Gmail task tab. "
+                        "The separate recovery tab is not used as the automation tab."
                     )
                     task.updated_at = time.time()
                     await self.broadcast_task_update(task_id)
-                    if hasattr(controller, "focus_tab"):
-                        try:
-                            await controller.focus_tab()
-                        except Exception as focus_error:
-                            logger.error("Could not focus Gmail recovery tab for %s: %s", task_id, focus_error)
-                            task.status = TaskStatus.FAILED
-                            task.plan_status = "failed"
-                            task.error = (
-                                "Could not open the task's Chrome tab for sign-in. "
-                                f"Chrome extension focus failed: {focus_error}. "
-                                "Reload the AI Browser Agent extension and try again."
-                            )
-                            task.updated_at = time.time()
-                            await self.broadcast_task_update(task_id)
-                            break
+
+                    # The user completes Google's prompt in the separate tab.
+                    # Re-navigate only the original task tab after explicit
+                    # approval, then verify that Google serves the Gmail app.
+                    try:
+                        await controller.navigate("https://mail.google.com/mail/u/0/#inbox")
+                    except Exception as navigation_error:
+                        logger.warning(
+                            "Could not reload original Gmail task tab after recovery for %s: %s",
+                            task_id, navigation_error
+                        )
 
                     session_recovered = False
                     recovery_deadline = time.monotonic() + 90
