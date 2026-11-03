@@ -640,37 +640,34 @@ class TaskManager:
                     # task immediately: pause and let the user recover the same
                     # connected Chrome tab, then resume from a fresh DOM snapshot.
                     message = (
-                        "Google redirected Gmail to an internal cookie-rotation page. A separate Chrome tab should open "
-                        "for Google's sign-in flow. Complete sign-in in that new tab, "
-                        "wait for Gmail to open, then return here and approve to resume. "
+                        "Google redirected Gmail to its cookie-rotation page. The agent will keep that exact "
+                        "Chrome tab open instead of navigating to Gmail or opening a different sign-in URL. "
+                        "Complete any Google security prompt shown in the visible tab. Once the page is usable, "
+                        "return here and approve to resume. Approval alone cannot bypass Google's checks. "
                         "No email has been composed or sent yet."
                     )
-                    logger.warning("Task %s paused for Google session recovery: %s", task_id, _current_url)
+                    logger.warning("Task %s paused on Google's cookie-rotation page: %s", task_id, _current_url)
                     if hasattr(controller, "unlock_ui"):
                         await controller.unlock_ui()
 
-                    # RotateCookiesPage is not a usable sign-in UI. Replace that
-                    # internal Google endpoint with the normal Gmail sign-in flow
-                    # in the SAME task tab so the user can actually see and act.
-                    recovery_url = (
-                        "https://accounts.google.com/ServiceLogin"
-                        "?service=mail&continue=https%3A%2F%2Fmail.google.com%2Fmail%2F"
-                    )
+                    # Keep the original task tab on RotateCookiesPage. Opening
+                    # ServiceLogin here redirected straight back to Gmail and
+                    # replaced the task-to-tab mapping, hiding the detected page.
                     try:
-                        if not hasattr(controller, "open_auth_tab"):
-                            raise RuntimeError("The connected Chrome extension does not support opening a sign-in tab.")
-                        auth_tab = await controller.open_auth_tab(recovery_url)
+                        if not hasattr(controller, "focus_tab"):
+                            raise RuntimeError("The connected Chrome extension cannot focus the existing task tab.")
+                        await controller.focus_tab()
                         logger.info(
-                            "Opened Google sign-in tab for task %s: tab_id=%s url=%s",
-                            task_id, auth_tab.get("tab_id"), auth_tab.get("url")
+                            "Keeping the existing Google recovery page visible for task %s: url=%s",
+                            task_id, _current_url
                         )
                     except Exception as recovery_tab_error:
-                        logger.exception("Could not open Google sign-in tab for %s", task_id)
+                        logger.exception("Could not focus the existing Google recovery page for %s", task_id)
                         task.status = TaskStatus.FAILED
                         task.plan_status = "failed"
                         task.error = (
-                            "Could not open a Google sign-in tab in Chrome. "
-                            f"{recovery_tab_error}. Check that the extension is reloaded and connected, then retry."
+                            "Google's cookie-rotation page was detected, but the existing Chrome tab could not "
+                            f"be focused: {recovery_tab_error}. Check the extension connection and retry."
                         )
                         task.updated_at = time.time()
                         await self.broadcast_task_update(task_id)
