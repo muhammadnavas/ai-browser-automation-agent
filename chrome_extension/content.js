@@ -1512,7 +1512,7 @@
   // ---------------------------------------------------------------------------
 
   function handleAgentLockEscape(event) {
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && event.altKey && event.shiftKey) {
       event.preventDefault();
       event.stopImmediatePropagation();
       unlockUI();
@@ -1537,7 +1537,7 @@
     });
 
     const status = document.createElement("div");
-    status.textContent = "AI AGENT CONTROL ACTIVE  ·  ESC TO RELEASE";
+    status.textContent = "AI AGENT CONTROL ACTIVE  ·  ALT + SHIFT + ESC TO RELEASE";
     Object.assign(status.style, {
       position: "fixed",
       top: "14px",
