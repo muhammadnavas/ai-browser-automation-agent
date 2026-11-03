@@ -484,9 +484,6 @@ export default function Landing({ onOpen }) {
 
           <div className="hero-canvas-wrap">
             <NodeCanvas />
-            <div className="orbit-caption">
-              <span className="live-pulse" /> AUTONOMOUS WORKFLOWS <span>·</span> HUMAN CONTROL
-            </div>
           </div>
 
           <div className="landing-scroll-cue"><span /> SCROLL TO EXPLORE</div>
