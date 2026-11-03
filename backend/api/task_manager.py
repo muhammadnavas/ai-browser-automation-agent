@@ -556,8 +556,8 @@ class TaskManager:
                     # task immediately: pause and let the user recover the same
                     # connected Chrome tab, then resume from a fresh DOM snapshot.
                     message = (
-                        "Google redirected Gmail to an internal cookie-rotation page. The task's existing Chrome tab "
-                        "is being redirected to Google's sign-in flow. Complete sign-in in that tab, "
+                        "Google redirected Gmail to an internal cookie-rotation page. A separate Chrome tab should open "
+                        "for Google's sign-in flow. Complete sign-in in that new tab, "
                         "wait for Gmail to open, then return here and approve to resume. "
                         "No email has been composed or sent yet."
                     )
@@ -620,7 +620,7 @@ class TaskManager:
                     task.status = TaskStatus.RUNNING
                     task.plan_status = "recovering_session"
                     task.error = (
-                        "Approval received. The task's Chrome tab is being brought forward. "
+                        "Approval received. Bringing the Google sign-in tab to the foreground. "
                         "Complete Google's prompt there; the agent will resume when Gmail loads."
                     )
                     task.updated_at = time.time()
@@ -674,8 +674,9 @@ class TaskManager:
                         task.plan_status = "failed"
                         task.error = (
                             "Google's sign-in challenge is still active. Approval cannot bypass it. "
-                            "Open the task's Chrome tab, complete Google's sign-in/security steps, "
-                            "wait until the Gmail inbox is visible, then start a new task."
+                            "The Google sign-in tab did not reach the Gmail inbox within 90 seconds. "
+                            "Check the visible Chrome sign-in tab, complete any remaining Google security steps, "
+                            "and confirm Gmail loads before starting a new task."
                         )
                         task.updated_at = time.time()
                         await self.broadcast_task_update(task_id)
