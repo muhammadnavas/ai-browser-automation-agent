@@ -432,6 +432,17 @@
   // ---------------------------------------------------------------------------
 
   function findTargetElement(action) {
+    // The planner sometimes serializes an inspected numeric element index as
+    // "selector": "10" instead of "element_id": 10. Resolve that form against
+    // the latest DOM snapshot before treating it as a CSS selector.
+    const numericSelector = typeof action.selector === "string" && /^\\d+$/.test(action.selector.trim())
+      ? action.selector.trim()
+      : null;
+    if (numericSelector !== null) {
+      const byNumericIndex = document.querySelector(`[data-ai-element-index="${numericSelector}"]`);
+      if (byNumericIndex) return byNumericIndex;
+    }
+
     // 1. By Element ID (Index from inspection)
     if (action.element_id !== undefined && action.element_id !== null) {
       const byIndex = document.querySelector(`[data-ai-element-index="${action.element_id}"]`);
@@ -463,8 +474,30 @@
       } catch (e) {}
     }
 
-    // 5. By Text Content or Label (Precise search prioritizing exact leaf matches and Google Drive row items)
+    // 5. Resolve accessible form-field labels (Gmail and other dynamic SPAs).
+    // Prefer editable controls and exact accessible-name matches over broad text matches.
     const textTarget = action.text || action.select_label;
+    if (textTarget) {
+      const wanted = textTarget.toLowerCase().trim();
+      const editable = Array.from(document.querySelectorAll(
+        'input:not([type="hidden"]), textarea, [contenteditable="true"], [role="textbox"]'
+      ));
+      for (const el of editable) {
+        const names = [
+          el.getAttribute("aria-label"),
+          el.getAttribute("placeholder"),
+          el.getAttribute("name"),
+          el.getAttribute("data-tooltip"),
+          el.getAttribute("autocomplete"),
+          el.labels ? Array.from(el.labels).map((label) => label.innerText).join(" ") : "",
+        ].filter(Boolean).map((value) => value.toLowerCase().trim());
+        if (names.some((name) => name === wanted || name.includes(wanted) || wanted.includes(name))) {
+          return el;
+        }
+      }
+    }
+
+    // 6. By Text Content or Label (Precise search prioritizing exact leaf matches and Google Drive row items)
     if (textTarget) {
       const lower = textTarget.toLowerCase().trim();
 
