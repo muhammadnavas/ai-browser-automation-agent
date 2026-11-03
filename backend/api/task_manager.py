@@ -2104,9 +2104,25 @@ class TaskManager:
             )
             if changed:
                 return True, "Click produced an observable page or target-state change."
-            return True, "Click command was accepted; resulting state was unchanged or could not be distinguished."
+            # An accepted click is not proof that its intended effect occurred.
+            # In particular, do not let an unchanged Submit button count as success.
+            return False, "Click outcome is unverified: the page and target state did not observably change."
 
-        # Actions such as scroll, hover, wait, upload and keyboard shortcuts need
+        if action_type in (ActionType.UPLOAD, ActionType.UPLOAD_FILE):
+            expected_names = []
+            if getattr(action, "file_name", None):
+                expected_names.append(str(action.file_name).replace("\\\\", "/").split("/")[-1].lower())
+            for path in (getattr(action, "upload_paths", None) or []):
+                expected_names.append(str(path).replace("\\\\", "/").split("/")[-1].lower())
+            if target_field is not None:
+                get = target_field.get if isinstance(target_field, dict) else lambda key, default=None: getattr(target_field, key, default)
+                actual = str(get("current_value", "") or "").replace("\\\\", "/").split("/")[-1].lower()
+                if actual and (not expected_names or any(name in actual for name in expected_names)):
+                    return True, "Uploaded filename is visible in the target file input."
+                return False, "Upload postcondition failed: the expected filename is not present in the target file input."
+            return False, "Upload postcondition inconclusive: the target file input was not found in the latest page snapshot."
+
+        # Actions such as scroll, hover, wait and keyboard shortcuts need
         # action-specific evidence that the extension does not consistently expose.
         return True, f"{action_type.value} accepted; no deterministic extension postcondition is available."
 
