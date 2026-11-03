@@ -1179,6 +1179,18 @@
 
     // ── Click / Double Click / Right Click ──
     if (actType === "click") {
+      const clickContext = [action.text, action.reasoning, action.selector].filter(Boolean).join(" ");
+      if (
+        location.hostname === "mail.google.com" &&
+        /compose/i.test(clickContext) &&
+        Array.from(document.querySelectorAll('[role="dialog"], .M9')).some(isVisibleActionTarget)
+      ) {
+        return {
+          success: true,
+          description: "Gmail Compose is already open; skipped duplicate Compose click and kept the existing draft window.",
+        };
+      }
+
       const elText = ((el ? el.innerText : "") || "").toLowerCase();
       const elAria = ((el ? el.getAttribute("aria-label") : "") || "").toLowerCase();
       const actionText = (action.text || "").toLowerCase();
