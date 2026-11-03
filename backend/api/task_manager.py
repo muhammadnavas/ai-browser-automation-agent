@@ -645,11 +645,14 @@ class TaskManager:
                 # Gmail navigation to RotateCookiesPage when its session cookies
                 # cannot be rotated. Do not treat that intermediate page as Gmail,
                 # extract it as task data, or keep retrying actions against it.
-                _current_url = (
-                    page_info.get("url")
-                    or getattr(controller, "current_url", "")
+                # Authentication decisions must use only the URL observed
+                # by the latest successful extension DOM inspection. The
+                # controller's cached current_url can be stale after redirects.
+                _current_url = str(
+                    page_info.get("browser_tab_url")
+                    or page_info.get("url")
                     or ""
-                )
+                ).strip()
                 if _current_url:
                     task.context.record_visit(_current_url)
 
@@ -662,11 +665,13 @@ class TaskManager:
                         await asyncio.sleep(1)
                         try:
                             live_info = await controller.parse_interactive_elements()
-                            live_url = (
-                                live_info.get("url")
-                                or getattr(controller, "current_url", "")
+                            if live_info.get("inspection_error"):
+                                continue
+                            live_url = str(
+                                live_info.get("browser_tab_url")
+                                or live_info.get("url")
                                 or ""
-                            )
+                            ).strip()
                             if live_url and "accounts.google.com/RotateCookiesPage" not in live_url:
                                 page_info = live_info
                                 _current_url = live_url
@@ -751,11 +756,14 @@ class TaskManager:
                             break
                         try:
                             refreshed_info = await controller.parse_interactive_elements()
-                            refreshed_url = (
-                                refreshed_info.get("url")
-                                or getattr(controller, "current_url", "")
+                            if refreshed_info.get("inspection_error"):
+                                await asyncio.sleep(2)
+                                continue
+                            refreshed_url = str(
+                                refreshed_info.get("browser_tab_url")
+                                or refreshed_info.get("url")
                                 or ""
-                            )
+                            ).strip()
                             # Only treat recovery as complete when Gmail itself
                             # is open. Any other Google/account page is not sufficient.
                             if (
