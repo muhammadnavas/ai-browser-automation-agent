@@ -98,6 +98,19 @@
         return `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
       } catch (e) {}
     }
+
+    // Prefer stable accessible attributes over long nth-of-type DOM paths.
+    // Gmail and other SPAs frequently rerender containers, invalidating those paths.
+    for (const attr of ["aria-label", "data-tooltip", "title", "data-testid", "data-test"]) {
+      const value = el.getAttribute(attr);
+      if (!value || !value.trim()) continue;
+      const escaped = value.replace(/\\\\/g, "\\\\\\\\").replace(/"/g, '\\"');
+      const stableSelector = `[${attr}="${escaped}"]`;
+      try {
+        if (document.querySelectorAll(stableSelector).length === 1) return stableSelector;
+      } catch (e) {}
+    }
+
     const testId = el.getAttribute("data-testid") || el.getAttribute("data-test");
     if (testId) {
       try {
