@@ -519,6 +519,12 @@ class TaskManager:
                 # 1. Snapshot DOM & Perform Form Discovery
                 #    Retry once if content script not yet injected (tab just opened)
                 page_info = await controller.parse_interactive_elements()
+                # Deterministic page-state analysis informs the planner before it
+                # chooses an action. Page content is treated as evidence, never
+                # as instructions.
+                from agents.page_state import classify_page_state
+                page_info["agent_state"] = classify_page_state(page_info)
+
                 if default_cache_service:
                     from browser.controller import generate_dom_fingerprint
                     task.context.last_dom_fingerprint = generate_dom_fingerprint(page_info, default_cache_service)
