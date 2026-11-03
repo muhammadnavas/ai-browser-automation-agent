@@ -326,7 +326,10 @@ class ExtensionBrowserAdapter:
             logger.warning(f"DOM inspection returned error: {resp.get('error')}")
             return {
                 "title": "Page",
-                "url": self._current_url,
+                # Do not return a cached URL as if it were a live observation.
+                # Callers must not infer an active Google challenge from stale state.
+                "url": "",
+                "inspection_error": True,
                 "elements": [],
                 "page_text": "",
                 "headings": [],
