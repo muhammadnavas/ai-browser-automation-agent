@@ -1495,40 +1495,75 @@
 
     // ── Fill / Type ──
     if (actType === "fill" || actType === "type_text" || actType === "fill_field") {
-      if (el.disabled || el.readOnly || el.getAttribute("aria-disabled") === "true") {
-        return { success: false, error: "Target field is disabled or read-only." };
+      // The inspected target can be a Google Forms question card or wrapper,
+      // not the actual input. Resolve only within that same question container
+      // and only when exactly one editable control is present.
+      let fillTarget = el;
+      const isEditable = (node) => {
+        if (!node || !node.isConnected) return false;
+        const tagName = node.tagName?.toLowerCase();
+        const inputType = (node.getAttribute?.("type") || "text").toLowerCase();
+        return (
+          ((tagName === "input" && !["hidden", "file", "submit", "button", "checkbox", "radio"].includes(inputType)) ||
+            tagName === "textarea" ||
+            node.isContentEditable ||
+            node.getAttribute?.("role") === "textbox") &&
+          !node.disabled && !node.readOnly &&
+          node.getAttribute("aria-disabled") !== "true" &&
+          node.getAttribute("aria-readonly") !== "true"
+        );
+      };
+      if (!isEditable(fillTarget)) {
+        const question = el.closest('[role="listitem"], .Qr7Oae, [data-params]') || el;
+        const candidates = Array.from(question.querySelectorAll(
+          'input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea, [contenteditable="true"], [role="textbox"]'
+        )).filter(isEditable);
+        if (candidates.length !== 1) {
+          return {
+            success: false,
+            error: candidates.length
+              ? "Fill target is ambiguous: multiple editable controls exist in the selected question."
+              : "Selected element is not editable and its question container has no editable text field.",
+          };
+        }
+        fillTarget = candidates[0];
       }
-
-      el.focus();
-      animateVirtualCursor(el);
+      if (!isEditable(fillTarget)) {
+        return { success: false, error: "Target field is disabled, read-only, or not an editable text control." };
+      }
+      // Use the resolved live input from this point onward.
+      const target = fillTarget;
+      target.scrollIntoView({ behavior: "instant", block: "center" });
+      target.focus();
+      animateVirtualCursor(target);
       const textToType = String(val ?? "");
 
       // Use the native value setter so framework-controlled inputs (including
       // Google Forms) observe the update. Character-by-character synthetic
       // typing can take too long and often fails to update controlled fields.
       try {
-        const tag = el.tagName.toLowerCase();
+        const tag = target.tagName.toLowerCase();
         if (tag === "input" || tag === "textarea") {
           const prototype = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
           const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-          if (setter) setter.call(el, textToType);
-          else el.value = textToType;
-        } else if (el.isContentEditable) {
-          el.textContent = textToType;
+          if (setter) setter.call(target, textToType);
+          else target.value = textToType;
+        } else if (target.isContentEditable) {
+          target.textContent = textToType;
         } else {
           return { success: false, error: "Target element is not an editable input." };
         }
 
-        el.dispatchEvent(new InputEvent("input", {
+        target.dispatchEvent(new InputEvent("input", {
           bubbles: true,
           cancelable: false,
           inputType: "insertText",
           data: textToType,
         }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+        target.dispatchEvent(new Event("change", { bubbles: true }));
 
         // Verify the value before reporting success.
-        const actualValue = el.isContentEditable ? (el.textContent || "") : (el.value ?? "");
+        const actualValue = target.isContentEditable ? (el.textContent || "") : (target.value ?? "");
         if (String(actualValue).trim() !== textToType.trim()) {
           return { success: false, error: "Field value did not match the requested text after input." };
         }
@@ -1536,38 +1571,38 @@
         // Commit Gmail's autocomplete chip only after confirming the input
         // received the exact requested address (Enter clears the input).
         const isGmailRecipient = location.hostname === "mail.google.com" &&
-          el.matches('input[name="to"], input[aria-label="To recipients"], input[aria-label^="To "], input[placeholder="Recipients"]');
+          target.matches('input[name="to"], input[aria-label="To recipients"], input[aria-label^="To "], input[placeholder="Recipients"]');
         if (isGmailRecipient) {
           await new Promise((resolve) => setTimeout(resolve, 250));
-          el.dispatchEvent(new KeyboardEvent("keydown", {
+          target.dispatchEvent(new KeyboardEvent("keydown", {
             key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true
           }));
-          el.dispatchEvent(new KeyboardEvent("keyup", {
+          target.dispatchEvent(new KeyboardEvent("keyup", {
             key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true
           }));
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
 
         try {
-          const originalBg = el.style.backgroundColor;
-          const originalBoxShadow = el.style.boxShadow;
-          el.style.transition = "background-color 0.2s ease";
-          el.style.backgroundColor = "rgba(255, 245, 150, 0.4)";
-          el.style.boxShadow = "0 0 0 3px rgba(66, 133, 244, 0.5)";
+          const originalBg = target.style.backgroundColor;
+          const originalBoxShadow = target.style.boxShadow;
+          target.style.transition = "background-color 0.2s ease";
+          target.style.backgroundColor = "rgba(255, 245, 150, 0.4)";
+          target.style.boxShadow = "0 0 0 3px rgba(66, 133, 244, 0.5)";
           setTimeout(() => {
-            el.style.backgroundColor = originalBg;
-            el.style.boxShadow = originalBoxShadow;
+            target.style.backgroundColor = originalBg;
+            target.style.boxShadow = originalBoxShadow;
           }, 900);
         } catch (e) {}
 
         if (action.press_enter || actType === "type_text") {
-          el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
-          el.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+          target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+          target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
         }
 
         return {
           success: true,
-          description: `Filled [${action.selector || action.element_id || el.id || el.name || el.tagName}] with the requested value and verified it.`,
+          description: `Filled [${action.selector || action.element_id || target.id || target.name || target.tagName}] with the requested value and verified it.`,
         };
       } catch (err) {
         return { success: false, error: `Could not fill target field: ${err.message}` };
