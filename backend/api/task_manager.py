@@ -920,17 +920,9 @@ class TaskManager:
                         reasoning="Page inspection is internal. The user did not request data extraction; waiting briefly before continuing the requested workflow.",
                     )
 
-                # Dynamically update current plan milestone index
-                if task.initial_plan:
-                    active_plan_idx = planner.determine_active_plan_step(
-                        initial_plan=task.initial_plan,
-                        current_action=action,
-                        trajectory_history=trajectory_history,
-                        page_info=page_info,
-                        step_number=step_num,
-                        max_steps=req.max_steps,
-                    )
-                    task.current_plan_step = max(task.current_plan_step, active_plan_idx)
+                # Plan progress is updated only after the browser action is
+                # successfully executed and verified. Failed attempts must never
+                # advance a milestone or show a later step as running.
 
                 # Intercept submit action for human confirmation if not already confirmed
                 is_submit_action = False
@@ -1495,6 +1487,16 @@ class TaskManager:
                             )
 
                 if action_success:
+                    if task.initial_plan:
+                        active_plan_idx = planner.determine_active_plan_step(
+                            initial_plan=task.initial_plan,
+                            current_action=action,
+                            trajectory_history=trajectory_history,
+                            page_info=page_info,
+                            step_number=step_num,
+                            max_steps=req.max_steps,
+                        )
+                        task.current_plan_step = max(task.current_plan_step, active_plan_idx)
                     consecutive_failures = 0
                     if recovery_log:
                         recovery_desc = "; ".join(recovery_log)
