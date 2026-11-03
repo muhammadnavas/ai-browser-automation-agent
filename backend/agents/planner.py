@@ -1746,6 +1746,16 @@ If the task is already complete, return ["Verify the requested outcome and finis
     ) -> BrowserAction:
         """Determines the next action to execute in the browser context with state-aware caching."""
 
+        # Authentication walls require the user to sign in in their own session.
+        # Never attempt credential discovery or automated authentication here.
+        page_state = (page_info.get("agent_state") or {}).get("state")
+        if page_state == "authentication":
+            return BrowserAction(
+                action=ActionType.REQUEST_APPROVAL,
+                reasoning="The current page requires authentication; user intervention is required.",
+                text="Please sign in using the connected Chrome tab, then approve to resume.",
+            )
+
         # 1. Human Approval / CAPTCHA gate (Never cached)
         if captcha_or_payment_detected:
             approval_type = (
@@ -2142,7 +2152,11 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
 }}
 """
 
-        if screenshot_path and self.xai_api_key:
+        if (
+            screenshot_path
+            and self.xai_api_key
+            and (agent_state.get("interaction_strategy") != "dom")
+        ):
             try:
                 raw_text = await asyncio.to_thread(
                     self._call_grok_vision, prompt, screenshot_path
