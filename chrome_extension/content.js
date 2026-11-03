@@ -1511,26 +1511,70 @@
   // Message Listener (from background.js)
   // ---------------------------------------------------------------------------
 
-  function lockUI() {
-    if (!document.getElementById("ai-agent-ui-lock")) {
-      const lock = document.createElement("div");
-      lock.id = "ai-agent-ui-lock";
-      lock.style.position = "fixed";
-      lock.style.top = "0";
-      lock.style.left = "0";
-      lock.style.width = "100vw";
-      lock.style.height = "100vh";
-      lock.style.zIndex = "2147483646"; // Just below our markers
-      lock.style.backgroundColor = "rgba(0, 0, 0, 0.05)"; // Slightly visible
-      lock.style.cursor = "not-allowed";
-      // This explicitly blocks human pointer events, but dispatchEvent bypasses this!
-      document.body.appendChild(lock);
+  function handleAgentLockEscape(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      unlockUI();
     }
+  }
+
+  function lockUI() {
+    if (document.getElementById("ai-agent-ui-lock")) return;
+
+    const lock = document.createElement("div");
+    lock.id = "ai-agent-ui-lock";
+    Object.assign(lock.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "2147483646",
+      pointerEvents: "auto",
+      cursor: "not-allowed",
+      background: "rgba(2, 12, 8, 0.035)",
+      border: "2px solid rgba(52, 255, 155, 0.88)",
+      boxShadow: "inset 0 0 34px rgba(30, 255, 142, 0.16), inset 0 0 0 1px rgba(52, 255, 155, 0.28)",
+      boxSizing: "border-box",
+    });
+
+    const status = document.createElement("div");
+    status.textContent = "AI AGENT CONTROL ACTIVE  ·  ESC TO RELEASE";
+    Object.assign(status.style, {
+      position: "fixed",
+      top: "14px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      padding: "9px 15px",
+      borderRadius: "999px",
+      border: "1px solid rgba(52, 255, 155, 0.55)",
+      background: "rgba(3, 24, 15, 0.94)",
+      color: "#6dffb4",
+      font: "600 11px/1.2 system-ui, sans-serif",
+      letterSpacing: "0.12em",
+      boxShadow: "0 0 18px rgba(30, 255, 142, 0.32), 0 0 42px rgba(30, 255, 142, 0.14)",
+      textShadow: "0 0 10px rgba(52, 255, 155, 0.5)",
+      pointerEvents: "none",
+      whiteSpace: "nowrap",
+    });
+    lock.appendChild(status);
+
+    // Block physical interaction with the page while the agent owns this tab.
+    // Synthetic DOM events dispatched by the extension continue to work.
+    ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick",
+      "contextmenu", "wheel", "touchstart", "touchend", "dragstart"].forEach((type) => {
+      lock.addEventListener(type, (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true });
+    });
+
+    document.documentElement.appendChild(lock);
+    document.addEventListener("keydown", handleAgentLockEscape, true);
   }
 
   function unlockUI() {
     const lock = document.getElementById("ai-agent-ui-lock");
     if (lock) lock.remove();
+    document.removeEventListener("keydown", handleAgentLockEscape, true);
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
