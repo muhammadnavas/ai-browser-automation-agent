@@ -940,7 +940,13 @@ class AIAgentPlanner:
             category_key = "document_download"
             category_label = "Document & File Download"
             tools.extend(["File Downloader", "File Verification", "CSV Report Generator"])
-        elif _has_keyword(goal_lower, ["compose email", "write an email", "send an email", "draft an email", "new email", "reply to an email"]):
+        elif (
+            _has_keyword(goal_lower, ["compose email", "write an email", "send an email", "draft an email", "new email", "reply to an email", "write a sample gmail"])
+            or (
+                _has_keyword(goal_lower, ["gmail", "mail"])
+                and _has_keyword(goal_lower, ["write", "compose", "draft", "send"])
+            )
+        ):
             category_key = "email_composition"
             category_label = "Email Composition & Sending"
             tools.extend(["Interactive Element Control", "Form Discovery", "Human Approval Gate", "Send Verification"])
