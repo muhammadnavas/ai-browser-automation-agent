@@ -375,6 +375,22 @@ class TaskManager:
     # Main execution loop
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_resume_checkpoint(checkpoint: Any, page_info: Dict[str, Any]) -> Tuple[bool, str]:
+        """Fail closed unless the freshly inspected tab matches the saved page URL."""
+        if not isinstance(checkpoint, dict):
+            return False, "No page checkpoint was saved for this task."
+        expected_url = str(checkpoint.get("url") or "").strip()
+        actual_url = str(page_info.get("url") or "").strip()
+        if not expected_url or not actual_url:
+            return False, "The saved or current browser URL is unavailable."
+        if actual_url.rstrip("/") != expected_url.rstrip("/"):
+            return False, (
+                "The live browser page does not match the saved checkpoint. "
+                f"Expected {expected_url}, found {actual_url}. No action was executed."
+            )
+        return True, "Live browser URL matches the saved checkpoint."
+
     async def run_task_execution(self, task_id: str, req: TaskRequest) -> None:
         """Drive a full browser automation task through its step loop."""
         if task_id not in self.tasks:
@@ -485,6 +501,18 @@ class TaskManager:
             # ── Phase 1: Start browser and navigate ────────────────────────────
             target_goal_url = planner.extract_target_url(req.goal)
             effective_start_url = req.start_url
+            resume_checkpoint = (
+                task.plan_metadata.get("execution_checkpoint")
+                if restored_checkpoint and isinstance(task.plan_metadata, dict)
+                else None
+            )
+            if restored_checkpoint:
+                if not isinstance(resume_checkpoint, dict) or not resume_checkpoint.get("url"):
+                    raise RuntimeError(
+                        "Cannot safely resume: the restored task has no verified page checkpoint. "
+                        "Start a new task after checking the browser state."
+                    )
+                effective_start_url = str(resume_checkpoint["url"])
             if (not effective_start_url or effective_start_url in ("https://www.google.com", "about:blank")) and target_goal_url:
                 effective_start_url = target_goal_url
 
@@ -572,6 +600,23 @@ class TaskManager:
                     if await self._sleep_or_cancel(task_id, 2.0):
                         break
                     page_info = await controller.parse_interactive_elements()
+
+                if restored_checkpoint and resume_checkpoint is not None:
+                    checkpoint_ok, checkpoint_message = self._validate_resume_checkpoint(
+                        resume_checkpoint, page_info
+                    )
+                    if not checkpoint_ok:
+                        task.status = TaskStatus.FAILED
+                        task.plan_status = "failed"
+                        task.error = checkpoint_message
+                        task.updated_at = time.time()
+                        logger.error("Task %s resume checkpoint rejected: %s", task_id, checkpoint_message)
+                        await self.broadcast_task_update(task_id)
+                        await self._save_cached_task_state(task_id)
+                        break
+                    logger.info("Task %s resume checkpoint validated: %s", task_id, checkpoint_message)
+                    # Validate once before allowing any new browser action.
+                    restored_checkpoint = False
                 
                 # Form discovery is supplied by the Chrome content-script snapshot.
                 task.context.current_form_fields = page_info.get("form_fields", [])
@@ -1465,6 +1510,18 @@ class TaskManager:
                     task.steps.append(agent_step)
                     task.current_step = step_num
                     task.updated_at = time.time()
+                    if isinstance(task.plan_metadata, dict):
+                        checkpoint_url = (
+                            getattr(controller, "current_url", "")
+                            or page_info.get("url")
+                            or ""
+                        )
+                        if checkpoint_url:
+                            task.plan_metadata["execution_checkpoint"] = {
+                                "url": checkpoint_url,
+                                "step": step_num,
+                                "saved_at": task.updated_at,
+                            }
 
                     # Record to structured context memory
                     task.context.record_action(
