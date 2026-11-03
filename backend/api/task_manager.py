@@ -1999,6 +1999,28 @@ class TaskManager:
             or (action.selector and item.get("selector") == action.selector)
         )), None)
         if target is None:
+            reasoning = str(action.reasoning or "")
+            action_text = str(action.text or "")
+            # Rebind dynamic upload controls from live page text instead of
+            # rejecting a stale index before the extension can inspect the DOM.
+            if action.action == ActionType.CLICK and re.search(
+                r"add\\s+file|choose\\s+file|browse|upload\\s+file|attach\\s+file",
+                f"{action_text} {reasoning}", re.IGNORECASE
+            ):
+                return True, "Stale upload locator; live semantic resolution will be used."
+            if action.action in (ActionType.FILL, ActionType.FILL_FIELD, ActionType.TYPE_TEXT, ActionType.SELECT, ActionType.SELECT_OPTION):
+                label_match = re.search(r"""['"“]([^'"”]+)['"”]\\s+(?:field|question|input)""", reasoning, re.IGNORECASE)
+                if label_match:
+                    wanted = label_match.group(1).strip().lower()
+                    fields = (page_info or {}).get("form_fields") or []
+                    matches = [
+                        field for field in fields
+                        if wanted in " ".join(str(field.get(key) or "") for key in (
+                            "label", "aria_label", "placeholder", "name", "id"
+                        )).lower()
+                    ]
+                    if len(matches) == 1:
+                        return True, f"Stale locator; unique field label '{wanted}' will be resolved live."
             return False, "Action precondition failed: target control is no longer present in the latest page snapshot."
         if target.get("visible") is False:
             return False, "Action precondition failed: target control is not visible."
