@@ -565,13 +565,21 @@ def get_user_system_file(
 
     # 5. Guaranteed Fallback: dynamically generate clean mock file of correct category
     cat_to_generate = target_category or "image"
-    if accept_types and valid_extensions:
-        # Pick a generator-supported extension that is explicitly accepted.
+    if accept_types:
+        # Never manufacture a fallback whose extension is not accepted by the
+        # target input. The image generator supports PNG/JPEG; document fallback
+        # supports PDF. If the accept list requires another format, stop safely.
         preferred = next((ext for ext in (".png", ".jpg", ".jpeg", ".pdf", ".csv") if ext in valid_extensions), None)
-        if preferred and cat_to_generate == "image":
+        if cat_to_generate == "image" and preferred in {".png", ".jpg", ".jpeg"}:
             target_filename = f"mock_photograph{preferred}"
-        elif preferred and cat_to_generate in ("document", "resume") and preferred == ".pdf":
+        elif cat_to_generate in ("document", "resume") and preferred == ".pdf":
             target_filename = "mock_document.pdf"
+        else:
+            logger.warning(
+                "Cannot generate a safe fallback for category='%s' and accept='%s'; refusing an incompatible file.",
+                cat_to_generate, accept_types
+            )
+            return None
     logger.info(f"No local candidate found on system. Generating mock file for category '{cat_to_generate}' with accepted extensions {sorted(valid_extensions)}.")
     generated_path = generate_clean_mock_file(category=cat_to_generate, filename=target_filename, context_text=combined_context)
     return _format_file_info(generated_path)
