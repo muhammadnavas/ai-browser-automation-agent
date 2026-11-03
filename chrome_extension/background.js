@@ -279,8 +279,10 @@ async function handleBackendMessage(msg) {
   if (type === "create_tab") {
     try {
       const url = msg.url || "about:blank";
-      // Make active so Chrome does not throttle loading
-      const tab = await chrome.tabs.create({ url, active: true });
+      // Keep the task in a dedicated background tab. Chrome can execute
+      // content-script DOM actions in inactive tabs; never steal focus from
+      // the user's current tab when a task starts.
+      const tab = await chrome.tabs.create({ url, active: false });
 
       taskTabMap.set(task_id, tab.id);
       tabTaskMap.set(tab.id, task_id);
