@@ -190,10 +190,18 @@ class ReportGenerator:
             status = self._status(task)
             steps = list(getattr(task, "steps", []) or [])
             failed_steps = sum(1 for step in steps if getattr(step, "error", None))
-            approval_steps = sum(
+            approval_steps_from_steps = sum(
                 1 for step in steps
                 if getattr(step, "approval_required", False)
                 or getattr(step, "human_intervention_needed", False)
+                or str(getattr(step, "action", "")).lower().endswith("request_approval")
+            )
+            # Approval requests are cleared after the user responds, so count
+            # them from the durable task counter rather than the transient
+            # approval_request object. Fall back to step metadata for older tasks.
+            approval_steps = max(
+                int(getattr(task, "human_approval_count", 0) or 0),
+                approval_steps_from_steps,
             )
             created_at = getattr(task, "created_at", None)
             updated_at = getattr(task, "updated_at", None)
