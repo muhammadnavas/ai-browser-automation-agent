@@ -459,14 +459,25 @@ def get_user_system_file(
                 accepted_extensions.update(CATEGORY_EXTENSIONS["image"])
             elif rule in mime_extensions:
                 accepted_extensions.update(mime_extensions[rule])
-        if accepted_extensions:
-            valid_extensions.intersection_update(accepted_extensions)
-            if not valid_extensions:
-                logger.warning(
-                    "No supported local/mock file extension matches accept='%s' and category='%s'",
-                    accept_types, target_category
+            elif "/" in rule and "*" not in rule:
+                # Cover Office formats and other registered MIME types without
+                # silently falling back to an unrestricted file search.
+                accepted_extensions.update(
+                    ext.lower() for ext in mimetypes.guess_all_extensions(rule)
                 )
-                return None
+        if not accepted_extensions:
+            logger.warning(
+                "Could not interpret file input accept rules '%s'; refusing an unrestricted file search.",
+                accept_types
+            )
+            return None
+        valid_extensions.intersection_update(accepted_extensions)
+        if not valid_extensions:
+            logger.warning(
+                "No supported local/mock file extension matches accept='%s' and category='%s'",
+                accept_types, target_category
+            )
+            return None
 
     # 3. Recursive directory traversal (travel into folders!)
     candidates: List[Tuple[float, str, str, str]] = []  # (score, path, filename, folder_name)
