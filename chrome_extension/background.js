@@ -365,6 +365,44 @@ async function handleBackendMessage(msg) {
     return;
   }
 
+  // Open a separate recovery tab without changing the task's tab mapping.
+  // The original task tab remains available for live-session verification.
+  if (type === "open_recovery_tab") {
+    try {
+      const recoveryUrl = msg.url;
+      if (!recoveryUrl || !/^https:\/\/accounts\.google\.com\/RotateCookiesPage(?:[?#]|$)/i.test(recoveryUrl)) {
+        throw new Error("Recovery tab URL must be the detected Google RotateCookiesPage URL.");
+      }
+      const tab = await chrome.tabs.create({ url: recoveryUrl, active: true });
+      if (tab.windowId !== undefined) {
+        const win = await chrome.windows.get(tab.windowId);
+        if (win.state === "minimized") {
+          await chrome.windows.update(tab.windowId, { state: "maximized" });
+        }
+        await chrome.windows.update(tab.windowId, { focused: true });
+      }
+      await waitForTabLoaded(tab.id, 15000);
+      const openedTab = await chrome.tabs.get(tab.id);
+      sendWsMessage({
+        id, task_id, type: "response", success: true,
+        data: {
+          tab_id: tab.id,
+          url: openedTab.url || recoveryUrl,
+          active: openedTab.active,
+          window_id: openedTab.windowId,
+          mapped_as_task_tab: false,
+        },
+      });
+    } catch (err) {
+      console.error("AI Agent: failed to open Google recovery tab:", err);
+      sendWsMessage({
+        id, task_id, type: "response", success: false,
+        error: `Could not open a separate Google recovery tab: ${err.message}`,
+      });
+    }
+    return;
+  }
+
   // ── 2. Close Task Tab ──
   if (type === "close_tab") {
     try {
