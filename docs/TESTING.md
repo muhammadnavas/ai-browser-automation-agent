@@ -112,3 +112,6 @@ The `tests/resources/` directory contains static HTML mockups used to run tests 
 Recovery policy tests also verify that locator/timeout/navigation failures remain eligible for bounded retries, while extension disconnects, approval/permission failures, and unknown errors stop without repeatedly issuing the action.
 
 Checkpoint restoration preserves the saved plan, action counters, and structured task context. The extension starts a fresh task tab on continuation, so the agent inspects the current live page and must not replay previously recorded actions. This is checkpoint-aware continuation, not a guarantee that an interrupted browser tab or authenticated session can be reconstructed after a process crash.
+
+
+Checkpoint recovery regression tests verify that saved progress, plan milestones, and task context are restored, while terminal checkpoints (completed, failed, cancelled) are rejected. Restored plan-version metadata is preserved during startup. Continuation uses a fresh extension task tab and must inspect live page state; it does not recreate a prior authenticated tab or guarantee safe recovery from an unknown in-flight side effect.
