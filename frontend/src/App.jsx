@@ -1790,10 +1790,15 @@ export default function App() {
                       );
                       const isFailed =
                         currentTask.status === 'failed' && index === activeIndex;
+                      // Plan milestones are not execution evidence. Do not
+                      // mark earlier milestones complete merely because the
+                      // planner advanced its cursor: browser actions can fail,
+                      // be replanned, or be interrupted before their effects
+                      // are verified. Only a verified terminal task may turn
+                      // the whole plan green.
                       const done =
-                        currentTask.status === 'completed' ||
-                        currentTask.plan_status === 'done' ||
-                        index < activeIndex;
+                        currentTask.status === 'completed' &&
+                        currentTask.plan_status === 'done';
                       const active =
                         !done &&
                         !isFailed &&
