@@ -1462,8 +1462,14 @@
         }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
 
-        // Gmail recipient inputs use autocomplete chips. Commit the typed
-        // address so the next action cannot overwrite an uncommitted suggestion.
+        // Verify the value before reporting success.
+        const actualValue = el.isContentEditable ? (el.textContent || "") : (el.value ?? "");
+        if (String(actualValue).trim() !== textToType.trim()) {
+          return { success: false, error: "Field value did not match the requested text after input." };
+        }
+
+        // Commit Gmail's autocomplete chip only after confirming the input
+        // received the exact requested address (Enter clears the input).
         const isGmailRecipient = location.hostname === "mail.google.com" &&
           el.matches('input[name="to"], input[aria-label="To recipients"], input[aria-label^="To "], input[placeholder="Recipients"]');
         if (isGmailRecipient) {
@@ -1475,12 +1481,6 @@
             key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true
           }));
           await new Promise((resolve) => setTimeout(resolve, 200));
-        }
-
-        // Verify the value before reporting success.
-        const actualValue = el.isContentEditable ? (el.textContent || "") : (el.value ?? "");
-        if (String(actualValue).trim() !== textToType.trim()) {
-          return { success: false, error: "Field value did not match the requested text after input." };
         }
 
         try {
