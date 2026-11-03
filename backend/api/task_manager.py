@@ -1149,6 +1149,33 @@ class TaskManager:
                     if self._is_cancelled(task_id):
                         break
 
+                    # Gmail is a dynamic SPA: the first click in an email-writing
+                    # task is a semantic Compose action, never a durable numeric index.
+                    # Carry the user intent through to the extension's live-DOM resolver.
+                    current_url = str(page_info.get("url") or "")
+                    goal_lower = str(req.goal or "").lower()
+                    gmail_email_task = (
+                        use_extension
+                        and urlparse(current_url).hostname == "mail.google.com"
+                        and action.action == ActionType.CLICK
+                        and any(term in goal_lower for term in (
+                            "write an email", "compose an email", "send an email",
+                            "write a mail", "send a mail", "compose mail",
+                            "write a message", "send a message",
+                        ))
+                        and not any(
+                            h.get("action") == "click"
+                            and "compose" in str(h.get("reasoning") or h.get("description") or "").lower()
+                            for h in trajectory_history
+                        )
+                    )
+                    if gmail_email_task:
+                        action.reasoning = (
+                            f"{action.reasoning or 'First interaction in Gmail email workflow.'} "
+                            "Gmail email workflow: open the Compose window. Resolve the Compose control "
+                            "from the current live DOM; do not use the stored numeric element index."
+                        )
+
                     from browser.recovery import execute_with_retry_and_fallback, RetryPolicy
                     policy = RetryPolicy(max_retries=3, base_delay=1.0, max_delay=6.0, backoff_factor=2.0)
 
