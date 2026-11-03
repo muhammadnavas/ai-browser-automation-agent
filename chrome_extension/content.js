@@ -1754,6 +1754,26 @@
       document.removeEventListener(type, handleAgentLockEvent, true);
     });
 
+    // Antigravity-style task outline: visual-only and never intercepts
+    // pointer, keyboard, scrolling, or tab interaction.
+    let border = document.getElementById("ai-agent-running-border");
+    if (!border) {
+      border = document.createElement("div");
+      border.id = "ai-agent-running-border";
+      Object.assign(border.style, {
+        position: "fixed",
+        inset: "0",
+        zIndex: "2147483646",
+        border: "3px solid rgba(52, 211, 153, 0.9)",
+        boxShadow: "inset 0 0 0 1px rgba(167, 243, 208, 0.28), inset 0 0 18px rgba(52, 211, 153, 0.10)",
+        borderRadius: "2px",
+        pointerEvents: "none",
+        userSelect: "none",
+        boxSizing: "border-box",
+      });
+      (document.body || document.documentElement).appendChild(border);
+    }
+
     const existing = document.getElementById("ai-agent-ui-lock");
     if (existing) return;
 
@@ -1804,6 +1824,8 @@
   function unlockUI() {
     const indicator = document.getElementById("ai-agent-ui-lock");
     if (indicator) indicator.remove();
+    const border = document.getElementById("ai-agent-running-border");
+    if (border) border.remove();
 
     // Remove legacy blocking listeners from tabs that received an older
     // content script before the non-blocking lock implementation was loaded.
