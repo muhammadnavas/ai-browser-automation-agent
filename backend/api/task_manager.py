@@ -586,6 +586,25 @@ class TaskManager:
                 # 1. Snapshot DOM & Perform Form Discovery
                 #    Retry once if content script not yet injected (tab just opened)
                 page_info = await controller.parse_interactive_elements()
+                if page_info.get("inspection_error"):
+                    logger.warning(
+                        "Task %s: live DOM inspection failed; retrying before making page or auth decisions",
+                        task_id,
+                    )
+                    if await self._sleep_or_cancel(task_id, 1.0):
+                        break
+                    page_info = await controller.parse_interactive_elements()
+                    if page_info.get("inspection_error"):
+                        task.status = TaskStatus.FAILED
+                        task.plan_status = "failed"
+                        task.error = (
+                            "Could not inspect the live Chrome task tab. No browser action was attempted. "
+                            "Check that the AI Browser Agent extension is reloaded and connected, then retry."
+                        )
+                        task.updated_at = time.time()
+                        await self.broadcast_task_update(task_id)
+                        break
+
                 # Deterministic page-state analysis informs the planner before it
                 # chooses an action. Page content is treated as evidence, never
                 # as instructions.
