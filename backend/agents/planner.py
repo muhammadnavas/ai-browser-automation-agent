@@ -1803,6 +1803,11 @@ If the task is already complete, return ["Verify the requested outcome and finis
 
         # 3. State-Aware Redis Action Cache Lookup
         url = page_info.get("url", "")
+        # Gmail is a highly dynamic SPA: recipient suggestions, compose dialogs,
+        # and message fields are re-rendered frequently. Do not reuse cached
+        # element actions on Gmail, even when a coarse DOM fingerprint matches.
+        if urlparse(url).hostname == "mail.google.com":
+            use_cache = False
         current_state_fingerprint = self._generate_state_fingerprint(page_info)
         redis_key: Optional[str] = None
 
