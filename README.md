@@ -11,7 +11,7 @@ The project combines LLM-based planning, live page context, browser automation, 
 - **Hybrid AI reasoning:** Ollama for optional local text planning, Gemini and Groq as configured text fallbacks, xAI Grok Vision for a separate screenshot-based reasoning path, and heuristic planning for supported flows.
 - **Context-aware planning** based on the goal, current page, interactive elements, and recent action history.
 - **Adaptive replanning** after eligible recoverable failures, using refreshed page context.
-- **Checkpoint-aware continuation** that preserves the saved plan, action progress, and task context when a valid checkpoint is restored; continuation inspects the live page rather than replaying previous actions.
+- **Checkpoint-aware continuation** that preserves the saved plan, action progress, and task context; reopens the last confirmed URL and validates the live page URL before continuing. Missing or mismatched checkpoints fail closed rather than replaying actions blindly.
 - **Action verification and self-healing locators** with extension-mode precondition/postcondition checks. Stale targets are rebound only when the refreshed DOM contains one unique visible, enabled semantic match; ambiguous matches are rejected.
 - **Human-in-the-loop safeguards** for sensitive or ambiguous checkpoints.
 - **Live task updates** streamed to the frontend over WebSockets.
