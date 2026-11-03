@@ -560,12 +560,20 @@ async function handleBackendMessage(msg) {
         show_badges: msg.show_badges,
       });
 
+      const liveTab = await chrome.tabs.get(tabId);
+      const inspectionData = response && response.data ? {
+        ...response.data,
+        // The browser's tab URL is authoritative; content-script state can
+        // lag during SPA redirects or after a navigation.
+        url: liveTab.url || response.data.url || "",
+        browser_tab_url: liveTab.url || "",
+      } : null;
       sendWsMessage({
         id,
         task_id,
         type: "response",
         success: response ? response.success : false,
-        data: response ? response.data : null,
+        data: inspectionData,
         error: response ? response.error : "No response from page content script",
       });
     } catch (err) {
