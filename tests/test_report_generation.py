@@ -44,3 +44,27 @@ def test_report_generates_readable_pdf_with_failed_status(tmp_path):
     assert "TYPE_TEXT" in text
     assert "429 RESOURCE_EXHAUSTED" in text
     assert "private-query" not in text
+
+
+
+def test_report_counts_approved_human_interventions(tmp_path):
+    task = SimpleNamespace(
+        status="COMPLETED",
+        goal="Fill the form after user approval",
+        steps=[],
+        human_approval_count=2,
+        created_at=1791928394,
+        updated_at=1791928487,
+        error=None,
+        extracted_data=[],
+        initial_plan=[],
+    )
+    generator = ReportGenerator(output_dir=str(tmp_path))
+    output = generator.generate_report("task-approvals", task)
+
+    import io
+    reader = PdfReader(io.BytesIO(output))
+    report_text = "\\n".join(page.extract_text() or "" for page in reader.pages)
+
+    assert "Human approval steps" in report_text
+    assert "2" in report_text
