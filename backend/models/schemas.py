@@ -443,6 +443,9 @@ class TaskResponse(BaseModel):
     steps: List[AgentStep] = []
     extracted_data: List[Any] = []
     approval_request: Optional[HumanApprovalRequest] = None
+    # Number of distinct human approval requests explicitly approved by the user.
+    # Kept on the task so reports remain accurate after approval_request is cleared.
+    human_approval_count: int = 0
     reports: Dict[str, str] = {}
     error: Optional[str] = None
     initial_plan: List[str] = []          # high-level plan generated before execution
