@@ -1277,7 +1277,28 @@
       } else {
         el.dispatchEvent(new MouseEvent("click", opts));
       }
-      
+
+      // A Gmail Compose click is asynchronous: wait for the actual compose
+      // dialog and recipient control before allowing the next planner snapshot.
+      if (location.hostname === "mail.google.com" && /compose/i.test(
+        [action.text, action.reasoning, action.selector].filter(Boolean).join(" ")
+      )) {
+        const deadline = Date.now() + 7000;
+        let composeReady = false;
+        while (Date.now() < deadline) {
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .M9'))
+            .filter(isVisibleActionTarget);
+          composeReady = dialogs.some((dialog) =>
+            dialog.querySelector('input[name="to"], input[aria-label="To recipients"], input[placeholder="Recipients"]')
+          );
+          if (composeReady) break;
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        if (!composeReady) {
+          return { success: false, error: "Gmail Compose was clicked, but the compose recipient field did not become ready within 7 seconds. Refresh the DOM and recover; do not click Compose again blindly." };
+        }
+      }
+
       return { success: true, description: `Clicked on [${action.selector || action.element_id || action.text || el.tagName}]` };
     }
 
@@ -1440,6 +1461,21 @@
           data: textToType,
         }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
+
+        // Gmail recipient inputs use autocomplete chips. Commit the typed
+        // address so the next action cannot overwrite an uncommitted suggestion.
+        const isGmailRecipient = location.hostname === "mail.google.com" &&
+          el.matches('input[name="to"], input[aria-label="To recipients"], input[aria-label^="To "], input[placeholder="Recipients"]');
+        if (isGmailRecipient) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          el.dispatchEvent(new KeyboardEvent("keydown", {
+            key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true
+          }));
+          el.dispatchEvent(new KeyboardEvent("keyup", {
+            key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true
+          }));
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
 
         // Verify the value before reporting success.
         const actualValue = el.isContentEditable ? (el.textContent || "") : (el.value ?? "");
