@@ -720,6 +720,32 @@ class TaskManager:
                     screenshot_path=screenshot_path,
                 )
 
+                # Gmail is a dynamic SPA: bind Compose clicks to the fresh DOM
+                # snapshot instead of trusting a brittle nth-of-type CSS selector.
+                task_intent = planner._analyze_task_intent(req.goal)
+                if action.action == ActionType.CLICK and task_intent.get("category_key") == "email_composition":
+                    from agents.planner import find_matching_element
+                    compose_candidates = [
+                        el for el in (page_info.get("elements") or [])
+                        if isinstance(el, dict)
+                        and not el.get("disabled", False)
+                        and el.get("visible", True)
+                        and (
+                            "compose" in str(el.get("text") or "").lower()
+                            or "compose" in str(el.get("aria_label") or "").lower()
+                            or "compose" in str(el.get("title") or "").lower()
+                        )
+                        and (el.get("tag") in ("button", "div", "span") or el.get("role") == "button")
+                    ]
+                    compose_target = find_matching_element(compose_candidates, "Compose")
+                    if compose_target and compose_target.get("index") is not None:
+                        action.element_id = int(compose_target["index"])
+                        action.selector = None
+                        logger.info(
+                            "Rebound Gmail Compose click to fresh DOM element index %s (center_hit=%s)",
+                            action.element_id, compose_target.get("center_hit")
+                        )
+
                 # Guard against planner loops: if two successful navigations have
                 # already left us on the same page, do not navigate again. Switch
                 # to the deterministic heuristic so it can inspect/fill/extract
