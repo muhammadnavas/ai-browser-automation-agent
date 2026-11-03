@@ -435,7 +435,7 @@
     // The planner sometimes serializes an inspected numeric element index as
     // "selector": "10" instead of "element_id": 10. Resolve that form against
     // the latest DOM snapshot before treating it as a CSS selector.
-    const numericSelector = typeof action.selector === "string" && /^\\d+$/.test(action.selector.trim())
+    const numericSelector = typeof action.selector === "string" && /^\d+$/.test(action.selector.trim())
       ? action.selector.trim()
       : null;
     if (numericSelector !== null) {
