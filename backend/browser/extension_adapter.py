@@ -211,15 +211,16 @@ class ExtensionBrowserAdapter:
         return self._current_url
 
     async def lock_ui(self) -> None:
-        """Locks the UI in the browser to prevent human interaction during automated execution."""
-        try:
-            await self.manager.send_command(
-                task_id=self.task_id,
-                command_type="lock_ui",
-                timeout=5.0,
-            )
-        except Exception as e:
-            logger.debug(f"Failed to lock UI: {e}")
+        """Lock the task tab and fail visibly if the extension cannot confirm it."""
+        result = await self.manager.send_command(
+            task_id=self.task_id,
+            command_type="lock_ui",
+            timeout=8.0,
+        )
+        if not result or not result.get("success"):
+            error = (result or {}).get("error") or "Chrome did not confirm the task-tab lock."
+            raise RuntimeError(f"Could not lock the task browser: {error}")
+        logger.info("Task-tab interaction lock confirmed for task %s", self.task_id)
 
     async def unlock_ui(self) -> None:
         """Unlocks the UI in the browser to allow human interaction."""
@@ -290,8 +291,9 @@ class ExtensionBrowserAdapter:
         self._current_url = data.get("url", initial_url or "")
         self.is_running = True
         logger.info(f"Task {self.task_id} initialized with Chrome tab #{tab_id}")
-        if initial_url and initial_url != "about:blank":
-            await self.lock_ui()
+        # Apply the lock even for about:blank. The first navigation must not
+        # create a window in which the task tab is accidentally interactive.
+        await self.lock_ui()
 
     async def navigate(self, url: str) -> str:
         """Navigates the task's Chrome tab to the specified URL."""
