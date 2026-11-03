@@ -1,3 +1,4 @@
+
 """
 models/schemas.py
 -----------------
@@ -420,6 +421,8 @@ class TaskRequest(BaseModel):
     max_steps: int = Field(default=15, ge=1, le=100)
     auto_approve_captcha: bool = False
     notification_email: Optional[str] = None
+    execution_layer: str = "extension"
+    headless: bool = True
 
 
 class ExtensionStatusResponse(BaseModel):

@@ -151,7 +151,7 @@ async def test_adaptive_replan_rejects_invalid_plan_shape():
     planner = AIAgentPlanner(api_key="", groq_api_key="")
     planner.ollama_enabled = True
     with patch.object(planner, "_call_llm", return_value='["Only one step"]'):
-        with pytest.raises(ValueError, match="between 2 and 6"):
+        with pytest.raises(ValueError, match=r"(?:between 2 and 6|2 to 6 milestones)"):
             await planner.replan_remaining_plan(
                 goal="Test task",
                 current_plan=["Step one"],

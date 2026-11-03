@@ -2839,13 +2839,13 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 name      = el.get("name", "").lower()
                 if tag in ["input", "textarea"]:
                     if type_attr in ["text", "search", "email", "textarea", ""] or not type_attr:
-                        if any(k in text or k in name for k in ["search", "q", "query", "find"]):
+                        if any(k in text or k in name or k in (el.get("aria_label") or "").lower() for k in ["search", "q", "query", "find"]):
                             search_input_id = el.get("index")
                             break
-                        if not search_input_id:
+                        if search_input_id is None:
                             search_input_id = el.get("index")
 
-        if search_input_id and not has_typed:
+        if search_input_id is not None and not has_typed:
             clean_query = goal
             for phrase in ["Search for", "search for", "Find", "find", "on google", "on Google"]:
                 clean_query = clean_query.replace(phrase, "")

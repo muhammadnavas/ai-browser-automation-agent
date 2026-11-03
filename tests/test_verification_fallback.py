@@ -40,6 +40,8 @@ def mock_controller():
     """Create a mock BrowserController."""
     ctrl = MagicMock()
     ctrl.current_url = "https://example.com"
+    ctrl.current_page = None
+    ctrl.execute_action = AsyncMock(return_value=("Action completed", None))
     ctrl.parse_interactive_elements = AsyncMock(return_value={
         "url": "https://example.com",
         "title": "Example Domain",

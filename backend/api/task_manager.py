@@ -19,7 +19,7 @@ import re
 import time
 import uuid
 import logging
-from typing import Dict, List, Any, Optional, Set
+from typing import Dict, List, Any, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from fastapi import WebSocket
@@ -30,6 +30,7 @@ from models.schemas import (
     BrowserAction
 )
 from browser.extension_adapter import ExtensionBrowserAdapter, extension_manager
+from browser.controller import BrowserController
 from browser.security import validate_url_security
 from agents.planner import AIAgentPlanner, domains_match, extract_target_url
 from services.report_generation_service import ReportGenerator
