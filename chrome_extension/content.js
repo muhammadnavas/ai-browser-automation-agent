@@ -1988,7 +1988,7 @@
       // Re-attach the overlay if a single-page app replaces the document body
       // or a page framework removes injected nodes during a rerender.
       if (lockObserver) lockObserver.disconnect();
-      lockObserver = new MutationObserver(() => {
+      lockObserver = new MutationObserver((mutations) => {
         if (!agentUiLocked) return;
         const root = document.documentElement;
         if (root && !document.getElementById("ai-agent-running-border")) {
@@ -1998,6 +1998,9 @@
           root.appendChild(indicator);
         }
         applyFrameScrollLock();
+        mutations.forEach((mutation) => {
+          mutation.addedNodes.forEach((node) => broadcastToFrames(node));
+        });
       });
       lockObserver.observe(document.documentElement, { childList: true, subtree: true });
       // Propagate the lock to existing and newly inserted child browsing contexts.
