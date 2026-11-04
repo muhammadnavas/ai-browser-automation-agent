@@ -71,3 +71,21 @@ def test_task_request_keeps_subagent_delegation_opt_in():
         }],
     )
     assert delegated.subagent_specs[0]["role"] == "research"
+
+
+@pytest.mark.asyncio
+async def test_parent_cancellation_stops_running_children():
+    manager=SubagentOrchestrator()
+    started=asyncio.Event()
+    async def worker(ctx):
+        started.set()
+        await asyncio.sleep(30)
+    manager.register_worker("worker",worker)
+    batch_task=asyncio.create_task(manager.run_batch(
+        "p6",[SubagentSpec(role="worker",goal="long-running")]
+    ))
+    await asyncio.wait_for(started.wait(),timeout=1)
+    cancelled=await manager.cancel_parent("p6")
+    batch=await asyncio.wait_for(batch_task,timeout=1)
+    assert cancelled==1
+    assert batch.results[0].status==SubagentStatus.CANCELLED
