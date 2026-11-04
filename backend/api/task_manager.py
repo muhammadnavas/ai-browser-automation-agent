@@ -1829,6 +1829,8 @@ class TaskManager:
                                     page_info=live_page_info,
                                     recent_errors=list(getattr(task.context, "recent_errors", []) or []),
                                     task_context=task.context,
+                                    completed_milestones=list((task.initial_plan or [])[:max(0, task.current_plan_step)]),
+                                    active_milestone_index=int(task.current_plan_step or 0),
                                 )
                                 if revised_plan:
                                     metadata.setdefault("original_plan", list(task.initial_plan or []))
