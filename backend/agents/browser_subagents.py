@@ -26,8 +26,26 @@ async def _open_owned_tab(ctx: SubagentContext) -> ExtensionBrowserAdapter:
     if not safe:
         raise ValueError(f"Navigation blocked by URL security policy: {reason}")
     adapter = ExtensionBrowserAdapter(task_id=ctx.subagent_id, show_badges=False, screenshots_dir="screenshots")
-    await adapter.start(normalized or url)
-    return adapter
+    try:
+        await adapter.start(normalized or url)
+        return adapter
+    except BaseException:
+        # If tab creation succeeded but startup was interrupted, release the
+        # extension-side mapping before propagating the original failure.
+        try:
+            await extension_manager.send_command(
+                task_id=ctx.subagent_id,
+                command_type="close_tab",
+                payload={},
+                timeout=5.0,
+            )
+        except Exception:
+            pass
+        try:
+            await adapter.stop()
+        except Exception:
+            pass
+        raise
 
 async def _close_owned_tab(adapter: ExtensionBrowserAdapter) -> None:
     # Use the extension's dedicated close_tab command. A CLOSE_TAB browser
