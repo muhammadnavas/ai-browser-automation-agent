@@ -567,6 +567,38 @@ class TaskManager:
             await self.broadcast_task_update(task_id)
             await self._save_cached_task_state(task_id)
 
+            # Optional master-agent delegation. Existing clients send no
+            # subagent_specs and continue through the unchanged single-agent path.
+            raw_subagent_specs = getattr(req, "subagent_specs", None) or []
+            if raw_subagent_specs:
+                child_specs = [SubagentSpec.model_validate(item) for item in raw_subagent_specs]
+                child_batch = await self.run_subagent_batch(task_id, child_specs)
+                task.plan_metadata["subagent_batch_status"] = child_batch.status
+                task.plan_metadata["subagent_summary"] = child_batch.summary
+                for child_result in child_batch.results:
+                    output = child_result.output
+                    if isinstance(output, dict):
+                        output = dict(output)
+                        if isinstance(output.get("page_text"), str):
+                            output["page_text"] = output["page_text"][:6000]
+                        if isinstance(output.get("evidence_excerpt"), str):
+                            output["evidence_excerpt"] = output["evidence_excerpt"][:1200]
+                        if isinstance(output.get("links"), list):
+                            output["links"] = output["links"][:20]
+                    task.context.extracted_snippets.append({
+                        "source": "subagent",
+                        "subagent_id": child_result.subagent_id,
+                        "role": child_result.role,
+                        "status": child_result.status.value,
+                        "goal": child_result.goal,
+                        "output": output,
+                        "error": child_result.error,
+                    })
+                task.context.extracted_snippets = task.context.extracted_snippets[-20:]
+                task.updated_at = time.time()
+                await self.broadcast_task_update(task_id)
+                await self._save_cached_task_state(task_id)
+
             # ── Phase 1: Start browser and navigate ────────────────────────────
             target_goal_url = planner.extract_target_url(req.goal)
             effective_start_url = req.start_url
