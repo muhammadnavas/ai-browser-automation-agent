@@ -121,3 +121,22 @@ def test_orchestration_milestone_graph_does_not_mark_progress_as_complete():
 
     assert statuses == ["in_progress", "active", "pending"]
     assert "completed" not in statuses
+
+
+def test_orchestration_milestone_graph_marks_only_explicitly_verified_steps_complete():
+    task = TaskResponse(
+        task_id="verified-orchestration-test",
+        goal="Complete a form",
+        status=TaskStatus.RUNNING,
+        created_at=1.0,
+        updated_at=1.0,
+        initial_plan=["Open form", "Fill fields", "Review and submit"],
+        current_plan_step=2,
+        plan_metadata={"completed_milestone_ids": ["m1"]},
+    )
+
+    TaskManager._refresh_milestone_graph(task)
+    statuses = [item["status"] for item in task.plan_metadata["milestone_graph"]]
+
+    assert statuses == ["completed", "in_progress", "active"]
+    assert task.plan_metadata["completed_milestone_ids"] == ["m1"]
