@@ -98,7 +98,10 @@ class SubagentOrchestrator:
         failures=summary["failed"]+summary["timed_out"]
         status="partial" if failures and summary["completed"] else ("failed" if failures else ("cancelled" if summary["cancelled"] else "completed"))
         batch=SubagentBatchResult(parent_task_id=parent_task_id,status=status,results=normalized,summary=summary)
-        self._batches[parent_task_id]=batch; return batch
+        self._batches[parent_task_id]=batch
+        # Keep result snapshots, but release completed asyncio task handles.
+        self._parent_tasks.pop(parent_task_id, None)
+        return batch
     async def cancel_parent(self,parent_task_id: str) -> int:
         tasks=self._parent_tasks.get(parent_task_id,[]); count=0
         for ctx in list(self._contexts.values()):
