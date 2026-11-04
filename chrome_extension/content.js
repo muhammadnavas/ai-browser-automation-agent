@@ -1408,6 +1408,16 @@
 
     // ── Click / Double Click / Right Click ──
     if (actType === "click") {
+      // Capture observable state before dispatch. A successful DOM click call
+      // alone does not prove that the page accepted or completed the intended action.
+      const beforeClickState = {
+        url: window.location.href,
+        expanded: el?.getAttribute("aria-expanded"),
+        pressed: el?.getAttribute("aria-pressed"),
+        checked: "checked" in (el || {}) ? Boolean(el.checked) : null,
+        dialogCount: document.querySelectorAll('[role="dialog"], dialog[open]').length,
+        targetConnected: Boolean(el?.isConnected),
+      };
       const clickContext = [action.text, action.reasoning, action.selector].filter(Boolean).join(" ");
       if (
         location.hostname === "mail.google.com" &&
@@ -1545,7 +1555,36 @@
         }
       }
 
-      return { success: true, description: `Clicked on [${action.selector || action.element_id || action.text || el.tagName}]` };
+      // Allow synchronous framework handlers and common dialog/navigation
+      // transitions to settle, then report what was actually observable.
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const afterClickState = {
+        url: window.location.href,
+        expanded: el?.isConnected ? el.getAttribute("aria-expanded") : null,
+        pressed: el?.isConnected ? el.getAttribute("aria-pressed") : null,
+        checked: el?.isConnected && "checked" in el ? Boolean(el.checked) : null,
+        dialogCount: document.querySelectorAll('[role="dialog"], dialog[open]').length,
+        targetConnected: Boolean(el?.isConnected),
+      };
+      const observedChange = (
+        beforeClickState.url !== afterClickState.url ||
+        beforeClickState.expanded !== afterClickState.expanded ||
+        beforeClickState.pressed !== afterClickState.pressed ||
+        beforeClickState.checked !== afterClickState.checked ||
+        beforeClickState.dialogCount !== afterClickState.dialogCount ||
+        beforeClickState.targetConnected !== afterClickState.targetConnected
+      );
+      return {
+        success: true,
+        description: observedChange
+          ? `Clicked [${action.selector || action.element_id || action.text || el.tagName}] and observed a page-state change.`
+          : `Click dispatched to [${action.selector || action.element_id || action.text || el.tagName}]; its effect was not independently observed.`,
+        details: {
+          postcondition: observedChange ? "observed_state_change" : "not_observed",
+          before: beforeClickState,
+          after: afterClickState,
+        },
+      };
     }
 
     if (actType === "double_click") {
