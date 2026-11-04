@@ -10,6 +10,7 @@ class FakeAdapter:
     async def parse_interactive_elements(self):
         return {"url":self.url,"title":"Test page","headings":["Heading"],"page_text":"Welcome to the test page","elements":[{"text":"Docs","href":"https://example.com/docs"}],"form_fields":[SimpleNamespace(field_type=SimpleNamespace(value="text"),selector="#name",name="name",field_id="name",label="Name",aria_label=None,visible=True,disabled=False,readonly=False)]}
     async def execute_action(self, action, task_form_fields=None): self.actions.append(action.action); return ("action completed",None)
+    async def unlock_ui(self): pass
     async def stop(self): self.is_running=False
 
 def context(role="navigation", payload=None):
@@ -41,6 +42,8 @@ async def test_form_worker_fills_only_explicit_mapping_and_never_submits(fake_br
     monkeypatch.setattr(workers,"ExtensionBrowserAdapter",TrackingAdapter)
     result=await workers.form_worker(context("form",{"url":"https://example.com","values":{"name":"Navas"}}))
     assert result["filled_count"]==1 and result["submitted"] is False
+    assert result["tab_open_for_review"] is True
+    assert await workers.close_form_review_tab("parent",result["subagent_id"]) is True
     assert ActionType.FILL_FIELD in instances[0].actions
     assert ActionType.CLOSE_TAB not in instances[0].actions
 
