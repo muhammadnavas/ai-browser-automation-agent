@@ -36,3 +36,23 @@ async def test_worker_timeout_is_reported():
     manager.register_worker("slow",slow)
     batch=await manager.run_batch("p4",[SubagentSpec(role="slow",goal="wait",timeout_seconds=1)])
     assert batch.results[0].status==SubagentStatus.TIMED_OUT
+
+@pytest.mark.asyncio
+async def test_fail_fast_cancels_running_siblings():
+    manager=SubagentOrchestrator(max_concurrency=2)
+    started=asyncio.Event()
+    async def broken(ctx):
+        await asyncio.sleep(0.01)
+        raise RuntimeError("worker failure")
+    async def long_running(ctx):
+        started.set()
+        await asyncio.sleep(30)
+    manager.register_worker("broken",broken)
+    manager.register_worker("long",long_running)
+    batch=await manager.run_batch("p5",[
+        SubagentSpec(role="broken",goal="fail"),
+        SubagentSpec(role="long",goal="wait"),
+    ],fail_fast=True)
+    assert batch.status=="failed"
+    assert batch.summary["failed"]==1
+    assert batch.summary["cancelled"]==1
