@@ -35,6 +35,9 @@ from browser.controller import BrowserController
 from browser.security import validate_url_security
 from agents.planner import AIAgentPlanner, domains_match, extract_target_url
 from agents.subagents import SubagentSpec, SubagentBatchResult, subagent_orchestrator
+from agents.browser_subagents import register_browser_subagents
+
+register_browser_subagents()
 from services.report_generation_service import ReportGenerator
 from services.task_archive import task_archive
 from services.cache_service import CacheService, default_cache_service
