@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const activeTasksList = document.getElementById("active-tasks-list");
 
   // Load saved settings
-  const { serverUrl = "ws://localhost:8000/api/extension/ws" } = await chrome.storage.local.get("serverUrl");
+  const { serverUrl = "ws://127.0.0.1:8000/api/extension/ws" } = await chrome.storage.local.get("serverUrl");
   serverUrlInput.value = serverUrl;
 
   async function refreshStatus() {
@@ -27,7 +27,15 @@ document.addEventListener("DOMContentLoaded", async () => {
           statusText.textContent = "Connected";
         } else {
           statusIndicator.className = "status-pill status-disconnected";
-          statusText.textContent = "Disconnected";
+          const stateLabels = {
+            0: "Connecting...",
+            1: "Connected",
+            2: "Closing...",
+            3: "Disconnected",
+            "-1": "Starting..."
+          };
+          statusText.textContent = stateLabels[String(response.socket_state)] || "Disconnected";
+          statusText.title = response.last_error || `Backend: ${response.server_url || "not configured"}`;
         }
 
         const tasks = response.active_tasks || [];
@@ -84,7 +92,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Open Dashboard button
   openDashboardBtn.addEventListener("click", async () => {
     const { serverUrl = "ws://localhost:8000/api/extension/ws" } = await chrome.storage.local.get("serverUrl");
-    let httpUrl = "http://localhost:8000";
+    let httpUrl = "http://127.0.0.1:8000";
     try {
       if (serverUrl.startsWith("ws://")) {
         httpUrl = serverUrl.replace("ws://", "http://").replace("/api/extension/ws", "");
