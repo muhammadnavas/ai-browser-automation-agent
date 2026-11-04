@@ -948,6 +948,7 @@ class TaskManager:
                     if (
                         isinstance(prior, dict)
                         and prior.get("signature") == action_signature
+                        and bool(current_fingerprint)
                         and prior.get("dom_fingerprint") == current_fingerprint
                         and prior.get("url") == current_page_url
                     ):
