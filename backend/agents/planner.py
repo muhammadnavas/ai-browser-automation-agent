@@ -1031,7 +1031,7 @@ class AIAgentPlanner:
                     "message": f"⚡ Plan Cache HIT (Memory L1): Reused {len(cached.plan)}-step plan from active session",
                     "details": f"Source: {cached.source} (v{cached.version}) • Reused without regeneration latency",
                 }
-                return cached.copy_plan()
+                return self._filter_unrequested_report_steps(goal, cached.copy_plan())
             logger.info(f"PlanCache L1 MISS for goal: '{goal}' — checking Redis L2 cache.")
 
         # ------------------------------------------------------------------
