@@ -2915,11 +2915,14 @@ Task evidence:
         task.error = reason
         task.updated_at = time.time()
 
-        # Stop delegated children as part of the same parent-task cancellation.
+        # Cancel running children first, then close any form-review tabs they
+        # may have retained while finishing their cancellation cleanup.
+        async def _cancel_delegated_work() -> None:
+            await self.subagent_orchestrator.cancel_parent(task_id)
+            await close_parent_form_review_tabs(task_id)
+
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.subagent_orchestrator.cancel_parent(task_id))
-            loop.create_task(close_parent_form_review_tabs(task_id))
+            asyncio.get_running_loop().create_task(_cancel_delegated_work())
         except RuntimeError:
             pass
 
