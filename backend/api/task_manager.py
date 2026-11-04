@@ -599,6 +599,14 @@ class TaskManager:
                 await self.broadcast_task_update(task_id)
                 await self._save_cached_task_state(task_id)
 
+            # Cancellation may arrive while delegated workers are running, before
+            # the main executor has initialized its pause/cancel events.
+            if task.status == TaskStatus.CANCELLED:
+                task.plan_status = "cancelled"
+                task.updated_at = time.time()
+                await self.broadcast_task_update(task_id)
+                return
+
             # ── Phase 1: Start browser and navigate ────────────────────────────
             target_goal_url = planner.extract_target_url(req.goal)
             effective_start_url = req.start_url
