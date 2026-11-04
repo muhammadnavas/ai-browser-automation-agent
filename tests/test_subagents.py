@@ -89,3 +89,26 @@ async def test_parent_cancellation_stops_running_children():
     batch=await asyncio.wait_for(batch_task,timeout=1)
     assert cancelled==1
     assert batch.results[0].status==SubagentStatus.CANCELLED
+
+@pytest.mark.asyncio
+async def test_direct_batch_cancellation_releases_parent_task_handles():
+    manager=SubagentOrchestrator()
+    started=asyncio.Event()
+
+    async def worker(ctx):
+        started.set()
+        await asyncio.sleep(30)
+
+    manager.register_worker("worker",worker)
+    batch_task=asyncio.create_task(manager.run_batch(
+        "p7",[SubagentSpec(role="worker",goal="cancel batch runner")])
+    )
+    await asyncio.wait_for(started.wait(),timeout=1)
+    batch_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await batch_task
+
+    assert "p7" not in manager._parent_tasks
+    # A retry for the same parent must not be blocked by stale task handles.
+    retry=await manager.run_batch("p7",[])
+    assert retry.status=="completed"
