@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+from agents.subagents import SubagentSpec
 from models.schemas import (
     TaskRequest, TaskResponse,
     ExtractionRequest, ExtractionResult,
@@ -76,6 +77,29 @@ async def create_task(req: TaskRequest):
     bg_task = asyncio.create_task(task_manager.run_task_execution(task.task_id, req))
     task_manager.running_tasks[task.task_id] = bg_task
     return task
+
+@router.post("/tasks/{task_id}/subagents", tags=["subagents"])
+async def run_subagents(task_id: str, specs: List[SubagentSpec], fail_fast: bool = False):
+    """Run registered child workers under an existing parent task."""
+    try:
+        batch = await task_manager.run_subagent_batch(task_id, specs, fail_fast=fail_fast)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return batch.model_dump()
+
+
+@router.get("/tasks/{task_id}/subagents", tags=["subagents"])
+async def get_subagent_results(task_id: str):
+    """Return the latest child-agent batch for a parent task."""
+    if task_id not in task_manager.tasks and task_id not in task_manager.task_history:
+        raise HTTPException(status_code=404, detail="Parent task not found")
+    batch = task_manager.subagent_orchestrator.get_batch(task_id)
+    if batch is None:
+        return {"parent_task_id": task_id, "status": "not_started", "results": [], "summary": {}}
+    return batch.model_dump()
+
 
 @router.get("/tasks/history", response_model=List[TaskResponse])
 async def list_task_history():
