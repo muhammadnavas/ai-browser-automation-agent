@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from agents.subagents import SubagentContext, subagent_orchestrator
 from browser.extension_adapter import ExtensionBrowserAdapter, extension_manager
 from browser.security import validate_url_security
-from models.schemas import ActionType, BrowserAction, FieldType
+from models.schemas import ActionType, BrowserAction
 
 def _required_url(ctx: SubagentContext) -> str:
     url = str(ctx.input.get("url") or "").strip()
@@ -30,10 +30,16 @@ async def _open_owned_tab(ctx: SubagentContext) -> ExtensionBrowserAdapter:
     return adapter
 
 async def _close_owned_tab(adapter: ExtensionBrowserAdapter) -> None:
-    # Close the child-owned tab before releasing its extension task mapping.
+    # Use the extension's dedicated close_tab command. A CLOSE_TAB browser
+    # action is not equivalent: it is routed through the content-script action
+    # executor and may not release the background task-tab mapping.
     try:
-        if adapter.is_running:
-            await adapter.execute_action(BrowserAction(action=ActionType.CLOSE_TAB))
+        await extension_manager.send_command(
+            task_id=adapter.task_id,
+            command_type="close_tab",
+            payload={},
+            timeout=5.0,
+        )
     except Exception:
         pass
     try:
