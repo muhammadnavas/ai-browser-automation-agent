@@ -113,7 +113,12 @@ class SubagentOrchestrator:
             for ctx in list(self._contexts.values()):
                 if ctx.parent_task_id==parent_task_id: ctx.cancellation_event.set()
             for task in tasks: task.cancel()
-            await asyncio.gather(*tasks,return_exceptions=True); raise
+            await asyncio.gather(*tasks,return_exceptions=True)
+            # The batch runner itself was cancelled (for example, its parent
+            # task was cancelled). Child handles are now settled; release them
+            # so this parent can be safely retried without retaining stale tasks.
+            self._parent_tasks.pop(parent_task_id, None)
+            raise
         normalized=[r for r in results if r is not None]
         summary={s.value:sum(r.status==s for r in normalized) for s in SubagentStatus}
         failures=summary["failed"]+summary["timed_out"]
