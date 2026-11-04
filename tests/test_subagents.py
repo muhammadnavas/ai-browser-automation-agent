@@ -56,3 +56,18 @@ async def test_fail_fast_cancels_running_siblings():
     assert batch.status=="failed"
     assert batch.summary["failed"]==1
     assert batch.summary["cancelled"]==1
+
+
+def test_task_request_keeps_subagent_delegation_opt_in():
+    from models.schemas import TaskRequest
+    request = TaskRequest(goal="Open a website")
+    assert request.subagent_specs == []
+    delegated = TaskRequest(
+        goal="Research a website",
+        subagent_specs=[{
+            "role": "research",
+            "goal": "Collect public page information",
+            "input": {"url": "https://example.com"},
+        }],
+    )
+    assert delegated.subagent_specs[0]["role"] == "research"
