@@ -8,7 +8,7 @@
 - Per-worker timeouts, explicit failure states, timestamps and durations.
 - Parent cancellation and fail-fast sibling cancellation.
 - Dedicated Chrome Extension tab per browser worker, with extension-side tab cleanup.
-- Form worker fills only explicitly mapped, editable fields; it never submits.
+- Form worker fills only explicitly mapped, editable fields; it never submits and leaves the tab unlocked for human review.
 - URL validation runs before child-tab navigation.
 - TaskManager integration and API endpoints to run/read child batches.
 
@@ -44,7 +44,7 @@ planner can use the delegated evidence during the main execution.
 |---|---|---|
 | navigation | Open URL and inspect live DOM | Own child tab |
 | research | Extract bounded visible text, headings and links | Read-only |
-| form | Fill explicitly supplied values | Skips password/file/hidden fields; never submits |
+| form | Fill explicitly supplied values | Skips password/file/hidden fields; never submits; retains tab for human review |
 | verification | Check URL and visible-text postconditions | Reports evidence; does not claim unobserved success |
 
 ## API
@@ -81,7 +81,8 @@ Each browser worker creates a unique task-owned tab in the connected Chrome
 session. The extension maps commands to the owning task ID, so workers do not
 share a mutable tab. Navigation, research and verification workers close their exact task tabs in cleanup. The form worker intentionally keeps its populated tab open and unlocked for human review; the close-tab endpoint releases it, and cancelling the parent closes retained review tabs.
 Workers that intentionally target a shared resource must still request an
-exclusive resource lock with a stable resource_key.
+exclusive resource lock with a stable resource_key. Cancelling the parent task
+also closes any retained form-review tabs.
 
 ## Remaining production validation
 
