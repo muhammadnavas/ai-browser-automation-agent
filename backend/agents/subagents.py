@@ -73,12 +73,28 @@ class SubagentOrchestrator:
                 result.status=SubagentStatus.COMPLETED
             except asyncio.TimeoutError:
                 result.status=SubagentStatus.TIMED_OUT; result.error=f"Worker exceeded {spec.timeout_seconds:g}s timeout."
-                if fail_fast: stop_event.set()
+                if fail_fast:
+                    stop_event.set()
+                    for child_context in list(self._contexts.values()):
+                        if child_context.parent_task_id == parent_task_id:
+                            child_context.cancellation_event.set()
+                    current = asyncio.current_task()
+                    for sibling in self._parent_tasks.get(parent_task_id, []):
+                        if sibling is not current and not sibling.done():
+                            sibling.cancel()
             except asyncio.CancelledError:
                 result.status=SubagentStatus.CANCELLED; result.error="Subagent cancelled."
             except Exception as exc:
                 result.status=SubagentStatus.FAILED; result.error=f"{type(exc).__name__}: {exc}"[:1000]; logger.exception("Subagent %s failed",child_id)
-                if fail_fast: stop_event.set()
+                if fail_fast:
+                    stop_event.set()
+                    for child_context in list(self._contexts.values()):
+                        if child_context.parent_task_id == parent_task_id:
+                            child_context.cancellation_event.set()
+                    current = asyncio.current_task()
+                    for sibling in self._parent_tasks.get(parent_task_id, []):
+                        if sibling is not current and not sibling.done():
+                            sibling.cancel()
             finally:
                 result.completed_at=time.time(); result.duration_ms=round((result.completed_at-started)*1000,2)
                 self._contexts.pop(child_id,None); results[index]=result
