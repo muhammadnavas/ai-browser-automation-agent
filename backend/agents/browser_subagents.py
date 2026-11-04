@@ -121,7 +121,11 @@ async def form_worker(ctx: SubagentContext) -> Dict[str, Any]:
             kind = getattr(getattr(field, "field_type", None), "value", str(getattr(field, "field_type", ""))).lower()
             if kind in {"password", "file", "hidden", "submit"}:
                 continue
-            keys = [getattr(field, "selector", ""), getattr(field, "name", ""), getattr(field, "field_id", ""), getattr(field, "label", ""), getattr(field, "aria_label", "")]
+            keys = [getattr(field, "selector", ""), getattr(field, "field_id", ""), getattr(field, "label", ""), getattr(field, "aria_label", "")]
+            # A radio group's name is shared by every option; only accept an
+            # option-specific mapping to avoid selecting every radio in a group.
+            if kind != "radio":
+                keys.insert(1, getattr(field, "name", ""))
             matched = next((key for key in keys if key and key in values), None)
             if not matched: continue
             raw_value = values[matched]
@@ -130,7 +134,18 @@ async def form_worker(ctx: SubagentContext) -> Dict[str, Any]:
             if kind in {"dropdown"}:
                 action = BrowserAction(action=ActionType.SELECT_OPTION, selector=field.selector, value=value)
             elif kind in {"checkbox"}:
-                action = BrowserAction(action=ActionType.CHECK_BOX, selector=field.selector, checked=str(raw_value).strip().lower() in {"1","true","yes","on"})
+                should_check = str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+                action = BrowserAction(
+                    action=ActionType.CHECK_BOX if should_check else ActionType.UNCHECK,
+                    selector=field.selector,
+                )
+            elif kind == "radio":
+                action = BrowserAction(
+                    action=ActionType.RADIO_BUTTON,
+                    selector=field.selector,
+                    radio_name=getattr(field, "name", None),
+                    value=value,
+                )
             else:
                 action = BrowserAction(action=ActionType.FILL_FIELD, selector=field.selector, text=value)
             try:
