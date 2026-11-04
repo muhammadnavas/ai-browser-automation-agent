@@ -16,16 +16,17 @@ def _required_url(ctx: SubagentContext) -> str:
     url = str(ctx.input.get("url") or "").strip()
     if not url:
         raise ValueError("input.url is required for this browser worker")
-    safe, reason, normalized = validate_url_security(url, resolve_dns=True)
-    if not safe:
-        raise ValueError(f"Navigation blocked by URL security policy: {reason}")
-    return normalized or url
+    return url
 
 async def _open_owned_tab(ctx: SubagentContext) -> ExtensionBrowserAdapter:
     if not extension_manager.is_connected:
         raise RuntimeError("Chrome Extension is disconnected")
+    url = _required_url(ctx)
+    safe, reason, normalized = await asyncio.to_thread(validate_url_security, url, True)
+    if not safe:
+        raise ValueError(f"Navigation blocked by URL security policy: {reason}")
     adapter = ExtensionBrowserAdapter(task_id=ctx.subagent_id, show_badges=False, screenshots_dir="screenshots")
-    await adapter.start(_required_url(ctx))
+    await adapter.start(normalized or url)
     return adapter
 
 async def _close_owned_tab(adapter: ExtensionBrowserAdapter) -> None:
