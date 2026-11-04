@@ -76,3 +76,48 @@ def test_task_context_mutation_and_serialization():
     assert restored.visited_urls == ["https://example.com/login"]
     assert len(restored.action_history) == 1
     assert restored.filled_fields["#password"]["value"] == "********"
+
+
+
+def test_orchestration_milestone_graph_tracks_ordered_dependencies():
+    graph = TaskManager._build_milestone_graph([
+        "Open the site",
+        "Inspect the form",
+        "Fill required fields",
+    ])
+
+    assert [item["id"] for item in graph] == ["m1", "m2", "m3"]
+    assert graph[0]["depends_on"] == []
+    assert graph[1]["depends_on"] == ["m1"]
+    assert graph[2]["depends_on"] == ["m2"]
+    assert all(item["status"] == "pending" for item in graph)
+
+
+def test_orchestration_action_fingerprint_is_stable_and_payload_sensitive():
+    from models.schemas import BrowserAction
+
+    first = BrowserAction(action=ActionType.FILL, selector="#name", text="Navas")
+    same = BrowserAction(action=ActionType.FILL, selector="#name", text="Navas", reasoning="different explanation")
+    changed = BrowserAction(action=ActionType.FILL, selector="#name", text="Muhammad")
+
+    assert TaskManager._action_fingerprint(first) == TaskManager._action_fingerprint(same)
+    assert TaskManager._action_fingerprint(first) != TaskManager._action_fingerprint(changed)
+
+
+def test_orchestration_milestone_graph_does_not_mark_progress_as_complete():
+    task = TaskResponse(
+        task_id="orchestration-test",
+        goal="Complete a form",
+        status=TaskStatus.RUNNING,
+        created_at=1.0,
+        updated_at=1.0,
+        initial_plan=["Open form", "Fill fields", "Review and submit"],
+        current_plan_step=1,
+        plan_metadata={},
+    )
+
+    TaskManager._refresh_milestone_graph(task)
+    statuses = [item["status"] for item in task.plan_metadata["milestone_graph"]]
+
+    assert statuses == ["in_progress", "active", "pending"]
+    assert "completed" not in statuses
