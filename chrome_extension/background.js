@@ -22,6 +22,8 @@ let socket = null;
 let reconnectTimer = null;
 let pingInterval = null;
 let isConnecting = false;
+let lastConnectionError = null;
+let lastConnectedAt = null;
 
 // In-memory task mapping: task_id -> tab_id
 let taskTabMap = new Map();
@@ -81,21 +83,23 @@ async function connectWebSocket() {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
-
   if (isConnecting) return;
   isConnecting = true;
 
-  const { serverUrl } = await loadSettings();
-
   try {
+    const { serverUrl } = await loadSettings();
     console.log(`[AI Extension] Connecting to ${serverUrl}...`);
-    socket = new WebSocket(serverUrl);
+    const candidate = new WebSocket(serverUrl);
+    socket = candidate;
 
-    socket.onopen = async () => {
+    candidate.onopen = async () => {
+      if (socket !== candidate) return;
       console.log("[AI Extension] Connected to FastAPI backend.");
       isConnecting = false;
+      lastConnectionError = null;
+      lastConnectedAt = new Date().toISOString();
       await updateBadgeStatus(true);
-      await chrome.storage.local.set({ isConnected: true });
+      await chrome.storage.local.set({ isConnected: true, lastConnectionError: null, lastConnectedAt });
 
       // Send initial registration handshake
       sendWsMessage({
@@ -114,7 +118,8 @@ async function connectWebSocket() {
       }, 20000);
     };
 
-    socket.onmessage = async (event) => {
+    candidate.onmessage = async (event) => {
+      if (socket !== candidate) return;
       try {
         const message = JSON.parse(event.data);
         await handleBackendMessage(message);
@@ -123,12 +128,14 @@ async function connectWebSocket() {
       }
     };
 
-    socket.onclose = async (event) => {
-      console.warn("[AI Extension] WebSocket disconnected. Code:", event.code);
+    candidate.onclose = async (event) => {
+      if (socket !== candidate) return;
+      console.warn("[AI Extension] WebSocket disconnected. Code:", event.code, event.reason || "");
       isConnecting = false;
+      lastConnectionError = lastConnectionError || `WebSocket closed (code ${event.code})`;
       if (pingInterval) clearInterval(pingInterval);
       await updateBadgeStatus(false);
-      await chrome.storage.local.set({ isConnected: false });
+      await chrome.storage.local.set({ isConnected: false, lastConnectionError });
 
       // Schedule reconnection with backoff
       if (!reconnectTimer) {
@@ -139,12 +146,17 @@ async function connectWebSocket() {
       }
     };
 
-    socket.onerror = (error) => {
+    candidate.onerror = (error) => {
       console.error("[AI Extension] WebSocket error:", error);
+      lastConnectionError = `Could not connect to ${candidate.url}. Confirm the backend is running and the WebSocket route is reachable.`;
+      chrome.storage.local.set({ isConnected: false, lastConnectionError }).catch(() => {});
+      updateBadgeStatus(false);
     };
   } catch (err) {
     console.error("[AI Extension] Connection failed:", err);
     isConnecting = false;
+    lastConnectionError = err?.message || String(err);
+    await chrome.storage.local.set({ isConnected: false, lastConnectionError }).catch(() => {});
     await updateBadgeStatus(false);
     if (!reconnectTimer) {
       reconnectTimer = setTimeout(() => {
@@ -804,14 +816,18 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "get_status") {
-      const { isConnected } = await chrome.storage.local.get("isConnected");
+      const { serverUrl } = await loadSettings();
+      const connected = Boolean(socket && socket.readyState === WebSocket.OPEN);
       const activeTasks = Array.from(taskTabMap.entries()).map(([taskId, tabId]) => ({
         task_id: taskId,
         tab_id: tabId,
       }));
       sendResponse({
-        connected: Boolean(isConnected),
+        connected,
         socket_state: socket ? socket.readyState : -1,
+        server_url: serverUrl,
+        last_error: lastConnectionError,
+        last_connected_at: lastConnectedAt,
         active_tasks: activeTasks,
       });
     } else if (message.type === "reconnect") {
