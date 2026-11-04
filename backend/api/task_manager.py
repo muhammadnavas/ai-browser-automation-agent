@@ -127,7 +127,8 @@ class TaskManager:
             elif idx == active:
                 node["status"] = "active"
             elif idx < active:
-                node["status"] = "pending"
+                # Earlier steps are historical progress, not verified completion.
+                node["status"] = "in_progress"
             else:
                 node["status"] = "pending"
         metadata["completed_milestone_ids"] = sorted(
