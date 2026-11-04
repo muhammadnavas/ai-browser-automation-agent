@@ -42,6 +42,7 @@ class SubagentOrchestrator:
         self._semaphore=asyncio.Semaphore(max_concurrency); self._workers: Dict[str,Worker]={}
         self._batches: Dict[str,SubagentBatchResult]={}; self._contexts: Dict[str,SubagentContext]={}
         self._resource_locks: Dict[str,asyncio.Lock]={}; self._parent_tasks: Dict[str,List[asyncio.Task]]={}
+        self._max_batches = 200
     def register_worker(self, role: str, worker: Worker) -> None:
         role=(role or "").strip().lower()
         if not role or not callable(worker): raise ValueError("A non-empty role and async worker are required")
@@ -99,7 +100,11 @@ class SubagentOrchestrator:
                 result.completed_at=time.time(); result.duration_ms=round((result.completed_at-started)*1000,2)
                 self._contexts.pop(child_id,None); results[index]=result
         if not specs:
-            batch=SubagentBatchResult(parent_task_id=parent_task_id,status="completed"); self._batches[parent_task_id]=batch; return batch
+            batch=SubagentBatchResult(parent_task_id=parent_task_id,status="completed")
+            self._batches[parent_task_id]=batch
+            while len(self._batches) > self._max_batches:
+                self._batches.pop(next(iter(self._batches)))
+            return batch
         tasks=[asyncio.create_task(execute(i,s),name=f"subagent:{parent_task_id}:{i}") for i,s in enumerate(specs)]
         self._parent_tasks[parent_task_id]=tasks
         try: await asyncio.gather(*tasks)
@@ -115,6 +120,8 @@ class SubagentOrchestrator:
         status="partial" if failures and summary["completed"] else ("failed" if failures else ("cancelled" if summary["cancelled"] else "completed"))
         batch=SubagentBatchResult(parent_task_id=parent_task_id,status=status,results=normalized,summary=summary)
         self._batches[parent_task_id]=batch
+        while len(self._batches) > self._max_batches:
+            self._batches.pop(next(iter(self._batches)))
         # Keep result snapshots, but release completed asyncio task handles.
         self._parent_tasks.pop(parent_task_id, None)
         return batch
