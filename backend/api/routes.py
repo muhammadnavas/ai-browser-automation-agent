@@ -90,6 +90,18 @@ async def run_subagents(task_id: str, specs: List[SubagentSpec], fail_fast: bool
     return batch.model_dump()
 
 
+@router.post("/tasks/{task_id}/subagents/{subagent_id}/close-tab", tags=["subagents"])
+async def close_subagent_review_tab(task_id: str, subagent_id: str):
+    """Close a retained form-review tab owned by this parent task."""
+    if task_id not in task_manager.tasks and task_id not in task_manager.task_history:
+        raise HTTPException(status_code=404, detail="Parent task not found")
+    from agents.browser_subagents import close_form_review_tab
+    closed = await close_form_review_tab(task_id, subagent_id)
+    if not closed:
+        raise HTTPException(status_code=404, detail="Form-review tab not found for this parent task")
+    return {"parent_task_id": task_id, "subagent_id": subagent_id, "closed": True}
+
+
 @router.get("/tasks/{task_id}/subagents", tags=["subagents"])
 async def get_subagent_results(task_id: str):
     """Return the latest child-agent batch for a parent task."""
