@@ -17,7 +17,8 @@ def context(role="navigation", payload=None):
 
 @pytest.fixture
 def fake_browser(monkeypatch):
-    monkeypatch.setattr(workers,"extension_manager",SimpleNamespace(is_connected=True))
+    async def close_tab(**kwargs): return {"success": True}
+    monkeypatch.setattr(workers,"extension_manager",SimpleNamespace(is_connected=True,send_command=close_tab))
     monkeypatch.setattr(workers,"validate_url_security",lambda url,resolve_dns=True:(True,"",url))
     monkeypatch.setattr(workers,"ExtensionBrowserAdapter",FakeAdapter)
 
