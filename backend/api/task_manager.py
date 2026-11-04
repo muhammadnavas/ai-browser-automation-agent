@@ -14,6 +14,7 @@ Wires together:
 
 import asyncio
 import json
+import hashlib
 import os
 import re
 import time
@@ -86,6 +87,42 @@ class TaskManager:
             return True
         ev = self.cancel_events.get(task_id)
         return bool(ev and ev.is_set())
+
+    @staticmethod
+    def _action_fingerprint(action: BrowserAction) -> str:
+        """Stable fingerprint for detecting an identical action against an unchanged page."""
+        payload = action.dict(exclude={"reasoning"}, exclude_none=True)
+        # Element indices are snapshot-local. Include them only alongside the DOM fingerprint.
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _build_milestone_graph(milestones: List[str]) -> List[Dict[str, Any]]:
+        """Represent plan milestones as an ordered dependency graph (each depends on its predecessor)."""
+        graph = []
+        for index, title in enumerate(milestones or []):
+            graph.append({
+                "id": f"m{index + 1}",
+                "index": index,
+                "title": str(title),
+                "depends_on": [f"m{index}"] if index else [],
+                "status": "pending",
+            })
+        return graph
+
+    @staticmethod
+    def _refresh_milestone_graph(task: TaskResponse) -> None:
+        """Keep graph status aligned with the visible active milestone without claiming completion."""
+        metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+        graph = metadata.get("milestone_graph")
+        if not isinstance(graph, list) or len(graph) != len(task.initial_plan or []):
+            graph = TaskManager._build_milestone_graph(task.initial_plan or [])
+        active = max(0, min(int(task.current_plan_step or 0), len(graph) - 1)) if graph else -1
+        for idx, node in enumerate(graph):
+            # Completion is reserved for the final independently verified task outcome.
+            node["status"] = "active" if idx == active else ("pending" if idx > active else "in_progress")
+        metadata["milestone_graph"] = graph
+        task.plan_metadata = metadata
 
     async def _sleep_or_cancel(self, task_id: str, delay: float) -> bool:
         """
@@ -485,6 +522,8 @@ class TaskManager:
             task.plan_metadata["cache_details"] = cache_info
             task.plan_metadata["plan"] = plan or []
             task.plan_metadata["initial_plan"] = plan or []
+            task.plan_metadata["milestone_graph"] = self._build_milestone_graph(plan or [])
+            task.plan_metadata.setdefault("last_successful_action", None)
             task.plan_metadata.setdefault("plan_version", 1)
             task.plan_metadata.setdefault("adaptive_replan_count", 0)
             if not task.plan_metadata.get("plan_versions"):
@@ -896,6 +935,44 @@ class TaskManager:
                             action=ActionType.WAIT,
                             reasoning="Already arrived at target URL. Inspecting page contents.",
                         )
+                # Suppress an identical state-changing action only when the page has not changed
+                # since the previous successful execution. If state changed, the action may be valid again.
+                if action.action not in (
+                    ActionType.WAIT, ActionType.SCROLL, ActionType.SCROLL_TO,
+                    ActionType.EXTRACT, ActionType.SCREENSHOT, ActionType.FINISH,
+                    ActionType.REQUEST_APPROVAL, ActionType.HOVER,
+                ):
+                    action_signature = self._action_fingerprint(action)
+                    prior = (task.plan_metadata or {}).get("last_successful_action") if isinstance(task.plan_metadata, dict) else None
+                    current_fingerprint = task.context.last_dom_fingerprint
+                    if (
+                        isinstance(prior, dict)
+                        and prior.get("signature") == action_signature
+                        and prior.get("dom_fingerprint") == current_fingerprint
+                        and prior.get("url") == current_page_url
+                    ):
+                        logger.warning(
+                            "Task %s: suppressing repeated %s action against unchanged DOM state.",
+                            task_id, action.action.value,
+                        )
+                        action = planner._heuristic_decide_action(
+                            goal=req.goal,
+                            step_number=step_num,
+                            page_info=page_info,
+                            extracted_data=task.extracted_data,
+                            trajectory_history=trajectory_history,
+                        )
+                        if action.action not in (
+                            ActionType.WAIT, ActionType.SCROLL, ActionType.SCROLL_TO,
+                            ActionType.EXTRACT, ActionType.SCREENSHOT, ActionType.FINISH,
+                            ActionType.REQUEST_APPROVAL, ActionType.HOVER,
+                        ) and self._action_fingerprint(action) == prior.get("signature"):
+                            action = BrowserAction(
+                                action=ActionType.WAIT,
+                                scroll_amount=500,
+                                reasoning="The same action already succeeded on this unchanged page. Re-observing before choosing another action.",
+                            )
+
                 user_approval_input = None   # consume after use
 
                 # EXTRACT is only valid when the user explicitly requested data
@@ -1565,6 +1642,7 @@ class TaskManager:
                             max_steps=req.max_steps,
                         )
                         task.current_plan_step = max(task.current_plan_step, active_plan_idx)
+                        self._refresh_milestone_graph(task)
                     consecutive_failures = 0
                     if recovery_log:
                         recovery_desc = "; ".join(recovery_log)
@@ -1633,6 +1711,19 @@ class TaskManager:
                     if action.action == ActionType.EXTRACT and extracted_item and isinstance(extracted_item, dict):
                         task.context.record_extraction(extracted_item)
                     task.context.reset_failures()
+                    if action.action not in (
+                        ActionType.WAIT, ActionType.SCROLL, ActionType.SCROLL_TO,
+                        ActionType.EXTRACT, ActionType.SCREENSHOT, ActionType.FINISH,
+                        ActionType.REQUEST_APPROVAL, ActionType.HOVER,
+                    ):
+                        task.plan_metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+                        task.plan_metadata["last_successful_action"] = {
+                            "signature": self._action_fingerprint(action),
+                            "dom_fingerprint": task.context.last_dom_fingerprint,
+                            "url": getattr(controller, "current_url", "") or page_info.get("url") or "",
+                            "step": step_num,
+                            "verified": True,
+                        }
 
                     trajectory_history.append({
                         "step": step_num,
@@ -1755,9 +1846,16 @@ class TaskManager:
                                     metadata["replan_reason"] = "recoverable_action_failure"
                                     metadata["plan"] = list(revised_plan)
                                     task.plan_metadata = metadata
-                                    task.initial_plan = list(revised_plan)
-                                    task.plan = list(revised_plan)
-                                    task.current_plan_step = 0
+                                    # Preserve the original milestone history and active position.
+                                    # Revised milestones describe remaining work; they must not erase prior progress.
+                                    completed_prefix = list((task.initial_plan or [])[:max(0, task.current_plan_step)])
+                                    metadata["remaining_plan"] = list(revised_plan)
+                                    metadata["milestone_graph"] = self._build_milestone_graph(
+                                        completed_prefix + list(revised_plan)
+                                    )
+                                    task.initial_plan = completed_prefix + list(revised_plan)
+                                    task.plan = list(task.initial_plan)
+                                    task.current_plan_step = len(completed_prefix)
                                     task.plan_status = "executing"
                                     task.updated_at = time.time()
                                     logger.info(
@@ -1803,6 +1901,10 @@ class TaskManager:
                 task.status = TaskStatus.COMPLETED
                 task.plan_status = "done"
                 task.current_plan_step = len(task.initial_plan)
+                self._refresh_milestone_graph(task)
+                if isinstance(task.plan_metadata, dict):
+                    for milestone in task.plan_metadata.get("milestone_graph", []):
+                        milestone["status"] = "completed"
             elif task.status == TaskStatus.RUNNING:
                 task.status = TaskStatus.FAILED
                 task.plan_status = "failed"
