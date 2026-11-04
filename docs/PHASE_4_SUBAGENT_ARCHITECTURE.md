@@ -1,26 +1,61 @@
 # Phase 4 — Subagent orchestration
 
-## Implemented orchestration core
+## Implemented
 
-- Unique child IDs and isolated per-child memory/context.
-- Role-based async worker registry; no implicit or fake worker fallback.
-- Bounded concurrency and deterministic result aggregation in input order.
-- Per-child timeout, explicit failure status, duration and timestamps.
-- Parent cancellation propagation and batch lifecycle cleanup.
-- Per-session exclusive locks for workers that mutate a shared browser session.
+- Task-scoped child IDs, isolated input and private memory.
+- Role registry for navigation, research, form and verification workers.
+- Bounded concurrency and deterministic result aggregation in request order.
+- Per-worker timeouts, explicit failure states, timestamps and durations.
+- Parent cancellation and fail-fast sibling cancellation.
+- Dedicated Chrome Extension tab per browser worker, with extension-side tab cleanup.
+- Form worker fills only explicitly mapped, editable fields; it never submits.
+- URL validation runs before child-tab navigation.
+- TaskManager integration and API endpoints to run/read child batches.
 
-## Browser safety
+## Worker responsibilities
 
-The current Chrome Extension controls one shared Chrome session. Workers that
-mutate it must set requires_exclusive_browser=true and provide the same
-resource_key. They are serialized. Read-only or independently managed browser
-workers may run concurrently up to the configured limit.
+| Role | Responsibility | Safety boundary |
+|---|---|---|
+| navigation | Open URL and inspect live DOM | Own child tab |
+| research | Extract bounded visible text, headings and links | Read-only |
+| form | Fill explicitly supplied values | Skips password/file/hidden fields; never submits |
+| verification | Check URL and visible-text postconditions | Reports evidence; does not claim unobserved success |
 
-## Integration boundary
+## API
 
-This commit provides the orchestration runtime and its TaskManager lifecycle
-hooks. The existing browser execution loop has not yet been split into concrete
-navigation, form, research and verification workers. Those workers must call
-the existing planner and browser adapter and report verified outcomes before
-the parent accepts their output. End-to-end browser behavior must be tested
-against real Chrome sessions before claiming full production completion.
+Run a batch under an existing parent task:
+
+```http
+POST /api/tasks/{task_id}/subagents?fail_fast=true
+Content-Type: application/json
+```
+
+```json
+[
+  {"role":"research","goal":"Collect public page information","input":{"url":"https://example.com"}},
+  {"role":"verification","goal":"Verify the expected page","input":{"url":"https://example.com","expected_text":"Example Domain"}}
+]
+```
+
+Read the latest aggregated child results:
+
+```http
+GET /api/tasks/{task_id}/subagents
+```
+
+## Browser isolation
+
+Each browser worker creates a unique task-owned tab in the connected Chrome
+session. The extension maps commands to the owning task ID, so workers do not
+share a mutable tab. The worker closes that exact task tab in its cleanup path.
+Workers that intentionally target a shared resource must still request an
+exclusive resource lock with a stable resource_key.
+
+## Remaining production validation
+
+The new tests cover orchestration, isolation contracts, worker behavior and
+safe form handling. They still need to be run in the project's backend
+environment, followed by an end-to-end test with the actual Chrome Extension.
+The existing default single-agent task loop remains intact; the new subagent
+batch API is an explicit delegation interface rather than an automatic rewrite
+of every task into parallel workers.
