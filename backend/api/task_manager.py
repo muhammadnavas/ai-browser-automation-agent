@@ -112,15 +112,27 @@ class TaskManager:
 
     @staticmethod
     def _refresh_milestone_graph(task: TaskResponse) -> None:
-        """Keep graph status aligned with the visible active milestone without claiming completion."""
+        """Refresh milestone states; only explicit verification may mark a milestone complete."""
         metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
         graph = metadata.get("milestone_graph")
         if not isinstance(graph, list) or len(graph) != len(task.initial_plan or []):
             graph = TaskManager._build_milestone_graph(task.initial_plan or [])
+
+        completed_ids = set(metadata.get("completed_milestone_ids") or [])
         active = max(0, min(int(task.current_plan_step or 0), len(graph) - 1)) if graph else -1
+        completed_ids.intersection_update(node.get("id") for node in graph)
         for idx, node in enumerate(graph):
-            # Completion is reserved for the final independently verified task outcome.
-            node["status"] = "active" if idx == active else ("pending" if idx > active else "in_progress")
+            if node.get("id") in completed_ids:
+                node["status"] = "completed"
+            elif idx == active:
+                node["status"] = "active"
+            elif idx < active:
+                node["status"] = "pending"
+            else:
+                node["status"] = "pending"
+        metadata["completed_milestone_ids"] = sorted(
+            completed_ids, key=lambda value: int(str(value).lstrip("m") or 0)
+        )
         metadata["milestone_graph"] = graph
         task.plan_metadata = metadata
 
@@ -1634,15 +1646,29 @@ class TaskManager:
 
                 if action_success:
                     if task.initial_plan:
-                        active_plan_idx = planner.determine_active_plan_step(
-                            initial_plan=task.initial_plan,
-                            current_action=action,
-                            trajectory_history=trajectory_history,
-                            page_info=page_info,
-                            step_number=step_num,
-                            max_steps=req.max_steps,
-                        )
-                        task.current_plan_step = max(task.current_plan_step, active_plan_idx)
+                        if action.action == ActionType.FINISH:
+                            # FINISH is accepted only after the planner's independent
+                            # outcome verifier succeeds. This is the sole current
+                            # completion boundary; ordinary action success is not
+                            # evidence that a high-level milestone is complete.
+                            metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+                            graph = metadata.get("milestone_graph") or self._build_milestone_graph(task.initial_plan)
+                            metadata["completed_milestone_ids"] = [node["id"] for node in graph]
+                            task.plan_metadata = metadata
+                            task.current_plan_step = max(0, len(task.initial_plan) - 1)
+                        else:
+                            # This index is a UI hint for the active milestone only.
+                            # Never derive completed milestones from action keywords
+                            # or the number of low-level browser steps.
+                            active_plan_idx = planner.determine_active_plan_step(
+                                initial_plan=task.initial_plan,
+                                current_action=action,
+                                trajectory_history=trajectory_history,
+                                page_info=page_info,
+                                step_number=step_num,
+                                max_steps=req.max_steps,
+                            )
+                            task.current_plan_step = max(0, min(active_plan_idx, len(task.initial_plan) - 1))
                         self._refresh_milestone_graph(task)
                     consecutive_failures = 0
                     if recovery_log:
@@ -1830,7 +1856,11 @@ class TaskManager:
                                     page_info=live_page_info,
                                     recent_errors=list(getattr(task.context, "recent_errors", []) or []),
                                     task_context=task.context,
-                                    progressed_milestones=list((task.initial_plan or [])[:max(0, task.current_plan_step)]),
+                                    progressed_milestones=[
+                                        node.get("title", "")
+                                        for node in (task.plan_metadata or {}).get("milestone_graph", [])
+                                        if node.get("id") in set((task.plan_metadata or {}).get("completed_milestone_ids", []))
+                                    ],
                                     active_milestone_index=int(task.current_plan_step or 0),
                                 )
                                 if revised_plan:
@@ -1849,17 +1879,26 @@ class TaskManager:
                                     metadata["replan_reason"] = "recoverable_action_failure"
                                     metadata["plan"] = list(revised_plan)
                                     task.plan_metadata = metadata
-                                    # Preserve every milestone before and including the active one.
-                                    # A failed action does not prove that its milestone is complete.
-                                    preserved_prefix = list(
-                                        (task.initial_plan or [])[:max(0, task.current_plan_step) + 1]
-                                    )
+                                    # Preserve only milestones with explicit completion
+                                    # evidence. An active/keyword-matched milestone is not
+                                    # considered complete merely because an action succeeded.
+                                    completed_ids = set(metadata.get("completed_milestone_ids") or [])
+                                    old_graph = metadata.get("milestone_graph") or self._build_milestone_graph(task.initial_plan or [])
+                                    preserved_prefix = [
+                                        node.get("title", "")
+                                        for node in old_graph
+                                        if node.get("id") in completed_ids and node.get("title")
+                                    ]
                                     metadata["remaining_plan"] = list(revised_plan)
-                                    metadata["milestone_graph"] = self._build_milestone_graph(
-                                        preserved_prefix + list(revised_plan)
-                                    )
-                                    task.initial_plan = preserved_prefix + list(revised_plan)
-                                    task.plan = list(task.initial_plan)
+                                    combined_plan = preserved_prefix + list(revised_plan)
+                                    metadata["milestone_graph"] = self._build_milestone_graph(combined_plan)
+                                    metadata["completed_milestone_ids"] = [
+                                        f"m{index + 1}" for index in range(len(preserved_prefix))
+                                    ]
+                                    task.initial_plan = combined_plan
+                                    task.plan = list(combined_plan)
+                                    task.current_plan_step = min(len(preserved_prefix), max(0, len(combined_plan) - 1))
+                                    self._refresh_milestone_graph(task)
                                     metadata["plan"] = list(task.initial_plan)
                                     metadata["initial_plan"] = list(task.initial_plan)
                                     task.current_plan_step = max(0, len(preserved_prefix) - 1)
