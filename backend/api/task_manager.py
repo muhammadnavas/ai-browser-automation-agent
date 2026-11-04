@@ -1829,7 +1829,7 @@ class TaskManager:
                                     page_info=live_page_info,
                                     recent_errors=list(getattr(task.context, "recent_errors", []) or []),
                                     task_context=task.context,
-                                    completed_milestones=list((task.initial_plan or [])[:max(0, task.current_plan_step)]),
+                                    progressed_milestones=list((task.initial_plan or [])[:max(0, task.current_plan_step)]),
                                     active_milestone_index=int(task.current_plan_step or 0),
                                 )
                                 if revised_plan:
@@ -1848,18 +1848,20 @@ class TaskManager:
                                     metadata["replan_reason"] = "recoverable_action_failure"
                                     metadata["plan"] = list(revised_plan)
                                     task.plan_metadata = metadata
-                                    # Preserve the original milestone history and active position.
-                                    # Revised milestones describe remaining work; they must not erase prior progress.
-                                    completed_prefix = list((task.initial_plan or [])[:max(0, task.current_plan_step)])
+                                    # Preserve every milestone before and including the active one.
+                                    # A failed action does not prove that its milestone is complete.
+                                    preserved_prefix = list(
+                                        (task.initial_plan or [])[:max(0, task.current_plan_step) + 1]
+                                    )
                                     metadata["remaining_plan"] = list(revised_plan)
                                     metadata["milestone_graph"] = self._build_milestone_graph(
-                                        completed_prefix + list(revised_plan)
+                                        preserved_prefix + list(revised_plan)
                                     )
-                                    task.initial_plan = completed_prefix + list(revised_plan)
+                                    task.initial_plan = preserved_prefix + list(revised_plan)
                                     task.plan = list(task.initial_plan)
                                     metadata["plan"] = list(task.initial_plan)
                                     metadata["initial_plan"] = list(task.initial_plan)
-                                    task.current_plan_step = len(completed_prefix)
+                                    task.current_plan_step = max(0, len(preserved_prefix) - 1)
                                     task.plan_status = "executing"
                                     task.updated_at = time.time()
                                     logger.info(
