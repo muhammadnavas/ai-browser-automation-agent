@@ -553,50 +553,47 @@
   }
 
   function findTargetElement(action) {
-    // Resolve form fields by the label stated in the planner's reasoning before
-    // trusting a numeric index. Google Forms rebuilds controls as questions expand.
+    // Resolve form fields by semantic label before trusting a snapshot index.
+    // Google Forms rebuilds question cards as sections expand and upload controls load.
     const actionKind = String(action.action || "").toLowerCase();
-    if (["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind)) {
-      const reasoning = String(action.reasoning || "");
-      const quotedField = reasoning.match(/(?:the\s+)?['"“]([^'"”]+)['"”]\s+(?:field|question|input)/i);
-      const describedField = reasoning.match(/(?:fill|enter|type|populate|update)\s+(?:in\s+)?(?:the\s+)?["'“]?([^"'”]+?)["'”]?\s+(?:field|question|input)\b/i);
-      const fieldLabel = String(
-        action.field_label || action.label ||
-        (quotedField && quotedField[1]) ||
-        (describedField && describedField[1]) || ""
-      ).trim().toLowerCase();
-      if (fieldLabel) {
-        const normalize = (value) => String(value || "")
-          .toLowerCase().replace(/[＊*]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
-        const wanted = normalize(fieldLabel);
-        const controls = Array.from(document.querySelectorAll(
-          'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]'
-        )).filter(isVisibleActionTarget);
-        const matches = controls.filter((control) => {
-          const card = control.closest('.Qr7Oae,[role="listitem"],[data-params]');
-          const cardTitle = card?.querySelector(
-            '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
-          );
-          const cardLabel = normalize(cardTitle?.innerText || cardTitle?.textContent);
-          const accessibleNames = [
-            control.getAttribute("aria-label"),
-            control.getAttribute("placeholder"),
-            control.labels ? Array.from(control.labels).map((label) => label.innerText).join(" ") : "",
-          ].map(normalize).filter(Boolean);
-          return cardLabel === wanted || accessibleNames.includes(wanted);
-        });
-        if (matches.length === 1) return matches[0];
-        // Explicit field labels must never fall through to stale numeric indexes.
-        // Ambiguous or missing labels are safer as a failed action than corrupt data.
-        return null;
-      }
+    const reasoning = String(action.reasoning || "");
+    const quotedField = reasoning.match(/(?:the\s+)?['"“]([^'"”]+)['"”]\s+(?:field|question|input)/i);
+    const describedField = reasoning.match(/(?:fill|enter|type|populate|update)\s+(?:in\s+)?(?:the\s+)?["'“]?([^"'”]+?)["'”]?\s+(?:field|question|input)\b/i);
+    // Function scope is intentional: the Google Forms safety guard below uses it too.
+    // It was previously declared inside a nested block, causing ReferenceError.
+    const fieldLabel = String(
+      action.field_label || action.label ||
+      (quotedField && quotedField[1]) ||
+      (describedField && describedField[1]) || ""
+    ).trim().toLowerCase();
+
+    if (["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind) && fieldLabel) {
+      const normalize = (value) => String(value || "")
+        .toLowerCase().replace(/[＊*]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+      const wanted = normalize(fieldLabel);
+      const controls = Array.from(document.querySelectorAll(
+        'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]'
+      )).filter(isVisibleActionTarget);
+      const matches = controls.filter((control) => {
+        const card = control.closest('.Qr7Oae,[role="listitem"],[data-params]');
+        const cardTitle = card?.querySelector(
+          '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
+        );
+        const cardLabel = normalize(cardTitle?.innerText || cardTitle?.textContent);
+        const accessibleNames = [
+          control.getAttribute("aria-label"),
+          control.getAttribute("placeholder"),
+          control.labels ? Array.from(control.labels).map((label) => label.innerText).join(" ") : "",
+        ].map(normalize).filter(Boolean);
+        return cardLabel === wanted || accessibleNames.includes(wanted);
+      });
+      if (matches.length === 1) return matches[0];
+      // A supplied semantic label must never fall through to stale positional indexes.
+      return null;
     }
 
-    // Google Forms re-renders question cards and changes nth-of-type
-    // selectors as sections/files load. For a fill action, never trust a
-    // positional CSS selector when the planner did not identify the question.
-    // Returning null forces a fresh inspection/replan instead of corrupting a
-    // neighbouring field.
+    // Google Forms re-renders question cards and changes nth-of-type selectors.
+    // An unlabeled fill must fail safely rather than write into a neighbouring field.
     if (
       ["fill", "fill_field", "type_text"].includes(actionKind) &&
       location.hostname === "docs.google.com" &&
