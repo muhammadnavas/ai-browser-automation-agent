@@ -56,3 +56,27 @@ async def test_verification_worker_requires_expected_postconditions(fake_browser
 def test_worker_registration_exposes_all_four_roles():
     workers.register_browser_subagents()
     assert {"navigation","research","form","verification"}.issubset(workers.subagent_orchestrator._workers)
+
+@pytest.mark.asyncio
+async def test_form_worker_unchecks_false_checkbox_and_selects_explicit_radio(fake_browser,monkeypatch):
+    instances=[]
+    class FormAdapter(FakeAdapter):
+        def __init__(self,**kwargs):
+            super().__init__(**kwargs)
+            instances.append(self)
+        async def parse_interactive_elements(self):
+            page=await super().parse_interactive_elements()
+            page["form_fields"]=[
+                SimpleNamespace(field_type=SimpleNamespace(value="checkbox"),selector="#terms",name="terms",field_id="terms",label="Terms",aria_label=None,visible=True,disabled=False,readonly=False),
+                SimpleNamespace(field_type=SimpleNamespace(value="radio"),selector="#radio-a",name="choice",field_id="radio-a",label="Option A",aria_label=None,visible=True,disabled=False,readonly=False),
+            ]
+            return page
+    monkeypatch.setattr(workers,"ExtensionBrowserAdapter",FormAdapter)
+    result=await workers.form_worker(context("form",{
+        "url":"https://example.com",
+        "values":{"#terms":"false","#radio-a":"yes"},
+    }))
+    assert result["filled_count"]==2
+    assert ActionType.UNCHECK in instances[0].actions
+    assert ActionType.RADIO_BUTTON in instances[0].actions
+    await workers.close_form_review_tab("parent",result["subagent_id"])
