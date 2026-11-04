@@ -43,11 +43,17 @@ Read the latest aggregated child results:
 GET /api/tasks/{task_id}/subagents
 ```
 
+Close a retained form-review tab after review:
+
+```http
+POST /api/tasks/{task_id}/subagents/{subagent_id}/close-tab
+```
+
 ## Browser isolation
 
 Each browser worker creates a unique task-owned tab in the connected Chrome
 session. The extension maps commands to the owning task ID, so workers do not
-share a mutable tab. The worker closes that exact task tab in its cleanup path.
+share a mutable tab. Navigation, research and verification workers close their exact task tabs in cleanup. The form worker intentionally keeps its populated tab open and unlocked for human review; the close-tab endpoint releases it, and cancelling the parent closes retained review tabs.
 Workers that intentionally target a shared resource must still request an
 exclusive resource lock with a stable resource_key.
 
