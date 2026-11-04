@@ -12,6 +12,32 @@
 - URL validation runs before child-tab navigation.
 - TaskManager integration and API endpoints to run/read child batches.
 
+The normal task-creation endpoint can also ask the master task to run child
+workers before its existing browser execution loop. Add `subagent_specs` to
+the `POST /api/tasks` body; omitting it preserves current behavior:
+
+```json
+{
+  "goal": "Research this page and verify the key details",
+  "start_url": "https://example.com",
+  "subagent_specs": [
+    {
+      "role": "research",
+      "goal": "Collect the page's public details",
+      "input": {"url": "https://example.com"}
+    },
+    {
+      "role": "verification",
+      "goal": "Check that the expected title is visible",
+      "input": {"url": "https://example.com", "expected_text": "Example Domain"}
+    }
+  ]
+}
+```
+
+The master task stores bounded child outputs in its task context so the existing
+planner can use the delegated evidence during the main execution.
+
 ## Worker responsibilities
 
 | Role | Responsibility | Safety boundary |
