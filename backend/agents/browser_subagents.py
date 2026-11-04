@@ -5,12 +5,16 @@ No worker shares mutable page state with another worker. Form workers only fill
 explicitly supplied values and never submit a form.
 """
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from agents.subagents import SubagentContext, subagent_orchestrator
 from browser.extension_adapter import ExtensionBrowserAdapter, extension_manager
 from browser.security import validate_url_security
 from models.schemas import ActionType, BrowserAction
+
+# Filled forms remain open and unlocked for a human to review. The parent task
+# owns these adapters until the user closes the review tab or cancels the parent.
+_active_form_tabs: Dict[str, Tuple[str, ExtensionBrowserAdapter]] = {}
 
 def _required_url(ctx: SubagentContext) -> str:
     url = str(ctx.input.get("url") or "").strip()
@@ -103,6 +107,7 @@ async def form_worker(ctx: SubagentContext) -> Dict[str, Any]:
     adapter = await _open_owned_tab(ctx)
     filled: List[Dict[str, str]] = []
     skipped: List[Dict[str, str]] = []
+    keep_open = False
     try:
         ctx.raise_if_cancelled()
         page = await adapter.parse_interactive_elements()
@@ -133,9 +138,25 @@ async def form_worker(ctx: SubagentContext) -> Dict[str, Any]:
                 filled.append({"field": str(getattr(field,"label",None) or matched)[:120], "action": description[:240]})
             except Exception as exc:
                 skipped.append({"field": str(getattr(field,"label",None) or matched)[:120], "reason": str(exc)[:300]})
-        return {"url": page.get("url"), "filled_count": len(filled), "filled": filled, "skipped": skipped, "submitted": False, "note": "Form was not submitted; review and approve submission separately."}
+        if filled:
+            # Unlock the tab so the user can inspect the populated form. It is
+            # intentionally not submitted by this worker.
+            await adapter.unlock_ui()
+            _active_form_tabs[ctx.subagent_id] = (ctx.parent_task_id, adapter)
+            keep_open = True
+        return {
+            "url": page.get("url"),
+            "filled_count": len(filled),
+            "filled": filled,
+            "skipped": skipped,
+            "submitted": False,
+            "tab_open_for_review": keep_open,
+            "subagent_id": ctx.subagent_id if keep_open else None,
+            "note": "Form was not submitted; review and approve submission separately.",
+        }
     finally:
-        await _close_owned_tab(adapter)
+        if not keep_open:
+            await _close_owned_tab(adapter)
 
 async def verification_worker(ctx: SubagentContext) -> Dict[str, Any]:
     """Verify URL and visible text postconditions on a fresh child-owned tab."""
@@ -164,3 +185,24 @@ def register_browser_subagents() -> None:
     subagent_orchestrator.register_worker("research", research_worker)
     subagent_orchestrator.register_worker("form", form_worker)
     subagent_orchestrator.register_worker("verification", verification_worker)
+
+
+async def close_form_review_tab(parent_task_id: str, subagent_id: str) -> bool:
+    """Close a retained form-review tab only when it belongs to this parent."""
+    entry = _active_form_tabs.get(subagent_id)
+    if not entry or entry[0] != parent_task_id:
+        return False
+    adapter = entry[1]
+    await _close_owned_tab(adapter)
+    _active_form_tabs.pop(subagent_id, None)
+    return True
+
+
+async def close_parent_form_review_tabs(parent_task_id: str) -> int:
+    """Close every retained form-review tab owned by a cancelled parent."""
+    child_ids = [child_id for child_id, entry in _active_form_tabs.items() if entry[0] == parent_task_id]
+    closed = 0
+    for child_id in child_ids:
+        if await close_form_review_tab(parent_task_id, child_id):
+            closed += 1
+    return closed
