@@ -9,8 +9,10 @@
  */
 
 (function () {
-  // Prevent multiple injections
-  if (window.__AI_AGENT_CONTENT_SCRIPT_INITIALIZED__) {
+  // Only treat the script as initialized after its message listener is
+  // registered. Marking this at the top can permanently block recovery if a
+  // page-specific error interrupts initialization before the listener exists.
+  if (window.__AI_AGENT_CONTENT_SCRIPT_READY__) {
     return;
   }
   window.__AI_AGENT_CONTENT_SCRIPT_INITIALIZED__ = true;
@@ -2269,4 +2271,7 @@
     })();
     return true; // Keep message channel open for async response
   });
+
+  // Set only after the runtime message listener has been registered.
+  window.__AI_AGENT_CONTENT_SCRIPT_READY__ = true;
 })();
