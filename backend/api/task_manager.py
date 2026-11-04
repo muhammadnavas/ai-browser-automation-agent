@@ -34,6 +34,7 @@ from browser.extension_adapter import ExtensionBrowserAdapter, extension_manager
 from browser.controller import BrowserController
 from browser.security import validate_url_security
 from agents.planner import AIAgentPlanner, domains_match, extract_target_url
+from agents.subagents import SubagentSpec, SubagentBatchResult, subagent_orchestrator
 from services.report_generation_service import ReportGenerator
 from services.task_archive import task_archive
 from services.cache_service import CacheService, default_cache_service
@@ -70,6 +71,8 @@ class TaskManager:
         self.pause_events: Dict[str, asyncio.Event] = {}
         self.subscribers: Dict[str, Set[WebSocket]] = {}
         self.report_generator = ReportGenerator()
+        # Shared orchestration runtime; child contexts remain isolated by child ID.
+        self.subagent_orchestrator = subagent_orchestrator
         self.agent_version = agent_version
         self._report_store: Dict[str, bytes] = {}  # short-lived report cache
         # Bounded structured recovery diagnostics, keyed by task id.
@@ -394,6 +397,16 @@ class TaskManager:
         )
         self.tasks[task_id] = task_resp
         return task_resp
+
+    async def run_subagent_batch(self, parent_task_id: str, specs: List[SubagentSpec], *, fail_fast: bool = False) -> SubagentBatchResult:
+        """Run registered child workers under an existing parent task."""
+        if parent_task_id not in self.tasks and parent_task_id not in self.task_history:
+            raise KeyError(f"Parent task {parent_task_id} not found")
+        return await self.subagent_orchestrator.run_batch(parent_task_id, specs, fail_fast=fail_fast)
+
+    def register_subagent_worker(self, role: str, worker: Any) -> None:
+        """Register a role-specific async worker without replacing the main executor."""
+        self.subagent_orchestrator.register_worker(role, worker)
 
     # ------------------------------------------------------------------
     # WebSocket pub/sub
@@ -2858,6 +2871,12 @@ Task evidence:
         task.plan_status = "cancelled"
         task.error = reason
         task.updated_at = time.time()
+
+        # Stop delegated children as part of the same parent-task cancellation.
+        try:
+            asyncio.get_running_loop().create_task(self.subagent_orchestrator.cancel_parent(task_id))
+        except RuntimeError:
+            pass
 
         # Signal cancellation event immediately for zero-latency wakeup
         if task_id in self.cancel_events:
