@@ -41,7 +41,7 @@ async def test_form_worker_fills_only_explicit_mapping_and_never_submits(fake_br
     result=await workers.form_worker(context("form",{"url":"https://example.com","values":{"name":"Navas"}}))
     assert result["filled_count"]==1 and result["submitted"] is False
     assert ActionType.FILL_FIELD in instances[0].actions
-    assert ActionType.FINISH not in instances[0].actions
+    assert ActionType.CLOSE_TAB not in instances[0].actions
 
 @pytest.mark.asyncio
 async def test_verification_worker_requires_expected_postconditions(fake_browser):
