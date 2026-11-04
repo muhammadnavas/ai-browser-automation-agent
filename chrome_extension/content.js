@@ -1820,43 +1820,84 @@
             break;
           }
         }
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+        if (!matched) {
+          return {
+            success: false,
+            error: `Could not find option '${optionLabel || optionValue}'`,
+          };
+        }
         el.dispatchEvent(new Event("input", { bubbles: true }));
-        return {
-          success: matched,
-          description: matched
-            ? `Selected option '${optionLabel || optionValue}' in [${action.selector || el.id}]`
-            : `Could not find option '${optionLabel || optionValue}'`,
-        };
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+
+        // Confirm the browser actually retained the requested selection.
+        const selected = el.options[el.selectedIndex];
+        const verified = Boolean(selected) && (
+          (optionValue && selected.value === optionValue) ||
+          (optionLabel && selected.text.trim().toLowerCase() === optionLabel.trim().toLowerCase()) ||
+          (optionIndex !== undefined && el.selectedIndex === optionIndex)
+        );
+        return verified
+          ? {
+              success: true,
+              description: `Selected and verified option '${selected.text.trim()}' in [${action.selector || el.id}]`,
+              details: { verified_value: selected.value, verified_label: selected.text.trim() },
+            }
+          : { success: false, error: "Dropdown did not retain the requested option after change events." };
       } else {
-        // Custom dropdown item click
+        // A custom dropdown click only opens/activates the control; selection
+        // must be performed as a separate action against an actual option.
         el.click();
-        return { success: true, description: `Clicked select element [${action.selector || el.id}]` };
+        return {
+          success: true,
+          description: `Opened custom dropdown [${action.selector || el.id}]; option selection still needs verification.`,
+          details: { interaction_only: true },
+        };
       }
     }
 
     // ── Check / Uncheck ──
     if (actType === "check" || actType === "check_box") {
       el.checked = true;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
       el.dispatchEvent(new Event("input", { bubbles: true }));
-      return { success: true, description: `Checked [${action.selector || action.element_id || el.id}]` };
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      if (el.checked !== true) {
+        return { success: false, error: "Checkbox did not enter the checked state." };
+      }
+      return {
+        success: true,
+        description: `Checked and verified [${action.selector || action.element_id || el.id}]`,
+        details: { verified_checked: true },
+      };
     }
 
     if (actType === "uncheck") {
       el.checked = false;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
       el.dispatchEvent(new Event("input", { bubbles: true }));
-      return { success: true, description: `Unchecked [${action.selector || action.element_id || el.id}]` };
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      if (el.checked !== false) {
+        return { success: false, error: "Checkbox did not enter the unchecked state." };
+      }
+      return {
+        success: true,
+        description: `Unchecked and verified [${action.selector || action.element_id || el.id}]`,
+        details: { verified_checked: false },
+      };
     }
 
     // ── Radio Button ──
     if (actType === "radio_button") {
       el.checked = true;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
       el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
       el.click();
-      return { success: true, description: `Selected radio [${action.radio_name || action.selector || el.id}]` };
+      if (el.checked !== true) {
+        return { success: false, error: "Radio button did not remain selected after interaction." };
+      }
+      return {
+        success: true,
+        description: `Selected and verified radio [${action.radio_name || action.selector || el.id}]`,
+        details: { verified_checked: true, group_name: el.name || action.radio_name || null },
+      };
     }
 
     // ── Press Key ──
