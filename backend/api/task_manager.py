@@ -35,7 +35,7 @@ from browser.controller import BrowserController
 from browser.security import validate_url_security
 from agents.planner import AIAgentPlanner, domains_match, extract_target_url
 from agents.subagents import SubagentSpec, SubagentBatchResult, subagent_orchestrator
-from agents.browser_subagents import register_browser_subagents
+from agents.browser_subagents import register_browser_subagents, close_parent_form_review_tabs
 
 register_browser_subagents()
 from services.report_generation_service import ReportGenerator
@@ -2877,7 +2877,9 @@ Task evidence:
 
         # Stop delegated children as part of the same parent-task cancellation.
         try:
-            asyncio.get_running_loop().create_task(self.subagent_orchestrator.cancel_parent(task_id))
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.subagent_orchestrator.cancel_parent(task_id))
+            loop.create_task(close_parent_form_review_tabs(task_id))
         except RuntimeError:
             pass
 
