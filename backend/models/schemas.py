@@ -423,6 +423,9 @@ class TaskRequest(BaseModel):
     notification_email: Optional[str] = None
     execution_layer: str = "extension"
     headless: bool = True
+    # Optional explicit child-agent delegation plan. Empty by default so existing
+    # clients retain the original single-agent execution behavior.
+    subagent_specs: List[Dict[str, Any]] = Field(default_factory=list, max_length=8)
 
 
 class ExtensionStatusResponse(BaseModel):
