@@ -11,7 +11,13 @@
  *  - Visible tab screenshot capture
  */
 
-const DEFAULT_SERVER_URL = "ws://localhost:8000/api/extension/ws";
+// Match the backend's usual Uvicorn bind address. On some Windows setups
+// "localhost" resolves to ::1 while Uvicorn is listening only on 127.0.0.1.
+const DEFAULT_SERVER_URL = "ws://127.0.0.1:8000/api/extension/ws";
+const LEGACY_LOCAL_SERVER_URLS = new Set([
+  "ws://localhost:8000/api/extension/ws",
+  "ws://localhost:8000/ws/extension",
+]);
 let socket = null;
 let reconnectTimer = null;
 let pingInterval = null;
@@ -28,7 +34,15 @@ let tabTaskMap = new Map();
 
 async function loadSettings() {
   const data = await chrome.storage.local.get(["serverUrl", "taskMappings"]);
-  const serverUrl = data.serverUrl || DEFAULT_SERVER_URL;
+  // Migrate the old localhost default. Keep any explicitly configured remote
+  // server URL untouched.
+  const storedUrl = String(data.serverUrl || "").trim();
+  const serverUrl = !storedUrl || LEGACY_LOCAL_SERVER_URLS.has(storedUrl)
+    ? DEFAULT_SERVER_URL
+    : storedUrl;
+  if (serverUrl !== storedUrl) {
+    await chrome.storage.local.set({ serverUrl });
+  }
   if (data.taskMappings) {
     taskTabMap = new Map(Object.entries(data.taskMappings));
     tabTaskMap.clear();
