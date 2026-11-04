@@ -1857,6 +1857,8 @@ class TaskManager:
                                     )
                                     task.initial_plan = completed_prefix + list(revised_plan)
                                     task.plan = list(task.initial_plan)
+                                    metadata["plan"] = list(task.initial_plan)
+                                    metadata["initial_plan"] = list(task.initial_plan)
                                     task.current_plan_step = len(completed_prefix)
                                     task.plan_status = "executing"
                                     task.updated_at = time.time()
