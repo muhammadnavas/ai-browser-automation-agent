@@ -299,12 +299,14 @@ async function handleBackendMessage(msg) {
 
   // ── 1. Create Task Tab ──
   if (type === "create_tab") {
+    let createdTabId = null;
     try {
       const url = msg.url || "about:blank";
       // Keep the task in a dedicated background tab. Chrome can execute
       // content-script DOM actions in inactive tabs; never steal focus from
       // the user's current tab when a task starts.
       const tab = await chrome.tabs.create({ url, active: false });
+      createdTabId = tab.id;
 
       taskTabMap.set(task_id, tab.id);
       tabTaskMap.set(tab.id, task_id);
@@ -330,6 +332,22 @@ async function handleBackendMessage(msg) {
         data: { tab_id: tab.id, url: tab.url || url },
       });
     } catch (err) {
+      // A failed readiness handshake must not leave a stale task->tab mapping.
+      // Remove the partially-created tab so the next task attempt starts cleanly.
+      if (createdTabId !== null) {
+        taskTabMap.delete(task_id);
+        tabTaskMap.delete(createdTabId);
+        try {
+          await chrome.tabs.remove(createdTabId);
+        } catch (cleanupError) {
+          console.warn("[AI Extension] Could not remove failed task tab:", cleanupError);
+        }
+        try {
+          await saveMappings();
+        } catch (storageError) {
+          console.warn("[AI Extension] Could not persist task-tab cleanup:", storageError);
+        }
+      }
       sendWsMessage({
         id,
         task_id,
