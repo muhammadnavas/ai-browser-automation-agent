@@ -152,15 +152,15 @@ function sendWsMessage(msg) {
 // ---------------------------------------------------------------------------
 
 async function ensureContentScriptInjected(tabId) {
-  // Restricted browser pages (chrome://, Web Store, Chrome internal pages) cannot
-  // host extension content scripts. Detect these explicitly instead of allowing
-  // a later sendMessage call to fail with "Receiving end does not exist".
-  const tab = await chrome.tabs.get(tabId);
-  const pageUrl = tab?.url || "";
-  if (/^(chrome|edge|about|devtools):\/\//i.test(pageUrl) ||
-      pageUrl.startsWith("chrome-extension://")) {
-    throw new Error(`Content scripts cannot run on this browser page: ${pageUrl}`);
-  }
+  const getScriptableTab = async () => {
+    const tab = await chrome.tabs.get(tabId);
+    const pageUrl = tab?.url || "";
+    if (/^(chrome|edge|about|devtools):\\/\\//i.test(pageUrl) ||
+        pageUrl.startsWith("chrome-extension://")) {
+      throw new Error(`Content scripts cannot run on this browser page: ${pageUrl}`);
+    }
+    return tab;
+  };
 
   const ping = async () => {
     try {
@@ -171,31 +171,53 @@ async function ensureContentScriptInjected(tabId) {
     }
   };
 
-  if (await ping()) return true;
-
-  // Injection can race with navigation/document_idle. Retry only after the
-  // document is ready, then confirm the listener is actually responding.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const currentTab = await chrome.tabs.get(tabId);
-    if (currentTab.status !== "complete") {
-      await waitForTabLoaded(tabId, 10000);
+  const waitForPing = async (delays = [100, 200, 350, 600, 900]) => {
+    for (const delay of delays) {
+      if (await ping()) return true;
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["content.js"],
-      });
-    } catch (error) {
-      if (attempt === 2) {
-        throw new Error(`Could not inject browser content script: ${error.message}`);
+    return ping();
+  };
+
+  await getScriptableTab();
+  // document_idle injection may still be registering its message listener when
+  // tabs.onUpdated reports complete. Give the manifest-injected script time first.
+  if (await waitForPing([100, 200, 350])) return true;
+
+  let lastInjectionError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const currentTab = await getScriptableTab();
+    if (currentTab.status !== "complete") {
+      const loaded = await waitForTabLoaded(tabId, 15000);
+      if (!loaded) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 200 + attempt * 250));
-    if (await ping()) return true;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        files: ["content.js"],
+      });
+    } catch (error) {
+      lastInjectionError = error;
+    }
+
+    // executeScript confirms evaluation was requested; ping confirms that the
+    // runtime message listener is actually available in the top frame.
+    if (await waitForPing([150, 300, 500, 800, 1200])) return true;
+    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
   }
 
-  throw new Error("Browser content script did not become ready after injection. Reload the task tab and retry.");
+  const finalTab = await chrome.tabs.get(tabId).catch(() => null);
+  const finalUrl = finalTab?.url || "unknown URL";
+  const injectionDetail = lastInjectionError?.message
+    ? ` Last injection error: ${lastInjectionError.message}`
+    : "";
+  throw new Error(
+    `Browser content script did not become ready for tab ${tabId} (${finalUrl}) after readiness polling and reinjection.${injectionDetail} Check that the extension has access to this site, then reload the task tab.`
+  );
 }
 
 async function sendContentMessage(tabId, message) {
