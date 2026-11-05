@@ -439,6 +439,7 @@ async def handle_os_file_dialog(
     wait_for_dialog_secs: float = 5.0,
     accept_types: Optional[str] = None,
     user_approved: bool = False,
+    file_path: Optional[str] = None,
 ) -> bool:
     """
     Automates uploading an actual file from the user's system:
@@ -456,18 +457,23 @@ async def handle_os_file_dialog(
         logger.warning("pyautogui / pyperclip not installed.")
         return False
 
-    file_info = get_user_system_file(
-        goal=goal,
-        context_text=context_text,
-        accept_types=accept_types,
-        user_approved=user_approved,
-    )
-    if not file_info:
-        logger.error("No valid user file could be found or generated to upload.")
+    resolved_path = file_path
+    if not resolved_path:
+        file_info = get_user_system_file(
+            goal=goal,
+            context_text=context_text,
+            accept_types=accept_types,
+            user_approved=user_approved,
+        )
+        if file_info:
+            resolved_path = file_info["path"]
+
+    if not resolved_path or not os.path.isfile(resolved_path):
+        logger.error(f"No valid file to upload: {resolved_path}")
         return False
 
-    file_path = file_info["path"]
-    logger.info(f"Preparing to upload user file: '{file_path}' ({file_info['size']} bytes) in folder '{file_info.get('folder_name')}'")
+    file_path = os.path.abspath(resolved_path)
+    logger.info(f"Preparing to upload user file via OS dialog: '{file_path}'")
 
     if screen_x is not None and screen_y is not None and screen_x > 0 and screen_y > 0:
         try:
@@ -529,7 +535,7 @@ async def handle_os_file_dialog(
                 def enum_child_cb(hwnd, lparam):
                     nonlocal edit_hwnd
                     cls_buff = ctypes.create_unicode_buffer(256)
-                    user32.GetClassNameW(hwnd, class_buff, 256)
+                    user32.GetClassNameW(hwnd, cls_buff, 256)
                     if cls_buff.value.lower() == "edit" and not edit_hwnd:
                         edit_hwnd = hwnd
                     return True

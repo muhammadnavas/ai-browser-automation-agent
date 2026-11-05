@@ -456,12 +456,39 @@ class ExtensionBrowserAdapter:
             or any(k in str(action.reasoning or "").lower() for k in ["add file", "upload", "attach", "choose file"])
         )
         cmd_timeout = 60.0 if is_upload else 25.0
-        resp = await self.manager.send_command(
-            task_id=self.task_id,
-            command_type="execute_action",
-            payload={"action": action_payload},
-            timeout=cmd_timeout,
-        )
+
+        os_dialog_task = None
+        if is_upload and sys.platform == "win32":
+            try:
+                from backend.browser.os_dialog import handle_os_file_dialog
+                resolved_file = None
+                if action.upload_paths:
+                    resolved_file = action.upload_paths[0]
+                elif action_payload.get("upload_paths"):
+                    resolved_file = action_payload["upload_paths"][0]
+                os_dialog_task = asyncio.create_task(
+                    handle_os_file_dialog(
+                        goal=str(action.text or ""),
+                        context_text=f"{action.reasoning or ''} {action.text or ''}",
+                        wait_for_dialog_secs=25.0,
+                        accept_types=getattr(action, "file_type", None),
+                        user_approved=True,
+                        file_path=resolved_file,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"Could not spawn OS dialog watcher: {e}")
+
+        try:
+            resp = await self.manager.send_command(
+                task_id=self.task_id,
+                command_type="execute_action",
+                payload={"action": action_payload},
+                timeout=cmd_timeout,
+            )
+        finally:
+            if os_dialog_task and not os_dialog_task.done():
+                os_dialog_task.cancel()
 
         success = resp.get("success", False)
         error_msg = resp.get("error")

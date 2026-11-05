@@ -957,10 +957,21 @@
 
       // Click any upload/insert/select button if visible
       try {
-        const dialogBtns = Array.from(doc.querySelectorAll('button, [role="button"], input[type="submit"]'));
+        const dialogBtns = Array.from(doc.querySelectorAll('button, [role="button"], div[role="button"], input[type="submit"]'));
         const submitBtn = dialogBtns.find((b) => /^(upload|insert|select)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
         if (submitBtn) submitBtn.click();
       } catch (e) {}
+
+      // If no file input accepted the file directly, click the UI dialog's "Browse" button so the native OS file dialog appears
+      if (!selectedInput) {
+        try {
+          const browseBtns = Array.from(doc.querySelectorAll('button, [role="button"], div[role="button"]'));
+          const browseBtn = browseBtns.find((b) => /^(browse|select files|choose file)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
+          if (browseBtn) {
+            browseBtn.click();
+          }
+        } catch (e) {}
+      }
 
       return selectedInput;
     } catch (err) {
