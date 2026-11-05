@@ -402,25 +402,67 @@ def _requires_manual_recovery(action: BrowserAction) -> bool:
     )
 
 
-async def _verify_recovered_action(page: Any, action: BrowserAction, controller: Any) -> Tuple[bool, str]:
-    """Verify a fallback's postcondition where the active Playwright page allows it."""
+async def _verify_recovered_action(
+    page: Any,
+    action: BrowserAction,
+    controller: Any,
+    form_fields: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[bool, str]:
+    """Verify an action using stable field metadata when a SPA rerenders its DOM."""
     if page is None:
-        # Extension primary execution reports success from the content script; it
-        # cannot be independently verified from this Playwright-only helper.
         return True, "Primary/extension executor reported success"
+
     try:
         if action.action in (ActionType.FILL, ActionType.TYPE_TEXT, ActionType.FILL_FIELD):
-            selector = action.selector
             expected = action.value if action.value is not None else (action.text or "")
-            if not selector:
-                return False, "Fill action has no selector to verify"
-            locator = page.locator(selector).first
-            if await locator.count() == 0 or not await locator.is_visible():
-                return False, "Fill target is missing or not visible after the action"
-            actual = await locator.input_value(timeout=2000)
-            if actual != expected:
-                return False, "Fill postcondition failed: persisted input value did not match"
-            return True, "Verified persisted input value"
+            candidates = []
+            if action.selector:
+                candidates.append(("selector", action.selector))
+
+            # A dynamic form (notably Google Forms) may replace the original input
+            # after typing, invalidating nth-of-type selectors. Rebuild locators
+            # from the field metadata captured during the last DOM inspection.
+            for field in form_fields or []:
+                if action.selector and field.get("selector") != action.selector:
+                    continue
+                for key in ("field_id", "id"):
+                    value = field.get(key)
+                    if value:
+                        candidates.append(("id", f"#{value}"))
+                name = field.get("name")
+                if name:
+                    candidates.append(("name", f'[name="{str(name).replace(chr(34), chr(92)+chr(34))}"]'))
+                for key in ("label", "aria_label", "placeholder"):
+                    value = str(field.get(key) or "").strip()
+                    if value:
+                        candidates.append((key, value))
+
+            seen = set()
+            for kind, value in candidates:
+                if (kind, value) in seen:
+                    continue
+                seen.add((kind, value))
+                try:
+                    if kind == "label":
+                        locator = page.get_by_label(value, exact=False).first
+                    elif kind == "aria_label":
+                        locator = page.locator(f'[aria-label="{value.replace(chr(34), chr(92)+chr(34))}"]').first
+                    elif kind == "placeholder":
+                        locator = page.get_by_placeholder(value, exact=False).first
+                    else:
+                        locator = page.locator(value).first
+                    if await locator.count() == 0 or not await locator.is_visible():
+                        continue
+                    actual = await locator.input_value(timeout=2000)
+                    if actual == expected:
+                        return True, f"Verified persisted input value via {kind} locator"
+                except Exception:
+                    continue
+
+            return False, (
+                "Fill value could not be independently verified; the original selector "
+                "may have been invalidated by a form rerender."
+            )
 
         if action.action in (ActionType.SELECT, ActionType.SELECT_OPTION):
             selector = action.selector
@@ -459,14 +501,11 @@ async def _verify_recovered_action(page: Any, action: BrowserAction, controller:
             return True, f"Verified usable navigation destination at {current}"
 
         if action.action in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
-            # A click can be successful without changing URL (e.g. opening a menu).
-            # Require a live page and a responsive DOM rather than blindly repeating it.
             await page.evaluate("() => document.readyState")
             return True, "Verified page remained responsive after click fallback"
         return True, "Fallback executor reported success"
     except Exception as exc:
         return False, f"Postcondition verification failed: {classify_browser_error(exc)}: {exc}"
-
 
 # ---------------------------------------------------------------------------
 # High-Level Resilient Action Execution Runner
@@ -544,7 +583,7 @@ async def execute_with_retry_and_fallback(
                     # Re-read the controller's active page after the action; navigation
                     # may have replaced the page object captured before execution.
                     page = getattr(controller, "current_page", None) or page
-                    verified, verification_note = await _verify_recovered_action(page, action, controller)
+                    verified, verification_note = await _verify_recovered_action(page, action, controller, form_fields)
                     if verified:
                         recovery_log.append(f"Postcondition: {verification_note}")
                         return desc, extracted_item, True, recovery_log
