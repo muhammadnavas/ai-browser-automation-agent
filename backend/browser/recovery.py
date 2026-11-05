@@ -15,7 +15,7 @@ import asyncio
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from models.schemas import BrowserAction, ActionType, TaskStatus
 from browser.form_discovery import FormField
@@ -402,11 +402,18 @@ def _requires_manual_recovery(action: BrowserAction) -> bool:
     )
 
 
+def _form_field_value(field: Any, key: str, default: Any = None) -> Any:
+    """Read a discovered field from either a Pydantic model/dataclass or a dict."""
+    if isinstance(field, dict):
+        return field.get(key, default)
+    return getattr(field, key, default)
+
+
 async def _verify_recovered_action(
     page: Any,
     action: BrowserAction,
     controller: Any,
-    form_fields: Optional[List[Dict[str, Any]]] = None,
+    form_fields: Optional[List[Any]] = None,
 ) -> Tuple[bool, str]:
     """Verify an action using stable field metadata when a SPA rerenders its DOM."""
     if page is None:
@@ -423,17 +430,17 @@ async def _verify_recovered_action(
             # after typing, invalidating nth-of-type selectors. Rebuild locators
             # from the field metadata captured during the last DOM inspection.
             for field in form_fields or []:
-                if action.selector and field.get("selector") != action.selector:
+                if action.selector and _form_field_value(field, "selector") != action.selector:
                     continue
                 for key in ("field_id", "id"):
-                    value = field.get(key)
+                    value = _form_field_value(field, key)
                     if value:
                         candidates.append(("id", f"#{value}"))
-                name = field.get("name")
+                name = _form_field_value(field, "name")
                 if name:
                     candidates.append(("name", f'[name="{str(name).replace(chr(34), chr(92)+chr(34))}"]'))
                 for key in ("label", "aria_label", "placeholder"):
-                    value = str(field.get(key) or "").strip()
+                    value = str(_form_field_value(field, key) or "").strip()
                     if value:
                         candidates.append((key, value))
 
