@@ -337,24 +337,46 @@ def _parse_raw_field(
     # Infer label
     label = _pick_label(raw)
 
+    raw_val = raw.get("value") or None
+    raw_ph = raw.get("placeholder") or None
+    raw_aria = raw.get("aria_label") or None
+
+    try:
+        from backend.security import is_auth_field, redact_text
+        if is_auth_field(raw):
+            current_val = ""
+        elif raw_val:
+            current_val = redact_text(str(raw_val), mask_tier3=True, preserve_public_contacts=True)
+        else:
+            current_val = None
+
+        if label:
+            label = redact_text(str(label), mask_tier3=True, preserve_public_contacts=True)
+        if raw_ph:
+            raw_ph = redact_text(str(raw_ph), mask_tier3=True, preserve_public_contacts=True)
+        if raw_aria:
+            raw_aria = redact_text(str(raw_aria), mask_tier3=True, preserve_public_contacts=True)
+    except Exception:
+        current_val = "" if (raw.get("type") or "").lower() == "password" else raw_val
+
     return FormField(
         field_type    = field_type,
         selector      = raw.get("selector", ""),
         label         = label,
         name          = raw.get("name") or None,
         field_id      = raw.get("id") or None,
-        placeholder   = raw.get("placeholder") or None,
+        placeholder   = raw_ph,
         autocomplete  = raw.get("autocomplete") or None,
         required      = bool(raw.get("required", False)),
         disabled      = bool(raw.get("disabled", False)),
         readonly      = bool(raw.get("readonly", False)),
-        current_value = raw.get("value") or None,
+        current_value = current_val,
         options       = options,
         group_name    = raw.get("name") or None if field_type in (
             FieldType.RADIO, FieldType.CHECKBOX
         ) else None,
         visible       = bool(raw.get("visible", True)),
-        aria_label    = raw.get("aria_label") or None,
+        aria_label    = raw_aria,
     )
 
 

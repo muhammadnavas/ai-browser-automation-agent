@@ -373,6 +373,12 @@ class TaskManager:
             task_archive.save_task(task, self._report_store.get(task.task_id))
         except Exception:
             logger.exception("Failed to archive terminal task %s", task.task_id)
+        # Clear sensitive task vault upon task termination
+        try:
+            from backend.security import clear_task_vault
+            clear_task_vault(task.task_id)
+        except Exception:
+            pass
         self.task_history[task.task_id] = task
         while len(self.task_history) > task_archive.max_tasks:
             oldest_id = min(self.task_history, key=lambda key: self.task_history[key].updated_at)
@@ -386,6 +392,33 @@ class TaskManager:
     def create_task(self, req: TaskRequest) -> TaskResponse:
         task_id = f"task-{uuid.uuid4().hex[:8]}"
         now = time.time()
+
+        # Check task goal against security policy (blocking Tier 1 secrets)
+        from backend.security import check_goal_policy, get_task_vault
+        is_allowed, reason = check_goal_policy(req.goal, task_id=task_id)
+        if not is_allowed:
+            from backend.security import redact_text, get_security_user_message, strip_internal_placeholders
+            user_error = get_security_user_message(reason)
+            clean_goal = strip_internal_placeholders(redact_text(req.goal), replacement="[protected]")
+            task_resp = TaskResponse(
+                task_id=task_id,
+                goal=clean_goal,
+                status=TaskStatus.FAILED,
+                error=user_error,
+                created_at=now,
+                updated_at=now,
+                max_steps=req.max_steps,
+                steps=[],
+                extracted_data=[],
+                reports={},
+            )
+            self._record_terminal_task(task_resp)
+            return task_resp
+
+        # Sanitize and vault authorized contact info in the user goal
+        vault = get_task_vault(task_id, calling_task_id=task_id)
+        sanitized_goal = vault.sanitize_and_vault_text(req.goal)
+        req.goal = sanitized_goal
 
         task_resp = TaskResponse(
             task_id=task_id,
@@ -428,7 +461,34 @@ class TaskManager:
         if task_id not in self.subscribers or task_id not in self.tasks:
             return
 
-        task_data = self.tasks[task_id].model_dump()
+        from backend.security import redact_sensitive_data, sanitize_user_facing_error, strip_internal_placeholders
+        task = self.tasks[task_id]
+        is_explicit_contact = any(k in (getattr(task, "goal", "") or "").lower() for k in ["contact", "email", "phone", "address", "directory", "lead", "who to call"])
+        try:
+            task_data = redact_sensitive_data(
+                task.model_dump(),
+                mask_tier3=not is_explicit_contact,
+                preserve_contact_info=is_explicit_contact,
+            )
+            if task_data.get("error"):
+                task_data["error"] = sanitize_user_facing_error(task_data["error"])
+            if task_data.get("goal"):
+                task_data["goal"] = strip_internal_placeholders(task_data["goal"])
+            if task_data.get("steps"):
+                for s in task_data["steps"]:
+                    if isinstance(s, dict):
+                        if s.get("error"):
+                            s["error"] = sanitize_user_facing_error(s["error"])
+                        if s.get("reasoning"):
+                            s["reasoning"] = strip_internal_placeholders(s["reasoning"])
+        except Exception as exc:
+            logger.error("Failed to sanitize task broadcast, failing closed: %s", exc)
+            task_data = {
+                "task_id": task_id,
+                "goal": "[protected]",
+                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+                "error": "This action cannot be completed due to security restrictions.",
+            }
         dead: Set[WebSocket] = set()
         for ws in self.subscribers[task_id]:
             try:
@@ -476,6 +536,7 @@ class TaskManager:
             task.plan_status = "failed"
             task.error = "Chrome Extension is disconnected. Connect the extension in Chrome before starting a task."
             task.updated_at = time.time()
+            self._record_terminal_task(task)
             await self.broadcast_task_update(task_id)
             await self._save_cached_task_state(task_id)
             return
@@ -911,6 +972,64 @@ class TaskManager:
                 if self._is_cancelled(task_id):
                     break
 
+                # 1.5. User-Assisted Authentication Gate (Password / OTP detection)
+                from backend.security import is_auth_field, audit_logger
+                auth_fields_detected = [
+                    f for f in (page_info.get("form_fields", []) or [])
+                    if is_auth_field(f)
+                ] or [
+                    el for el in (page_info.get("elements", []) or [])
+                    if is_auth_field(el)
+                ]
+                current_auth_sig = tuple(sorted(str(f.get("selector") or f.get("index") or f.get("name") or f.get("id")) for f in auth_fields_detected)) if auth_fields_detected else None
+
+                if auth_fields_detected and getattr(task, "_auth_confirmed_state", None) != current_auth_sig:
+                    audit_logger.log_auth_event(task_id, action="paused", reason="Password or OTP input field detected on page")
+                    if hasattr(controller, "unlock_ui"):
+                        await controller.unlock_ui()
+                    task.status = TaskStatus.WAITING_APPROVAL
+                    task.plan_status = "waiting_approval"
+                    from backend.security import get_security_user_message, SecurityEventType
+                    auth_msg = get_security_user_message(SecurityEventType.AUTH_REQUIRED)
+                    task.error = auth_msg
+                    task.approval_request = HumanApprovalRequest(
+                        task_id=task_id,
+                        type=ApprovalType.CUSTOM,
+                        prompt_message=auth_msg,
+                        screenshot_url=None,  # Suppress screenshots during auth pause
+                    )
+                    event = asyncio.Event()
+                    self.approval_events[task_id] = event
+                    task.updated_at = time.time()
+                    await self.broadcast_task_update(task_id)
+
+                    if not self._is_cancelled(task_id):
+                        await event.wait()
+
+                    if self._is_cancelled(task_id) or task.status == TaskStatus.CANCELLED or (task.approval_request and task.approval_request.status == "rejected"):
+                        task.status = TaskStatus.CANCELLED
+                        task.plan_status = "cancelled"
+                        task.approval_request = None
+                        break
+
+                    # Resuming from user-assisted authentication
+                    task._auth_confirmed_state = current_auth_sig
+                    task.approval_request = None
+                    task.status = TaskStatus.RUNNING
+                    task.plan_status = "executing"
+                    task.error = None
+                    user_approval_input = ""  # Ignore user_input during auth pause
+
+                    audit_logger.log_auth_event(task_id, action="resumed", reason="User confirmed completion of authentication in browser")
+
+                    try:
+                        page_info = await controller.parse_interactive_elements()
+                    except Exception as refresh_exc:
+                        logger.warning("Failed to refresh DOM after auth resume: %s", refresh_exc)
+
+                if self._is_cancelled(task_id):
+                    break
+
                 # 2. Security gate check
                 captcha_or_payment = await controller.check_captcha_or_payment()
 
@@ -918,9 +1037,13 @@ class TaskManager:
                     break
 
                 # 3. Screenshot before action
-                screenshot_path, screenshot_url = await controller.capture_screenshot(
-                    task_id, step_num
-                )
+                # If sensitive auth fields are present and extension cannot guarantee reliable pixel masking, skip screenshot capture
+                if use_extension and any(is_auth_field(el) for el in (page_info.get("elements", []) or [])):
+                    screenshot_path, screenshot_url = None, None
+                else:
+                    screenshot_path, screenshot_url = await controller.capture_screenshot(
+                        task_id, step_num
+                    )
 
                 if self._is_cancelled(task_id):
                     break
@@ -1404,6 +1527,46 @@ class TaskManager:
                                 action.directory_path = real_file.get("directory")
                                 action.neighbor_files = real_file.get("neighbor_files")
                                 logger.info(f"Attached real system file to action: {real_file['name']} ({real_file['size']} bytes) from folder '{real_file.get('folder_name')}' ({real_file.get('directory')})")
+
+                                # Require explicit user approval before executing the file upload
+                                if not getattr(task, "_upload_confirmed", False):
+                                    file_path = real_file["path"]
+                                    if hasattr(controller, "unlock_ui"):
+                                        await controller.unlock_ui()
+                                    upload_msg = (
+                                        f"File Upload Approval Required: The agent is requesting to upload the following file:\n"
+                                        f"Path: {file_path}\n"
+                                        f"Name: {real_file['name']}\n"
+                                        f"Do you authorize this upload?"
+                                    )
+                                    task.status = TaskStatus.WAITING_APPROVAL
+                                    task.approval_request = HumanApprovalRequest(
+                                        task_id=task_id,
+                                        type=ApprovalType.CUSTOM,
+                                        prompt_message=upload_msg,
+                                        screenshot_url=screenshot_url,
+                                    )
+                                    event = asyncio.Event()
+                                    self.approval_events[task_id] = event
+                                    task.updated_at = time.time()
+                                    await self.broadcast_task_update(task_id)
+
+                                    if not self._is_cancelled(task_id):
+                                        await event.wait()
+
+                                    if self._is_cancelled(task_id) or task.status == TaskStatus.CANCELLED or (task.approval_request and task.approval_request.status == "rejected"):
+                                        task.status = TaskStatus.CANCELLED
+                                        task.plan_status = "cancelled"
+                                        task.approval_request = None
+                                        audit_logger.log_upload_event(task_id, file_path, False, "User rejected file upload")
+                                        break
+
+                                    task._upload_confirmed = True
+                                    task.approval_request = None
+                                    task.status = TaskStatus.RUNNING
+                                    audit_logger.log_upload_event(task_id, file_path, True, "User authorized file upload")
+                            else:
+                                audit_logger.log_upload_event(task_id, "unknown", False, "No explicit allowlisted file path specified for upload")
                         except Exception as e:
                             logger.warning(f"Could not attach real user file: {e}")
 
@@ -2140,6 +2303,11 @@ class TaskManager:
 
                 # Terminal tasks live in the bounded archive/history, not the active registry.
                 self.tasks.pop(task_id, None)
+            try:
+                from backend.security import clear_task_vault
+                clear_task_vault(task_id)
+            except Exception:
+                pass
 
     def _heal_extension_action_target(
         self,
@@ -2783,7 +2951,15 @@ Task evidence:
         if isinstance(controller, ExtensionBrowserAdapter) or (hasattr(controller, "execute_action") and not getattr(controller, "current_page", None)):
             form_fields = getattr(task, "_current_form_fields", None)
             try:
-                desc, extracted_item = await controller.execute_action(action, form_fields)
+                # Substitute vault placeholders only at actual browser execution time
+                from backend.security import get_task_vault
+                vault = get_task_vault(task_id, calling_task_id=task_id)
+                exec_action = action.model_copy()
+                if exec_action.text:
+                    exec_action.text = vault.substitute_placeholders(exec_action.text, calling_task_id=task_id)
+                if exec_action.value:
+                    exec_action.value = vault.substitute_placeholders(exec_action.value, calling_task_id=task_id)
+                desc, extracted_item = await controller.execute_action(exec_action, form_fields)
                 success = True
             except Exception as exc:
                 desc = f"Action {action.action.value.upper()} failed: {exc}"
@@ -2792,6 +2968,24 @@ Task evidence:
 
             if success:
                 if action.action == ActionType.EXTRACT and extracted_item:
+                    from backend.security import check_extraction_safety_threshold
+                    is_explicit_contact = any(k in (task.goal or "").lower() for k in ["contact", "email", "phone", "address", "directory", "lead", "who to call"])
+                    try:
+                        allowed, reason, safe_extracted = check_extraction_safety_threshold(
+                            extracted_item,
+                            task_id=task_id,
+                            is_explicit_contact_request=is_explicit_contact,
+                            user_intent=task.goal,
+                        )
+                    except Exception as exc:
+                        allowed = False
+                        reason = f"Extraction safety threshold check failed: {type(exc).__name__}"
+                        safe_extracted = None
+                    if not allowed:
+                        from backend.security import get_security_user_message, SecurityEventType
+                        user_error = get_security_user_message(SecurityEventType.EXTRACTION_REFUSED)
+                        return f"Extraction refused: {user_error}", {"status": "Refused", "error": user_error}, False
+                    extracted_item = safe_extracted
                     task.extracted_data.append(extracted_item)
                 elif action.action == ActionType.FINISH:
                     verified, verification_message = await self._verify_goal_completion(controller, task, planner, trajectory_history)
@@ -2999,6 +3193,11 @@ Task evidence:
         if background_task and background_task is not asyncio.current_task() and not background_task.done():
             await asyncio.gather(background_task, return_exceptions=True)
 
+        try:
+            from backend.security import clear_task_vault
+            clear_task_vault(task_id)
+        except Exception:
+            pass
         self.tasks.pop(task_id, None)
         self.task_history.pop(task_id, None)
         self.running_tasks.pop(task_id, None)

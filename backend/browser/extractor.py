@@ -76,6 +76,8 @@ class InfoExtractor:
         self,
         page: Page,
         category: Optional[PageCategory] = None,
+        user_intent: Optional[str] = None,
+        is_explicit_contact_request: bool = False,
     ) -> ExtractionResult:
         """
         Extract structured information from the active Playwright page.
@@ -83,6 +85,8 @@ class InfoExtractor:
         Args:
             page:     An active Playwright ``Page`` (already navigated).
             category: Force a specific category. ``None`` = auto-detect.
+            user_intent: User's original prompt / task goal text.
+            is_explicit_contact_request: Whether the user explicitly asked for contacts.
 
         Returns:
             A fully-populated ``ExtractionResult`` ready for serialisation.
@@ -98,6 +102,18 @@ class InfoExtractor:
             except Exception:
                 pass  # Timeout is acceptable — proceed with current DOM state
 
+        # Determine explicit contact intent:
+        # PageCategory.CONTACT alone does NOT prove user intent.
+        is_explicit_contact = bool(is_explicit_contact_request)
+        if not is_explicit_contact and user_intent:
+            intent_lower = user_intent.lower()
+            contact_keywords = (
+                "contact", "email", "phone", "address", "directory",
+                "reach out", "support email", "sales contact", "who to call", "lead"
+            )
+            if any(k in intent_lower for k in contact_keywords):
+                is_explicit_contact = True
+
         # 1. Page metadata (always extracted)
         metadata: PageMetadata
         try:
@@ -108,6 +124,29 @@ class InfoExtractor:
             errors.append(f"Metadata extraction failed: {exc}")
 
         page_url   = page.url
+        page_title = metadata.page_title
+
+        # Check and sanitize metadata under security threshold policy
+        try:
+            from backend.security import check_extraction_safety_threshold
+            meta_dict = metadata.model_dump() if hasattr(metadata, "model_dump") else metadata.dict()
+            is_meta_safe, meta_reason, sanitized_meta = check_extraction_safety_threshold(
+                meta_dict,
+                task_id=page_url,
+                is_explicit_contact_request=is_explicit_contact,
+                user_intent=user_intent,
+            )
+            if not is_meta_safe:
+                logger.warning(f"Metadata refused by safety policy: {meta_reason}")
+                errors.append(f"Metadata refused: {meta_reason}")
+                metadata = PageMetadata(page_title="[REDACTED]")
+            elif isinstance(sanitized_meta, dict):
+                metadata = PageMetadata(**sanitized_meta)
+        except Exception as meta_exc:
+            logger.error(f"Metadata security check failed: {meta_exc}")
+            errors.append(f"Metadata security check failed: {type(meta_exc).__name__}")
+            metadata = PageMetadata(page_title="[REDACTED]")
+
         page_title = metadata.page_title
 
         # 2. Category detection (or honour forced category)
@@ -128,6 +167,31 @@ class InfoExtractor:
         except Exception as exc:
             logger.error(f"Category extraction failed [{category.value}]: {exc}")
             errors.append(f"Extraction failed for category '{category.value}': {exc}")
+
+        # 4. Extraction Safety Threshold Policy Check (MUST fail closed)
+        try:
+            from backend.security import check_extraction_safety_threshold
+            is_safe, reason, sanitized_data = check_extraction_safety_threshold(
+                data,
+                task_id=page_url,
+                is_explicit_contact_request=is_explicit_contact,
+                user_intent=user_intent,
+            )
+            if not is_safe:
+                logger.warning(f"Extraction refused by safety policy: {reason}")
+                from backend.security import get_security_user_message, SecurityEventType
+                user_msg = get_security_user_message(SecurityEventType.EXTRACTION_REFUSED)
+                errors.append(user_msg)
+                data = {"status": "Refused", "error": user_msg}
+            else:
+                data = sanitized_data
+        except Exception as pol_exc:
+            logger.error(f"Extraction threshold check failed: {pol_exc}")
+            from backend.security import get_security_user_message, SecurityEventType
+            fail_msg = f"Extraction failed: {get_security_user_message(SecurityEventType.EXTRACTION_REFUSED)}"
+            errors.append(fail_msg)
+            # Fail closed: never return raw extracted data when policy check fails
+            data = {"status": "Refused", "error": fail_msg}
 
         return ExtractionResult(
             url          = page_url,

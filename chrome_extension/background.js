@@ -120,11 +120,26 @@ async function connectWebSocket() {
 
     candidate.onmessage = async (event) => {
       if (socket !== candidate) return;
+      let message;
       try {
-        const message = JSON.parse(event.data);
+        message = JSON.parse(event.data);
+      } catch (err) {
+        console.error("[AI Extension] JSON parse error:", err);
+        return;
+      }
+      try {
         await handleBackendMessage(message);
       } catch (err) {
         console.error("[AI Extension] Error handling message:", err);
+        if (message && message.id) {
+          sendWsMessage({
+            id: message.id,
+            task_id: message.task_id,
+            type: "response",
+            success: false,
+            error: `Extension internal error handling ${message.type}: ${err.message}`,
+          });
+        }
       }
     };
 
@@ -147,6 +162,7 @@ async function connectWebSocket() {
     };
 
     candidate.onerror = (error) => {
+      if (socket !== candidate) return;
       console.error("[AI Extension] WebSocket error:", error);
       lastConnectionError = `Could not connect to ${candidate.url}. Confirm the backend is running and the WebSocket route is reachable.`;
       chrome.storage.local.set({ isConnected: false, lastConnectionError }).catch(() => {});
@@ -177,12 +193,29 @@ function sendWsMessage(msg) {
 // Tab Management & Content Script Injection Helpers
 // ---------------------------------------------------------------------------
 
+function isRestrictedUrl(url) {
+  if (!url) return false;
+  const lower = url.toLowerCase().trim();
+  return (
+    lower === 'about:blank' ||
+    lower.startsWith('about:') ||
+    lower.startsWith('chrome://') ||
+    lower.startsWith('chrome-extension://') ||
+    lower.startsWith('devtools://') ||
+    lower.startsWith('edge://') ||
+    lower.startsWith('view-source:') ||
+    lower.startsWith('data:') ||
+    lower.startsWith('javascript:') ||
+    lower.startsWith('https://chrome.google.com/webstore') ||
+    lower.startsWith('https://chromewebstore.google.com')
+  );
+}
+
 async function ensureContentScriptInjected(tabId) {
   const getScriptableTab = async () => {
     const tab = await chrome.tabs.get(tabId);
     const pageUrl = tab?.url || "";
-    if (/^(chrome|edge|about|devtools):\\/\\//i.test(pageUrl) ||
-        pageUrl.startsWith("chrome-extension://")) {
+    if (isRestrictedUrl(pageUrl)) {
       throw new Error(`Content scripts cannot run on this browser page: ${pageUrl}`);
     }
     return tab;
@@ -214,10 +247,9 @@ async function ensureContentScriptInjected(tabId) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const currentTab = await getScriptableTab();
     if (currentTab.status !== "complete") {
-      const loaded = await waitForTabLoaded(tabId, 15000);
-      if (!loaded) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        continue;
+      const loaded = await waitForTabLoaded(tabId, 2500);
+      if (!loaded && attempt === 0) {
+        // Document still loading; continue checking ping or injection
       }
     }
 
@@ -232,8 +264,8 @@ async function ensureContentScriptInjected(tabId) {
 
     // executeScript confirms evaluation was requested; ping confirms that the
     // runtime message listener is actually available in the top frame.
-    if (await waitForPing([150, 300, 500, 800, 1200])) return true;
-    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    if (await waitForPing([150, 250, 400])) return true;
+    await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
   }
 
   const finalTab = await chrome.tabs.get(tabId).catch(() => null);
@@ -242,7 +274,7 @@ async function ensureContentScriptInjected(tabId) {
     ? ` Last injection error: ${lastInjectionError.message}`
     : "";
   throw new Error(
-    `Browser content script did not become ready for tab ${tabId} (${finalUrl}) after readiness polling and reinjection.${injectionDetail} Check that the extension has access to this site, then reload the task tab.`
+    `Browser content script did not become ready for tab ${tabId} (${finalUrl}) after injection.${injectionDetail} Reload the task tab and retry.`
   );
 }
 
@@ -342,10 +374,10 @@ async function handleBackendMessage(msg) {
       // even with <all_urls>. A blank task tab is only a temporary container:
       // the backend will navigate it before requesting DOM inspection/actions.
       // Inject only after a real, scriptable document has loaded.
-      if (url && url !== "about:blank") {
+      if (url && !isRestrictedUrl(url)) {
         await waitForTabLoaded(tab.id, 12000);
         const loadedTab = await chrome.tabs.get(tab.id);
-        if (loadedTab.url && !loadedTab.url.startsWith("about:blank")) {
+        if (loadedTab.url && !isRestrictedUrl(loadedTab.url)) {
           await ensureContentScriptInjected(tab.id);
         }
       }
@@ -565,7 +597,9 @@ async function handleBackendMessage(msg) {
       const targetUrl = msg.url;
       await chrome.tabs.update(tabId, { url: targetUrl });
       await waitForTabLoaded(tabId);
-      await ensureContentScriptInjected(tabId);
+      if (!isRestrictedUrl(targetUrl)) {
+        await ensureContentScriptInjected(tabId);
+      }
       const updatedTab = await chrome.tabs.get(tabId);
 
       sendWsMessage({
@@ -594,7 +628,13 @@ async function handleBackendMessage(msg) {
       const tab = await chrome.tabs.get(tabId);
       let dataUrl = null;
       if (tab && tab.active) {
+        try {
+          await sendContentMessage(tabId, { type: "mask_sensitive_elements" });
+        } catch (_) {}
         dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId || null, { format: "png" });
+        try {
+          await sendContentMessage(tabId, { type: "unmask_sensitive_elements" });
+        } catch (_) {}
       }
 
       sendWsMessage({
@@ -693,7 +733,9 @@ async function handleBackendMessage(msg) {
         if (navUrl) {
           await chrome.tabs.update(tabId, { url: navUrl });
           await waitForTabLoaded(tabId);
-          await ensureContentScriptInjected(tabId);
+          if (!isRestrictedUrl(navUrl)) {
+            await ensureContentScriptInjected(tabId);
+          }
           const tab = await chrome.tabs.get(tabId);
           sendWsMessage({
             id,
@@ -746,25 +788,63 @@ async function handleBackendMessage(msg) {
   if (type === "lock_ui" || type === "unlock_ui") {
     const command = type;
     try {
+      const currentTab = await chrome.tabs.get(tabId);
+      const currentUrl = currentTab?.url || "";
+      if (isRestrictedUrl(currentUrl)) {
+        // Restricted or blank pages (about:blank, chrome://) cannot run content scripts
+        // and do not need a DOM interaction overlay. Acknowledge immediately.
+        sendWsMessage({
+          id,
+          task_id,
+          type: "response",
+          success: true,
+          data: {
+            locked: command === "lock_ui",
+            restricted: true,
+            url: currentUrl,
+            message: "Page is blank or restricted; content script lock overlay skipped.",
+          },
+        });
+        return;
+      }
+
       await ensureContentScriptInjected(tabId);
       // Send the command to every frame, not only the top document. Google Forms
       // and upload widgets can put interactive controls inside child frames.
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        world: "ISOLATED",
-        func: (lockCommand) => {
-          const detail = { command: lockCommand, result: false };
-          window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
-          return detail.result;
-        },
-        args: [command],
-      });
+      let results = [];
+      try {
+        results = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          world: "ISOLATED",
+          func: (lockCommand) => {
+            const detail = { command: lockCommand, result: false };
+            window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
+            return detail.result;
+          },
+          args: [command],
+        });
+      } catch (scriptErr) {
+        // Fallback: try targeting only the top frame if allFrames fails
+        results = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          func: (lockCommand) => {
+            const detail = { command: lockCommand, result: false };
+            window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
+            return detail.result;
+          },
+          args: [command],
+        });
+      }
+
       if (command === "lock_ui") {
-        const failedFrames = (results || []).filter((frame) => frame.result !== true);
-        if (!results?.length || failedFrames.length) {
-          throw new Error(`Lock was not confirmed in ${failedFrames.length || "any"} frame(s).`);
+        const topFrameResult = (results || []).find((frame) => frame.frameId === 0);
+        const anyConfirmed = (results || []).some((frame) => frame.result === true);
+        if (!topFrameResult?.result && !anyConfirmed) {
+          throw new Error("Lock was not confirmed in the top frame or any child frames.");
         }
       }
+
       sendWsMessage({
         id,
         task_id,
@@ -787,6 +867,15 @@ async function handleBackendMessage(msg) {
     }
     return;
   }
+
+  // Unknown / unhandled command fallback
+  sendWsMessage({
+    id,
+    task_id,
+    type: "response",
+    success: false,
+    error: `Unrecognized extension command: ${type}`,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -817,6 +906,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "get_status") {
       const { serverUrl } = await loadSettings();
+      const { isConnected } = await chrome.storage.local.get("isConnected");
       const connected = Boolean(socket && socket.readyState === WebSocket.OPEN);
       const activeTasks = Array.from(taskTabMap.entries()).map(([taskId, tabId]) => ({
         task_id: taskId,
@@ -850,3 +940,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 loadSettings().then(() => {
   connectWebSocket();
 });
+
+// Keep-alive alarm to prevent MV3 service worker dormancy during idle connections
+try {
+  chrome.alarms.create("ws-keepalive", { periodInMinutes: 0.5 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === "ws-keepalive") {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        connectWebSocket();
+      }
+    }
+  });
+} catch (_) {}

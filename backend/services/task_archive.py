@@ -1,4 +1,5 @@
 """Durable, bounded storage for terminal task history and generated reports."""
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -6,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from models.schemas import TaskResponse, ResearchTaskResponse
+from backend.security import redact_sensitive_data
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "task_archive.sqlite3"
 
@@ -46,13 +48,19 @@ class TaskArchive:
             db.close()
 
     def save_task(self, task: TaskResponse, report_pdf: Optional[bytes] = None) -> None:
+        sanitized_dict = redact_sensitive_data(
+            task.model_dump(),
+            mask_tier3=False,
+            preserve_contact_info=True,
+        )
+        task_json = json.dumps(sanitized_dict)
         with self._connect() as db:
             db.execute("""INSERT INTO archived_tasks(task_id, updated_at, task_json, report_pdf)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                 updated_at=excluded.updated_at, task_json=excluded.task_json,
                 report_pdf=COALESCE(excluded.report_pdf, archived_tasks.report_pdf)""",
-                (task.task_id, float(task.updated_at), task.model_dump_json(), report_pdf))
+                (task.task_id, float(task.updated_at), task_json, report_pdf))
             db.execute("""DELETE FROM archived_tasks WHERE task_id IN (
                 SELECT task_id FROM archived_tasks ORDER BY updated_at DESC LIMIT -1 OFFSET ?)""",
                 (self.max_tasks,))
@@ -86,13 +94,19 @@ class TaskArchive:
 
     def save_research_task(self, task: ResearchTaskResponse) -> None:
         """Persist a research task, including its comparison result when available."""
+        sanitized_dict = redact_sensitive_data(
+            task.model_dump(),
+            mask_tier3=False,
+            preserve_contact_info=True,
+        )
+        task_json = json.dumps(sanitized_dict)
         with self._connect() as db:
             db.execute(
                 """INSERT INTO archived_research_tasks(task_id, updated_at, task_json)
                    VALUES (?, ?, ?)
                    ON CONFLICT(task_id) DO UPDATE SET
                    updated_at=excluded.updated_at, task_json=excluded.task_json""",
-                (task.task_id, float(task.updated_at), task.model_dump_json()),
+                (task.task_id, float(task.updated_at), task_json),
             )
             db.execute(
                 """DELETE FROM archived_research_tasks WHERE task_id IN (

@@ -27,6 +27,33 @@ const wsUrl = (path) => {
 const isActive = (status) => ACTIVE.includes(status);
 const isTerminal = (status) => TERMINAL.includes(status);
 
+const formatUserFacingError = (error) => {
+  if (!error) return '';
+  const errStr = typeof error === 'string' ? error : (error.message || JSON.stringify(error));
+  const lower = errStr.toLowerCase();
+
+  if (lower.includes('extraction') && (lower.includes('threshold') || lower.includes('sensitive') || lower.includes('refused') || lower.includes('protected'))) {
+    return 'The requested content contains protected information. For security reasons, the data cannot be extracted.';
+  }
+  if (lower.includes('upload') && (lower.includes('restrict') || lower.includes('sensitive') || lower.includes('allowlist') || lower.includes('prohibit'))) {
+    return 'The selected file cannot be uploaded due to security restrictions.';
+  }
+  if (lower.includes('navigation') && (lower.includes('blocked') || lower.includes('restrict') || lower.includes('prohibit') || lower.includes('loopback'))) {
+    return 'Navigation to this address is restricted by security policy.';
+  }
+  if (lower.includes('screenshot') && (lower.includes('protect') || lower.includes('masking') || lower.includes('origin'))) {
+    return 'Screen capture unavailable for protected content.';
+  }
+  if (lower.includes('password or otp input') || lower.includes('enter your credentials')) {
+    return 'Authentication or security verification required. Please complete this step directly in the browser to continue.';
+  }
+  if (lower.includes('tier 1') || lower.includes('tier 2') || lower.includes('tier 3') || lower.includes('tier1') || lower.includes('raw tier') || lower.includes('harvest prohibited')) {
+    return 'This task involves accessing or retrieving protected information. For security reasons, the action cannot be completed.';
+  }
+  return errStr.replace(/\[REDACTED(?:_[A-Z0-9_]+)?\]/gi, '[protected]').replace(/\{\{[A-Z0-9_]+\}\}/g, '[protected]');
+};
+
+
 const statusLabel = (task) => {
   if (task.status === 'waiting_approval') return 'Needs approval';
   if (task.status === 'paused') return 'Paused';
@@ -413,7 +440,7 @@ function ActionCard({ step }) {
         </p>
       )}
 
-      {step.error && <p className="error-text">{step.error}</p>}
+      {step.error && <p className="error-text">{formatUserFacingError(step.error)}</p>}
 
       {step.url && (
         <a className="inline-link" href={step.url} target="_blank" rel="noreferrer">
@@ -1419,18 +1446,16 @@ export default function App() {
     if (!currentTask) return;
     setBusyAction(true);
     try {
-      const params = new URLSearchParams({
-        approved: String(approved),
-        user_input: userInput || '',
-      });
       const response = await fetch(
-        api(
-          '/api/tasks/' +
-          encodeURIComponent(currentTask.task_id) +
-          '/approve?' +
-          params
-        ),
-        { method: 'POST' }
+        api('/api/tasks/' + encodeURIComponent(currentTask.task_id) + '/approve'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            approved: Boolean(approved),
+            user_input: userInput || '',
+          }),
+        }
       );
       const payload = await response.json().catch(() => ({}));
       if (!response.ok)
@@ -1606,7 +1631,7 @@ export default function App() {
         {error && (
           <div className="alert alert-error" role="alert">
             <AlertCircle size={17} />
-            <span>{error}</span>
+            <span>{formatUserFacingError(error)}</span>
             <IconButton title="Dismiss error" onClick={() => setError('')}>
               <X size={15} />
             </IconButton>
@@ -1858,7 +1883,7 @@ export default function App() {
               {currentTask.error && (
                 <div className="task-error">
                   <AlertCircle size={15} />
-                  {currentTask.error}
+                  {formatUserFacingError(currentTask.error)}
                 </div>
               )}
 

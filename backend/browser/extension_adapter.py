@@ -343,35 +343,92 @@ class ExtensionBrowserAdapter:
         data = resp.get("data", {})
         self._current_url = data.get("url", self._current_url)
 
-        # Build element_map for index lookups
-        raw_elements = data.get("elements", [])
-        self.element_map = {item["index"]: item for item in raw_elements if "index" in item}
+        # Sanitize extension-returned DOM and form fields at backend boundary
+        try:
+            from backend.security import redact_text, is_auth_field, redact_sensitive_data
 
-        # Convert raw form fields into FormField pydantic models if needed
-        raw_fields = data.get("form_fields", [])
-        parsed_form_fields: List[FormField] = []
-        for rf in raw_fields:
-            try:
-                parsed_form_fields.append(
-                    FormField(
-                        field_type=FieldType(rf.get("field_type", "text")),
-                        selector=rf.get("selector", ""),
-                        label=rf.get("label"),
-                        name=rf.get("name"),
-                        field_id=rf.get("field_id"),
-                        placeholder=rf.get("placeholder"),
-                        autocomplete=rf.get("autocomplete"),
-                        required=bool(rf.get("required")),
-                        disabled=bool(rf.get("disabled")),
-                        readonly=bool(rf.get("readonly")),
-                        current_value=rf.get("current_value"),
-                        aria_label=rf.get("aria_label"),
-                        visible=bool(rf.get("visible", True)),
+            for item in data.get("elements", []):
+                if is_auth_field(item):
+                    item["value"] = ""
+                elif item.get("value"):
+                    item["value"] = redact_text(str(item["value"]), mask_tier3=True, preserve_public_contacts=True)
+                if item.get("placeholder"):
+                    item["placeholder"] = redact_text(str(item["placeholder"]), mask_tier3=True, preserve_public_contacts=True)
+                if item.get("label"):
+                    item["label"] = redact_text(str(item["label"]), mask_tier3=True, preserve_public_contacts=True)
+                if item.get("text"):
+                    item["text"] = redact_text(str(item["text"]), mask_tier3=True, preserve_public_contacts=True)
+                if item.get("aria_label"):
+                    item["aria_label"] = redact_text(str(item["aria_label"]), mask_tier3=True, preserve_public_contacts=True)
+                if item.get("title"):
+                    item["title"] = redact_text(str(item["title"]), mask_tier3=True, preserve_public_contacts=True)
+
+            if data.get("page_text"):
+                data["page_text"] = redact_text(data["page_text"], mask_tier3=True, preserve_public_contacts=True)
+            if data.get("headings"):
+                data["headings"] = [redact_text(h, mask_tier3=True, preserve_public_contacts=True) for h in data["headings"]]
+            if data.get("form_questions"):
+                data["form_questions"] = [redact_text(q, mask_tier3=True, preserve_public_contacts=True) for q in data["form_questions"]]
+
+            # Build element_map for index lookups
+            raw_elements = data.get("elements", [])
+            self.element_map = {item["index"]: item for item in raw_elements if "index" in item}
+
+            # Convert raw form fields into FormField pydantic models with sanitization
+            raw_fields = data.get("form_fields", [])
+            parsed_form_fields: List[FormField] = []
+            for rf in raw_fields:
+                try:
+                    cval = rf.get("current_value")
+                    lbl = rf.get("label")
+                    ph = rf.get("placeholder")
+                    aria = rf.get("aria_label")
+
+                    if is_auth_field(rf):
+                        cval = ""
+                    elif cval:
+                        cval = redact_text(str(cval), mask_tier3=True, preserve_public_contacts=True)
+
+                    if lbl:
+                        lbl = redact_text(str(lbl), mask_tier3=True, preserve_public_contacts=True)
+                    if ph:
+                        ph = redact_text(str(ph), mask_tier3=True, preserve_public_contacts=True)
+                    if aria:
+                        aria = redact_text(str(aria), mask_tier3=True, preserve_public_contacts=True)
+
+                    parsed_form_fields.append(
+                        FormField(
+                            field_type=FieldType(rf.get("field_type", "text")),
+                            selector=rf.get("selector", ""),
+                            label=lbl,
+                            name=rf.get("name"),
+                            field_id=rf.get("field_id"),
+                            placeholder=ph,
+                            autocomplete=rf.get("autocomplete"),
+                            required=bool(rf.get("required")),
+                            disabled=bool(rf.get("disabled")),
+                            readonly=bool(rf.get("readonly")),
+                            current_value=cval,
+                            aria_label=aria,
+                            visible=bool(rf.get("visible", True)),
+                        )
                     )
-                )
-            except Exception:
-                pass
-        data["form_fields"] = parsed_form_fields
+                except Exception:
+                    pass
+            data["form_fields"] = parsed_form_fields
+        except Exception as sec_exc:
+            logger.error(f"Extension DOM sanitization failed, failing closed: {sec_exc}")
+            return {
+                "title": "Error",
+                "url": self._current_url,
+                "inspection_error": True,
+                "elements": [],
+                "page_text": "",
+                "headings": [],
+                "form_questions": [],
+                "form_fields": [],
+                "compact_forms": {},
+            }
 
         return data
 
@@ -417,6 +474,27 @@ class ExtensionBrowserAdapter:
         Captures visible tab screenshot from Chrome Extension, writes PNG to disk,
         and returns (filepath, web_url).
         """
+        # Protect against capturing screenshots of local dashboard or backend administrative origins
+        try:
+            from urllib.parse import urlparse
+            p_url = urlparse(self._current_url or "")
+            h = (p_url.hostname or "").lower()
+            p = p_url.port
+            if h in ("localhost", "127.0.0.1", "0.0.0.0", "::1") and (p in (8000, 5173, 3000, 8080)):
+                logger.warning("Skipping extension screenshot: protected backend/dashboard origin.")
+                return None, None
+        except Exception:
+            pass
+
+        # Check if auth/secret fields are currently active on the page and safe masking cannot be assured
+        try:
+            from backend.security import is_auth_field
+            if any(is_auth_field(el) for el in getattr(self, "element_map", {}).values()):
+                logger.warning("Skipping extension screenshot: password or OTP fields present on page.")
+                return None, None
+        except Exception:
+            return None, None
+
         filename = f"{task_id}_step_{step_num}.png"
         filepath = os.path.join(self.screenshots_dir, filename)
         web_url = f"/screenshots/{filename}"

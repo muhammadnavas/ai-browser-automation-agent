@@ -338,12 +338,6 @@ def classify_browser_error(error: Any) -> str:
     """
     message = str(error or "").lower()
     if any(token in message for token in (
-        "strict mode violation", "no element", "no elements", "detached",
-        "stale element", "stale locator", "waiting for locator",
-        "waiting for selector", "locator not found", "selector not found",
-    )):
-        return "locator_or_stale_state"
-    if any(token in message for token in (
         "extension disconnected", "websocket", "connection closed",
         "connection reset", "failed to fetch", "failed to connect",
     )):
@@ -354,6 +348,16 @@ def classify_browser_error(error: Any) -> str:
         "http 401", "http 403",
     )):
         return "approval_or_permission"
+    if "timed out waiting for selector" in message or (
+        "waiting for selector" in message and any(token in message for token in ("timeout", "timed out", "deadline exceeded"))
+    ):
+        return "timeout"
+    if any(token in message for token in (
+        "strict mode violation", "no element", "no elements", "detached",
+        "stale element", "stale locator", "waiting for locator",
+        "waiting for selector", "locator not found", "selector not found",
+    )):
+        return "locator_or_stale_state"
     if any(token in message for token in (
         "timeout", "timed out", "deadline exceeded", "waiting for",
         "did not become ready", "not become ready",
