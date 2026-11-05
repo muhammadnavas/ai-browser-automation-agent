@@ -326,7 +326,7 @@ class ReportGenerator:
                 self._key_value(pdf, "Action", getattr(step, "description", ""))
                 decision_explanation = getattr(step, "decision_explanation", None) or getattr(step, "reasoning", None)
                 if decision_explanation:
-                    self._key_value(pdf, "AI decision explanation", self._sanitize_decision_explanation(decision_explanation))
+                    self._key_value(pdf, "AI Decision", self._sanitize_decision_explanation(decision_explanation))
                 timestamp = getattr(step, "timestamp", None)
                 if timestamp:
                     try:

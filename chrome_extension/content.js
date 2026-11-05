@@ -833,46 +833,204 @@
   // Upload Catalog Modal & File Injection
   // ---------------------------------------------------------------------------
 
-  async function waitForUploadCompletion(input, fileName, timeoutMs = 90000) {
+  function matchesAcceptRule(fileName, fileType, acceptAttr) {
+    if (!acceptAttr) return true;
+    const ext = "." + fileName.split(".").pop().toLowerCase();
+    const lowerType = (fileType || "").toLowerCase();
+    return acceptAttr.split(",").map((s) => s.trim().toLowerCase()).some((rule) => {
+      if (!rule) return true;
+      if (rule.startsWith(".")) return ext === rule;
+      if (rule.endsWith("/*")) return lowerType.startsWith(rule.slice(0, -1));
+      return lowerType === rule;
+    });
+  }
+
+  function attemptFileInjectionOnDocument(doc, bytes, fileName, fileType) {
+    if (!doc || !bytes || bytes.length === 0) return null;
+    try {
+      const win = doc.defaultView || window;
+      const winDT = win.DataTransfer || DataTransfer;
+      const winFile = win.File || File;
+      const winBlob = win.Blob || Blob;
+
+      const fileInputs = Array.from(doc.querySelectorAll('input[type="file"]'));
+      try {
+        doc.querySelectorAll("*").forEach((el) => {
+          if (el.shadowRoot) {
+            el.shadowRoot.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
+          }
+        });
+      } catch (e) {}
+
+      const uniqueInputs = Array.from(new Set(fileInputs));
+      let compatibleInputs = uniqueInputs;
+      if (uniqueInputs.length > 1) {
+        const filtered = uniqueInputs.filter((inp) => matchesAcceptRule(fileName, fileType, inp.getAttribute("accept")));
+        if (filtered.length > 0) compatibleInputs = filtered;
+      }
+
+      let selectedInput = null;
+      for (const inp of compatibleInputs) {
+        try {
+          const localBlob = new winBlob([bytes], { type: fileType });
+          const localFile = new winFile([localBlob], fileName, { type: fileType, lastModified: Date.now() });
+          const localDt = new winDT();
+          localDt.items.add(localFile);
+
+          try {
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+              (win.HTMLInputElement || HTMLInputElement).prototype, "files"
+            )?.set;
+            if (nativeSetter) {
+              nativeSetter.call(inp, localDt.files);
+            } else {
+              inp.files = localDt.files;
+            }
+          } catch (_sErr) {
+            inp.files = localDt.files;
+          }
+
+          inp.dispatchEvent(new Event("input", { bubbles: true, cancelable: true, composed: true }));
+          inp.dispatchEvent(new Event("change", { bubbles: true, cancelable: true, composed: true }));
+
+          if (inp.files && inp.files.length === 1 && inp.files[0].name === fileName) {
+            selectedInput = inp;
+            break;
+          }
+        } catch (e) {}
+      }
+
+      // Drag & Drop dispatch on dialog / body dropzones
+      const dropTargets = [
+        doc.querySelector('.picker-dialog'),
+        doc.querySelector('[role="dialog"]'),
+        doc.querySelector('[role="main"]'),
+        doc.querySelector("#drive-main-page"),
+        doc.querySelector(".a-ec-Gd-V-s"),
+        doc.querySelector(".a-b-r-a"),
+        doc.querySelector(".picker-frame"),
+        doc.querySelector("c-wiz"),
+        doc.querySelector('[aria-label*="drag" i]'),
+        doc.querySelector('[aria-label*="drop" i]'),
+        doc.querySelector('[aria-label*="upload" i]'),
+        doc.body,
+        doc.documentElement,
+      ].filter(Boolean);
+
+      for (const target of dropTargets) {
+        try {
+          const targetDT = new winDT();
+          const targetBlob = new winBlob([bytes], { type: fileType });
+          const targetFile = new winFile([targetBlob], fileName, { type: fileType, lastModified: Date.now() });
+          targetDT.items.add(targetFile);
+
+          target.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, composed: true, dataTransfer: targetDT }));
+          target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, composed: true, dataTransfer: targetDT }));
+          target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, composed: true, dataTransfer: targetDT }));
+        } catch (e) {}
+      }
+
+      // Click any upload/insert/select button if visible
+      try {
+        const dialogBtns = Array.from(doc.querySelectorAll('button, [role="button"], input[type="submit"]'));
+        const submitBtn = dialogBtns.find((b) => /^(upload|insert|select)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
+        if (submitBtn) submitBtn.click();
+      } catch (e) {}
+
+      return selectedInput;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function broadcastUploadToFrames(action) {
+    document.querySelectorAll("iframe").forEach((ifr) => {
+      try {
+        ifr.contentWindow?.postMessage({
+          __aiAgentUploadCommand: true,
+          action: action,
+        }, "*");
+      } catch (e) {}
+    });
+  }
+
+  async function waitForUploadCompletion(input, fileName, timeoutMs = 30000, action = null) {
     const startedAt = Date.now();
     const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
     const targetName = normalize(fileName);
+    const targetBaseName = normalize(fileName.replace(/\.[^/.]+$/, ""));
 
-    while (Date.now() - startedAt < timeoutMs) {
-      const question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || input?.parentElement || document;
-      const questionText = normalize(question?.innerText || question?.textContent || "");
-      const pageText = normalize(document.body?.innerText || document.documentElement?.innerText || "");
-      const filenameVisible = questionText.includes(targetName) || pageText.includes(targetName);
-
-      const allInputs = Array.from(document.querySelectorAll('input[type="file"]'));
-      document.querySelectorAll("iframe").forEach((ifr) => {
-        try { ifr.contentDocument?.querySelectorAll('input[type="file"]').forEach((i) => allInputs.push(i)); } catch (e) {}
-      });
-      const inputRetained = allInputs.some((inp) => inp.files && inp.files.length === 1 && normalize(inp.files[0].name) === targetName);
-
-      const progressIndicators = Array.from(document.querySelectorAll(
-        '[role="progressbar"],[aria-busy="true"],[data-uploading="true"],.uploading,.is-uploading'
-      )).filter((node) => {
-        const style = window.getComputedStyle(node);
-        const rect = node.getBoundingClientRect();
-        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
-      });
-
-      const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(pageText);
-      if ((filenameVisible || inputRetained) && progressIndicators.length === 0) {
-        return {
-          success: true,
-          elapsed_ms: Date.now() - startedAt,
-          confirmation: explicitDone ? "upload-complete-message" : (filenameVisible ? "filename-visible" : "input-retained")
-        };
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    return {
-      success: false,
-      error: "The file was selected, but the form did not confirm that its upload finished before the 90-second timeout.",
-      retained: Boolean(input?.files?.length === 1 && input.files[0].name === fileName),
+    let childInjected = false;
+    let childComplete = false;
+    const msgListener = (e) => {
+      if (e.data?.__aiAgentUploadInjected) childInjected = true;
+      if (e.data?.__aiAgentUploadComplete) childComplete = true;
     };
+    window.addEventListener("message", msgListener);
+
+    try {
+      const initialDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+      let lastBroadcastAt = 0;
+
+      while (Date.now() - startedAt < timeoutMs) {
+        // Continuous broadcast & re-attempt while waiting
+        if (action && Date.now() - lastBroadcastAt >= 400) {
+          lastBroadcastAt = Date.now();
+          broadcastUploadToFrames(action);
+          if (action._bytes) {
+            const localInp = attemptFileInjectionOnDocument(document, action._bytes, action.file_name, action._fileType);
+            if (localInp) input = localInp;
+          }
+        }
+
+        const question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || input?.parentElement || document;
+        const questionText = normalize(question?.innerText || question?.textContent || "");
+        const pageText = normalize(document.body?.innerText || document.documentElement?.innerText || "");
+        const filenameVisible = (
+          (targetName && (questionText.includes(targetName) || pageText.includes(targetName))) ||
+          (targetBaseName && targetBaseName.length >= 3 && (questionText.includes(targetBaseName) || pageText.includes(targetBaseName)))
+        );
+
+        const allInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+        document.querySelectorAll("iframe").forEach((ifr) => {
+          try { ifr.contentDocument?.querySelectorAll('input[type="file"]').forEach((i) => allInputs.push(i)); } catch (e) {}
+        });
+        const inputRetained = allInputs.some((inp) => inp.files && inp.files.length === 1 && (normalize(inp.files[0].name) === targetName || normalize(inp.files[0].name) === targetBaseName));
+
+        const progressIndicators = Array.from(document.querySelectorAll(
+          '[role="progressbar"],[aria-busy="true"],[data-uploading="true"],.uploading,.is-uploading'
+        )).filter((node) => {
+          const style = window.getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+        });
+
+        const currentDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (childInjected || filenameVisible || inputRetained);
+        const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(pageText);
+
+        if ((filenameVisible || inputRetained || dialogClosedAfterAction || childComplete) && progressIndicators.length === 0) {
+          return {
+            success: true,
+            elapsed_ms: Date.now() - startedAt,
+            confirmation: explicitDone
+              ? "upload-complete-message"
+              : (filenameVisible
+                ? "filename-visible"
+                : (dialogClosedAfterAction ? "dialog-closed" : (childComplete ? "child-complete" : "input-retained")))
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+
+      return {
+        success: false,
+        error: `The file '${fileName}' was sent to the upload dialog, but upload confirmation was not observed before the timeout.`,
+        retained: Boolean(input?.files?.length === 1 && input.files[0].name === fileName),
+      };
+    } finally {
+      window.removeEventListener("message", msgListener);
+    }
   }
 
   async function triggerFileUploadInjection(action) {
@@ -915,142 +1073,29 @@
         return { success: false, error: "Upload payload decoded to zero bytes." };
       }
 
-      // 1. Broadcast upload command to accessible child iframes so frame-local content script can also inject locally
-      document.querySelectorAll("iframe").forEach((ifr) => {
-        try {
-          ifr.contentWindow?.postMessage({
-            __aiAgentUploadCommand: true,
-            action: action,
-          }, "*");
-        } catch (e) {}
-      });
+      action._bytes = bytes;
+      action._fileType = fileType;
+      window.__activeUploadAction = action;
 
-      // 2. Dispatch Drag & Drop events on open dialogs and dropzones (Google Picker, Google Drive, custom uploaders)
-      const dropTargets = [
-        document.querySelector('.picker-dialog'),
-        document.querySelector('[role="dialog"]'),
-        document.querySelector('[role="main"]'),
-        document.querySelector("#drive-main-page"),
-        document.querySelector(".a-ec-Gd-V-s"),
-        document.querySelector(".a-b-r-a"),
-        document.querySelector(".picker-frame"),
-        document.querySelector("c-wiz"),
-        document.querySelector('[aria-label*="drag" i]'),
-        document.querySelector('[aria-label*="drop" i]'),
-        document.querySelector('[aria-label*="upload" i]'),
-        document.body,
-      ];
-      document.querySelectorAll("iframe").forEach((ifr) => {
-        try {
-          const idoc = ifr.contentDocument;
-          if (idoc) {
-            dropTargets.push(
-              idoc.querySelector('.picker-dialog'),
-              idoc.querySelector('[role="dialog"]'),
-              idoc.querySelector('[role="main"]'),
-              idoc.querySelector(".a-ec-Gd-V-s"),
-              idoc.body
-            );
-          }
-        } catch (e) {}
-      });
-
-      dropTargets.filter(Boolean).forEach((target) => {
-        try {
-          const targetWin = target.ownerDocument?.defaultView || window;
-          const targetDT = new (targetWin.DataTransfer || DataTransfer)();
-          const targetBlob = new (targetWin.Blob || Blob)([bytes], { type: fileType });
-          const targetFile = new (targetWin.File || File)([targetBlob], fileName, { type: fileType, lastModified: Date.now() });
-          targetDT.items.add(targetFile);
-
-          target.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: targetDT }));
-          target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: targetDT }));
-          target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: targetDT }));
-        } catch (e) {}
-      });
-
-      // 3. Scan for input[type="file"] elements on the page, accessible iframes, and shadow roots
-      const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
-      document.querySelectorAll("iframe").forEach((ifr) => {
-        try {
-          ifr.contentDocument?.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
-        } catch (e) {}
-      });
-      try {
-        document.querySelectorAll("*").forEach((el) => {
-          if (el.shadowRoot) {
-            el.shadowRoot.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
-          }
-        });
-      } catch (e) {}
-
-      const uniqueInputs = Array.from(new Set(fileInputs));
-      let compatibleInputs = uniqueInputs;
-      if (uniqueInputs.length > 1) {
-        const ext = "." + fileName.split(".").pop().toLowerCase();
-        const filtered = uniqueInputs.filter((inp) => {
-          const accept = String(inp.getAttribute("accept") || "").trim().toLowerCase();
-          if (!accept) return true;
-          return accept.split(",").map((part) => part.trim()).some((rule) => {
-            if (rule.startsWith(".")) return ext === rule;
-            if (rule.endsWith("/*")) return fileType.toLowerCase().startsWith(rule.slice(0, -1));
-            return fileType.toLowerCase() === rule;
-          });
-        });
-        if (filtered.length > 0) {
-          compatibleInputs = filtered;
+      // 1. Wait for modal/iframe to be attached if it is opening
+      let hasOpenDialog = Boolean(document.querySelector('[role="dialog"], .picker-dialog, iframe[src*="picker"]'));
+      if (!hasOpenDialog) {
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          hasOpenDialog = Boolean(document.querySelector('[role="dialog"], .picker-dialog, iframe[src*="picker"]'));
+          if (hasOpenDialog) break;
+          await new Promise((r) => setTimeout(r, 100));
         }
       }
 
-      let selectedInput = null;
-      for (const inp of compatibleInputs) {
-        try {
-          const doc = inp.ownerDocument || document;
-          const win = doc.defaultView || window;
-          const winDT = win.DataTransfer || DataTransfer;
-          const winFile = win.File || File;
-          const winBlob = win.Blob || Blob;
+      // 2. Broadcast upload command to child iframes
+      broadcastUploadToFrames(action);
 
-          const localBlob = new winBlob([bytes], { type: fileType });
-          const localFile = new winFile([localBlob], fileName, { type: fileType, lastModified: Date.now() });
-          const localDt = new winDT();
-          localDt.items.add(localFile);
+      // 3. Attempt local injection in top window
+      const selectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
 
-          try {
-            const nativeSetter = Object.getOwnPropertyDescriptor(
-              (win.HTMLInputElement || HTMLInputElement).prototype, "files"
-            )?.set;
-            if (nativeSetter) {
-              nativeSetter.call(inp, localDt.files);
-            } else {
-              inp.files = localDt.files;
-            }
-          } catch (_sErr) {
-            inp.files = localDt.files;
-          }
-
-          inp.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-          inp.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-
-          if (inp.files && inp.files.length === 1 && inp.files[0].name === fileName) {
-            selectedInput = inp;
-            break;
-          }
-        } catch (e) {}
-      }
-
-      // 4. Click any modal upload / browse / insert button if applicable
-      try {
-        const dialogBtns = Array.from(document.querySelectorAll('[role="dialog"] button, [role="dialog"] [role="button"], .picker-dialog [role="button"], .picker-frame'));
-        const submitBtn = dialogBtns.find((b) => /^(upload|insert|select)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
-        if (submitBtn) {
-          submitBtn.click();
-        }
-      } catch (e) {}
-
-      // 5. Wait for upload completion evidence (dialog closes, filename visible, or input retained)
-      const hasOpenDialog = Boolean(document.querySelector('[role="dialog"], .picker-dialog, iframe[src*="picker"]'));
-      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, (selectedInput || hasOpenDialog) ? 30000 : 8000);
+      // 4. Wait for upload completion evidence with continuous re-broadcast
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, (selectedInput || hasOpenDialog) ? 35000 : 8000, action);
       if (!uploadStatus.success) {
         if (!selectedInput && !hasOpenDialog) {
           return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
@@ -1234,7 +1279,8 @@
       );
 
       if (isFileUploadClick) {
-        if (el) {
+        const dialogAlreadyOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+        if (el && !dialogAlreadyOpen) {
           el.focus();
           animateVirtualCursor(el);
           const opts = { bubbles: true, cancelable: true, view: window };
@@ -1251,7 +1297,7 @@
             el.dispatchEvent(new MouseEvent("click", opts));
           }
         }
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 300));
         return await showUploadCatalogModalAndUpload(action);
       }
 
@@ -2039,6 +2085,58 @@
     }
   });
 
+  // Handle file injection inside child iframes (Google Drive Picker, custom iframe uploaders)
+  async function handleChildFrameUpload(action) {
+    try {
+      const fileName = action.file_name;
+      if (!fileName || !action.file_base64) return;
+      let fileType = action.file_type || "application/octet-stream";
+      let bytes = action._bytes;
+      if (!bytes || bytes.length === 0) {
+        const binaryString = atob(action.file_base64);
+        bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+      }
+
+      const injectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
+      try {
+        window.parent?.postMessage({
+          __aiAgentUploadInjected: true,
+          fileName: fileName,
+          inputFound: Boolean(injectedInput),
+        }, "*");
+      } catch (e) {}
+
+      // Monitor for completion inside the child iframe
+      const started = Date.now();
+      const checkInterval = setInterval(() => {
+        try {
+          const pageText = (document.body?.innerText || "").toLowerCase();
+          const progressBars = Array.from(document.querySelectorAll('[role="progressbar"], .progress-bar, [aria-busy="true"]')).filter((node) => {
+            const style = window.getComputedStyle(node);
+            return style.display !== "none" && style.visibility !== "hidden";
+          });
+          const done = progressBars.length === 0 && (pageText.includes(fileName.toLowerCase()) || /upload complete|done|finished/i.test(pageText));
+          if (done || Date.now() - started > 25000) {
+            clearInterval(checkInterval);
+            if (done) {
+              window.parent?.postMessage({
+                __aiAgentUploadComplete: true,
+                fileName: fileName,
+              }, "*");
+            }
+          }
+        } catch (e) {
+          clearInterval(checkInterval);
+        }
+      }, 400);
+    } catch (err) {
+      console.warn("[AI Agent] Child frame upload error:", err);
+    }
+  }
+
   // Also receive lock state from the parent frame for iframes created after
   // the initial lock broadcast (Google Forms can create upload/auth frames late).
   window.addEventListener("message", (event) => {
@@ -2047,9 +2145,23 @@
       else if (event.data.command === "unlock_ui") unlockUI();
     }
     if (event.data?.__aiAgentUploadCommand && event.data.action) {
-      triggerFileUploadInjection(event.data.action).catch(() => {});
+      handleChildFrameUpload(event.data.action);
+    }
+    if (event.data?.__aiAgentFrameReady && window.__activeUploadAction) {
+      try {
+        event.source?.postMessage({
+          __aiAgentUploadCommand: true,
+          action: window.__activeUploadAction,
+        }, "*");
+      } catch (e) {}
     }
   });
+
+  if (window !== window.top) {
+    try {
+      window.parent?.postMessage({ __aiAgentFrameReady: true, frameUrl: location.href }, "*");
+    } catch (e) {}
+  }
 
   let _maskedElements = [];
 
