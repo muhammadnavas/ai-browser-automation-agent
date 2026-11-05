@@ -634,7 +634,7 @@ async def execute_with_retry_and_fallback(
                     last_error = desc
 
                 if fallback_success:
-                    verified, verification_note = await _verify_recovered_action(page, action, controller)
+                    verified, verification_note = await _verify_recovered_action(page, action, controller, form_fields)
                     if verified:
                         note = f"Attempt {attempt} RECOVERED via fallback: {fallback_desc}; {verification_note}"
                         logger.info("Task %s: %s", task_id, note)
