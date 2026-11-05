@@ -835,28 +835,36 @@
 
   async function waitForUploadCompletion(input, fileName, timeoutMs = 90000) {
     const startedAt = Date.now();
-    const question = input?.closest('[role="listitem"], .Qr7Oae, [data-params], form') || input?.parentElement || document;
-    const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
     const targetName = normalize(fileName);
 
     while (Date.now() - startedAt < timeoutMs) {
-      const retained = Boolean(
-        input?.isConnected &&
-        input.files?.length === 1 &&
-        input.files[0].name === fileName
-      );
+      const question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || input?.parentElement || document;
       const questionText = normalize(question?.innerText || question?.textContent || "");
-      const filenameVisible = questionText.includes(targetName);
-      const progressIndicators = Array.from(question?.querySelectorAll(
+      const pageText = normalize(document.body?.innerText || document.documentElement?.innerText || "");
+      const filenameVisible = questionText.includes(targetName) || pageText.includes(targetName);
+
+      const allInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+      document.querySelectorAll("iframe").forEach((ifr) => {
+        try { ifr.contentDocument?.querySelectorAll('input[type="file"]').forEach((i) => allInputs.push(i)); } catch (e) {}
+      });
+      const inputRetained = allInputs.some((inp) => inp.files && inp.files.length === 1 && normalize(inp.files[0].name) === targetName);
+
+      const progressIndicators = Array.from(document.querySelectorAll(
         '[role="progressbar"],[aria-busy="true"],[data-uploading="true"],.uploading,.is-uploading'
-      ) || []).filter((node) => {
+      )).filter((node) => {
         const style = window.getComputedStyle(node);
         const rect = node.getBoundingClientRect();
         return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
       });
-      const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText);
-      if (retained && filenameVisible && progressIndicators.length === 0) {
-        return { success: true, elapsed_ms: Date.now() - startedAt, confirmation: explicitDone ? "upload-complete-message" : "filename-visible-no-progress" };
+
+      const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(pageText);
+      if ((filenameVisible || inputRetained) && progressIndicators.length === 0) {
+        return {
+          success: true,
+          elapsed_ms: Date.now() - startedAt,
+          confirmation: explicitDone ? "upload-complete-message" : (filenameVisible ? "filename-visible" : "input-retained")
+        };
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
@@ -997,53 +1005,110 @@
         };
       }
 
+      // Dispatch Drag & Drop events on dropzones early (Google Drive picker, Dropbox, custom uploaders)
+      const dropTargets = [
+        document.querySelector('.picker-dialog'),
+        document.querySelector('[role="dialog"]'),
+        document.querySelector('[role="main"]'),
+        document.querySelector("#drive-main-page"),
+        document.querySelector(".a-ec-Gd-V-s"),
+        document.querySelector(".a-b-r-a"),
+        document.querySelector("c-wiz"),
+        document.body,
+      ];
+      document.querySelectorAll("iframe").forEach((ifr) => {
+        try {
+          const idoc = ifr.contentDocument;
+          if (idoc) {
+            dropTargets.push(
+              idoc.querySelector('.picker-dialog'),
+              idoc.querySelector('[role="dialog"]'),
+              idoc.querySelector('[role="main"]'),
+              idoc.querySelector(".a-ec-Gd-V-s"),
+              idoc.body
+            );
+          }
+        } catch (e) {}
+      });
+
+      dropTargets.filter(Boolean).forEach((target) => {
+        try {
+          const targetWin = target.ownerDocument?.defaultView || window;
+          const targetDT = new (targetWin.DataTransfer || DataTransfer)();
+          const targetBlob = new (targetWin.Blob || Blob)([bytes], { type: fileType });
+          const targetFile = new (targetWin.File || File)([targetBlob], fileName, { type: fileType, lastModified: Date.now() });
+          targetDT.items.add(targetFile);
+
+          target.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: targetDT }));
+          target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: targetDT }));
+          target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: targetDT }));
+        } catch (e) {}
+      });
+
+      // Broadcast upload command to accessible child iframes so frame-local content script can also inject locally
+      document.querySelectorAll("iframe").forEach((ifr) => {
+        try {
+          ifr.contentWindow?.postMessage({
+            __aiAgentUploadCommand: true,
+            action: action,
+          }, "*");
+        } catch (e) {}
+      });
+
       let selectedInput = null;
       for (const { input: inp } of compatibleInputs) {
         try {
-          inp.files = dt.files;
-          inp.dispatchEvent(new Event("input", { bubbles: true }));
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
+          const doc = inp.ownerDocument || document;
+          const win = doc.defaultView || window;
+          const winDT = win.DataTransfer || DataTransfer;
+          const winFile = win.File || File;
+          const winBlob = win.Blob || Blob;
+
+          const localBlob = new winBlob([bytes], { type: fileType });
+          const localFile = new winFile([localBlob], fileName, { type: fileType, lastModified: Date.now() });
+          const localDt = new winDT();
+          localDt.items.add(localFile);
+
+          try {
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+              (win.HTMLInputElement || HTMLInputElement).prototype, "files"
+            )?.set;
+            if (nativeSetter) {
+              nativeSetter.call(inp, localDt.files);
+            } else {
+              inp.files = localDt.files;
+            }
+          } catch (_sErr) {
+            inp.files = localDt.files;
+          }
+
+          inp.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+          inp.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+
           if (inp.files && inp.files.length === 1 && inp.files[0].name === fileName) {
             selectedInput = inp;
             break;
           }
         } catch (e) {}
       }
-      if (!selectedInput) {
-        return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
+
+      // Check if a modal upload button needs to be clicked (e.g. Google Drive picker "Upload" button)
+      try {
+        const dialogBtns = Array.from(document.querySelectorAll('[role="dialog"] button, [role="dialog"] [role="button"], .picker-dialog [role="button"]'));
+        const submitBtn = dialogBtns.find((b) => /^(upload|insert|select)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
+        if (submitBtn) {
+          submitBtn.click();
+        }
+      } catch (e) {}
+
+      // Wait for form completion evidence
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, selectedInput ? 90000 : 12000);
+      if (!uploadStatus.success) {
+        if (!selectedInput) {
+          return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
+        }
+        return { success: false, ...uploadStatus };
       }
-
-      // Wait for the actual form widget to show the uploaded filename and for
-      // its progress indicators to disappear. File assignment alone is NOT
-      // proof that Google Forms/Drive finished uploading the file.
-      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 90000);
-      if (!uploadStatus.success) return { success: false, ...uploadStatus };
-
-      // 2. Dispatch Drag & Drop events on dropzones (Google Drive, Dropbox, custom uploaders)
-      const dropTargets = [
-        document.querySelector('[role="main"]'),
-        document.querySelector("#drive-main-page"),
-        document.querySelector(".a-ec-Gd-V-s"),
-        document.querySelector(".picker-dialog"),
-        document.querySelector('[role="dialog"]'),
-        document.querySelector("c-wiz"),
-        document.body,
-        document.documentElement,
-        document,
-        window,
-      ];
-
-      dropTargets.forEach((target) => {
-        if (!target) return;
-        try {
-          const dragEnter = new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: dt });
-          const dragOver = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt });
-          const drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt });
-          target.dispatchEvent(dragEnter);
-          target.dispatchEvent(dragOver);
-          target.dispatchEvent(drop);
-        } catch (e) {}
-      });
 
       return {
         success: true,
@@ -2318,9 +2383,13 @@
   // Also receive lock state from the parent frame for iframes created after
   // the initial lock broadcast (Google Forms can create upload/auth frames late).
   window.addEventListener("message", (event) => {
-    if (event.source !== window.parent || !event.data?.__aiAgentLockCommand) return;
-    if (event.data.command === "lock_ui") lockUI();
-    else if (event.data.command === "unlock_ui") unlockUI();
+    if (event.data?.__aiAgentLockCommand) {
+      if (event.data.command === "lock_ui") lockUI();
+      else if (event.data.command === "unlock_ui") unlockUI();
+    }
+    if (event.data?.__aiAgentUploadCommand && event.data.action) {
+      triggerFileUploadInjection(event.data.action).catch(() => {});
+    }
   });
 
   let _maskedElements = [];
