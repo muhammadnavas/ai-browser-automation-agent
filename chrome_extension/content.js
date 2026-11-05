@@ -1498,12 +1498,15 @@
       const actionReason = (action.reasoning || "").toLowerCase();
 
       const isFileInputTarget = Boolean(el && el.tagName === "INPUT" && el.type === "file");
+      const hasFilePayload = Boolean(action.file_name || action.file_base64);
       const isFileUploadClick = (
-        isFileInputTarget ||
-        /^(add file|choose file|browse|upload file|attach file)$/i.test(actionText.trim()) ||
-        /^(add file|choose file|browse|upload file|attach file)$/i.test(elText.trim()) ||
-        /^(add file|choose file|browse|upload file|attach file)$/i.test(elAria.trim()) ||
-        Boolean(action.file_base64 && /upload|attach|file/i.test(actionText))
+        hasFilePayload && (
+          isFileInputTarget ||
+          /^(add file|choose file|browse|upload file|attach file)$/i.test(actionText.trim()) ||
+          /^(add file|choose file|browse|upload file|attach file)$/i.test(elText.trim()) ||
+          /^(add file|choose file|browse|upload file|attach file)$/i.test(elAria.trim()) ||
+          Boolean(/upload|attach|file/i.test(actionText))
+        )
       );
 
       if (isFileUploadClick) {

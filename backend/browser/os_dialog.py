@@ -337,7 +337,7 @@ def get_user_system_file(
     combined_context = f"{goal} {context_text}".strip()
 
     # 1. Check for explicit path in goal or context
-    path_match = re.search(r"[A-Za-z]:[/\\][^\s\"'<>]+", combined_context)
+    path_match = re.search(r"(?<![A-Za-z0-9])[A-Za-z]:[/\\](?!/)[^\s\"'<>]+", combined_context)
     candidate: str | None = None
     if path_match:
         candidate = path_match.group(0).strip().strip('"\'')
@@ -349,6 +349,33 @@ def get_user_system_file(
         target_fn = extract_target_file_name(combined_context)
         if target_fn and os.path.isabs(target_fn):
             candidate = target_fn
+
+    if not candidate:
+        # Check for safe allowlisted mock files when filling forms with mock data or testing uploads
+        combined_lower = combined_context.lower()
+        if "mock" in combined_lower or "test" in combined_lower or "sample" in combined_lower:
+            from pathlib import Path
+            project_root = Path(__file__).resolve().parent.parent.parent
+            mock_dir = project_root / "downloads" / "mock_files"
+            if not mock_dir.exists():
+                mock_dir = Path.cwd() / "downloads" / "mock_files"
+
+            if mock_dir.exists():
+                category = infer_requested_category(goal, context_text, accept_types)
+                if category == "image" or any(w in combined_lower for w in ["photo", "photograph", "picture", "image", "avatar"]):
+                    mock_img = mock_dir / "mock_photograph.jpg"
+                    if mock_img.is_file():
+                        candidate = str(mock_img)
+                elif category in ("spreadsheet", "csv") or "csv" in combined_lower:
+                    mock_csv = mock_dir / "mock_data.csv"
+                    if mock_csv.is_file():
+                        candidate = str(mock_csv)
+                else:
+                    mock_doc = mock_dir / "mock_document.pdf"
+                    if mock_doc.is_file():
+                        candidate = str(mock_doc)
+                    elif (mock_dir / "mock_photograph.jpg").is_file():
+                        candidate = str(mock_dir / "mock_photograph.jpg")
 
     if not candidate:
         logger.info("Upload safety: no explicit file path specified. Refusing automatic directory search.")
