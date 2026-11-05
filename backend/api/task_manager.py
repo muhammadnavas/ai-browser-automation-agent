@@ -1789,7 +1789,8 @@ class TaskManager:
                         upload_record = {
                             "file_name": str(action.file_name),
                             "context": " ".join(str(value or "") for value in (
-                                action.reasoning, action.text, action.selector
+                                action.reasoning, action.text, action.selector,
+                                locals().get("target_context", ""),
                             )).strip(),
                         }
                         if not any(
