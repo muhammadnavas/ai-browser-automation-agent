@@ -33,7 +33,7 @@ class _FakePage:
 
     def get_by_label(self, label, exact=False):
         self.requested_labels.append(label)
-        return _FakeLocator(value=self.expected_value, exists=(label == "Student Name"))
+        return _FakeLocator(value=self.expected_value, exists=(label in ("Student Name", "Student Email")))
 
 
 def test_form_field_value_supports_pydantic_model_and_dict():

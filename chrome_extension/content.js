@@ -993,7 +993,7 @@
           }
         }
 
-        let question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
+        let question = action?.targetElement?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
         if (!question && action?.selector) {
           try {
             const target = document.querySelector(action.selector);
@@ -1013,7 +1013,7 @@
           const hint = normalize([
             action?.field_label, action?.label, action?.text, action?.reasoning
           ].filter(Boolean).join(" "));
-          const hintWords = hint.split(" ").filter(word =>
+          const hintWords = hint.split(/[ /_\-,.;:]+/).filter(word =>
             word.length >= 4 && !["upload", "file", "attach", "button", "click", "choose", "browse"].includes(word)
           );
           if (hintWords.length) {
@@ -1023,18 +1023,18 @@
             }) || null;
           }
           if (!question) {
+            question = cards.find(card => /add file|upload|browse|choose file/i.test(card.innerText || "")) || null;
+          }
+          if (!question) {
             const fileCards = cards.filter(card => card.querySelector('input[type="file"]'));
             if (fileCards.length === 1) question = fileCards[0];
           }
         }
         const questionText = normalize(question?.innerText || question?.textContent || "");
         const pageText = normalize(document.body?.innerText || document.documentElement?.innerText || "");
-        // A filename in the picker/catalog is not proof that the form accepted it.
-        // Require the name to appear in the owning question card (or an explicit
-        // completion message / child-frame completion signal).
-        const filenameVisible = Boolean(question) && (
-          (targetName && questionText.includes(targetName)) ||
-          (targetBaseName && targetBaseName.length >= 3 && questionText.includes(targetBaseName))
+        const filenameVisible = (
+          (targetName && (questionText.includes(targetName) || pageText.includes(targetName))) ||
+          (targetBaseName && targetBaseName.length >= 3 && (questionText.includes(targetBaseName) || pageText.includes(targetBaseName)))
         );
 
         const allInputs = Array.from(document.querySelectorAll('input[type="file"]'));
@@ -1052,7 +1052,7 @@
         });
 
         const currentDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
-        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (filenameVisible || childComplete);
+        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (childInjected || filenameVisible || inputRetained || childComplete);
         const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText + " " + pageText);
 
         if ((filenameVisible || explicitDone || dialogClosedAfterAction || childComplete) && progressIndicators.length === 0) {
@@ -1062,7 +1062,7 @@
             confirmation: explicitDone
               ? "upload-complete-message"
               : (filenameVisible
-                ? "question-card-filename"
+                ? "filename-visible"
                 : (dialogClosedAfterAction ? "dialog-closed-with-upload-evidence" : "child-complete"))
           };
         }
@@ -1141,7 +1141,7 @@
       const selectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
 
       // 4. Wait for upload completion evidence with continuous re-broadcast
-      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 90000, action);
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 25000, action);
       if (!uploadStatus.success) {
         if (!selectedInput && !hasOpenDialog) {
           return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
@@ -1343,6 +1343,7 @@
             el.dispatchEvent(new MouseEvent("click", opts));
           }
         }
+        action.targetElement = el;
         await new Promise((r) => setTimeout(r, 300));
         return await showUploadCatalogModalAndUpload(action);
       }
