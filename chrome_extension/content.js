@@ -2131,7 +2131,11 @@
             const style = window.getComputedStyle(node);
             return style.display !== "none" && style.visibility !== "hidden";
           });
-          const done = progressBars.length === 0 && (pageText.includes(fileName.toLowerCase()) || /upload complete|done|finished/i.test(pageText));
+          // Seeing the filename in a picker only proves selection, not that
+          // the destination accepted the upload. Only report child completion
+          // when the frame exposes an explicit completed/uploaded state.
+          const done = progressBars.length === 0 &&
+            /upload complete|uploaded successfully|file uploaded|upload finished/i.test(pageText);
           if (done || Date.now() - started > 25000) {
             clearInterval(checkInterval);
             if (done) {
