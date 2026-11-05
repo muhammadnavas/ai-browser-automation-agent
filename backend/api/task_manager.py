@@ -1350,6 +1350,27 @@ class TaskManager:
                         summary_parts.append(
                             "Review these warnings and the screenshot carefully. The form may be incomplete or contain invalid values."
                         )
+                    if incomplete_fields or native_validation_errors:
+                        blocked_labels = list(dict.fromkeys(incomplete_fields))
+                        blocked_messages = [
+                            f"{item.get('label') or 'Field'}: {item.get('message') or 'Invalid value'}"
+                            for item in native_validation_errors
+                        ]
+                        details = "; ".join(blocked_labels + blocked_messages)
+                        block_reason = (
+                            "Submission blocked because required fields are incomplete or invalid: "
+                            + (details or "browser validation failed")
+                        )
+                        task.context.record_error(block_reason)
+                        logger.warning("Task %s: %s", task_id, block_reason)
+                        # Do not ask for approval or execute a submit action while
+                        # the live form still reports missing/invalid required fields.
+                        # The next planner cycle receives this error and can fill or
+                        # repair the outstanding fields before trying again.
+                        task.status = TaskStatus.RUNNING
+                        task.approval_request = None
+                        continue
+
                     summary_msg = "\n\n".join(summary_parts)
                     summary_msg += "\n\nDo you want to authorize the form submission?"
 
