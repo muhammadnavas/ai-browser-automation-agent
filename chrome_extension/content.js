@@ -954,7 +954,7 @@
     });
   }
 
-  async function waitForUploadCompletion(input, fileName, timeoutMs = 30000, action = null) {
+  async function waitForUploadCompletion(input, fileName, timeoutMs = 90000, action = null) {
     const startedAt = Date.now();
     const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
     const targetName = normalize(fileName);
@@ -977,18 +977,29 @@
         if (action && Date.now() - lastBroadcastAt >= 400) {
           lastBroadcastAt = Date.now();
           broadcastUploadToFrames(action);
-          if (action._bytes) {
-            const localInp = attemptFileInjectionOnDocument(document, action._bytes, action.file_name, action._fileType);
+          // Do not re-inject a file that the browser already retains. Re-dispatching
+          // input/change every polling cycle can restart uploads or reset the picker.
+          const retainedByCurrentInput = Boolean(
+            input?.files?.length === 1 &&
+            normalize(input.files[0].name) === targetName
+          );
+          if (action._bytes && !retainedByCurrentInput) {
+            const localInp = attemptFileInjectionOnDocument(
+              document, action._bytes, action.file_name, action._fileType
+            );
             if (localInp) input = localInp;
           }
         }
 
-        const question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || input?.parentElement || document;
+        const question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form');
         const questionText = normalize(question?.innerText || question?.textContent || "");
         const pageText = normalize(document.body?.innerText || document.documentElement?.innerText || "");
-        const filenameVisible = (
-          (targetName && (questionText.includes(targetName) || pageText.includes(targetName))) ||
-          (targetBaseName && targetBaseName.length >= 3 && (questionText.includes(targetBaseName) || pageText.includes(targetBaseName)))
+        // A filename in the picker/catalog is not proof that the form accepted it.
+        // Require the name to appear in the owning question card (or an explicit
+        // completion message / child-frame completion signal).
+        const filenameVisible = Boolean(question) && (
+          (targetName && questionText.includes(targetName)) ||
+          (targetBaseName && targetBaseName.length >= 3 && questionText.includes(targetBaseName))
         );
 
         const allInputs = Array.from(document.querySelectorAll('input[type="file"]'));
@@ -1006,18 +1017,18 @@
         });
 
         const currentDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
-        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (childInjected || filenameVisible || inputRetained);
-        const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(pageText);
+        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (filenameVisible || childComplete);
+        const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText || pageText);
 
-        if ((filenameVisible || inputRetained || dialogClosedAfterAction || childComplete) && progressIndicators.length === 0) {
+        if ((filenameVisible || explicitDone || dialogClosedAfterAction || childComplete) && progressIndicators.length === 0) {
           return {
             success: true,
             elapsed_ms: Date.now() - startedAt,
             confirmation: explicitDone
               ? "upload-complete-message"
               : (filenameVisible
-                ? "filename-visible"
-                : (dialogClosedAfterAction ? "dialog-closed" : (childComplete ? "child-complete" : "input-retained")))
+                ? "question-card-filename"
+                : (dialogClosedAfterAction ? "dialog-closed-with-upload-evidence" : "child-complete"))
           };
         }
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1095,7 +1106,7 @@
       const selectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
 
       // 4. Wait for upload completion evidence with continuous re-broadcast
-      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, (selectedInput || hasOpenDialog) ? 35000 : 8000, action);
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 90000, action);
       if (!uploadStatus.success) {
         if (!selectedInput && !hasOpenDialog) {
           return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
