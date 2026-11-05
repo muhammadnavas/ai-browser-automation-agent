@@ -1295,27 +1295,65 @@ class TaskManager:
                     def field_value(field, key, default=None):
                         return field.get(key, default) if isinstance(field, dict) else getattr(field, key, default)
 
+                    verified_uploads = list(getattr(task, "_verified_uploads", []) or [])
                     for field in validation_page_info.get("form_fields", []) or []:
                         if (
                             not field_value(field, "required", False)
                             or field_value(field, "disabled", False)
-                            or not field_value(field, "visible", True)
                         ):
                             continue
+
+                        raw_type = field_value(field, "field_type", "")
+                        field_type = str(getattr(raw_type, "value", raw_type) or "").lower()
+                        label = (
+                            field_value(field, "label")
+                            or field_value(field, "name")
+                            or field_value(field, "placeholder")
+                            or field_value(field, "selector")
+                            or "Required field"
+                        )
                         current_value = field_value(field, "current_value")
-                        field_type = str(field_value(field, "field_type", "") or "").lower()
-                        # Required checkbox/radio controls can have empty values even
-                        # when checked; their validity is handled by the browser check below.
-                        if field_type in ("checkbox", "radio"):
+
+                        if field_type == "file":
+                            # Hidden file inputs are normal in modern forms. Do not
+                            # skip them just because the native input is invisible.
+                            # Only an upload action that completed successfully can
+                            # satisfy this required question.
+                            label_words = {
+                                word for word in re.findall(r"[a-z0-9]{3,}", str(label).lower())
+                                if word not in {"upload", "file", "add", "choose", "button"}
+                            }
+                            matching_upload = False
+                            for upload in verified_uploads:
+                                if not isinstance(upload, dict):
+                                    continue
+                                context_words = {
+                                    word for word in re.findall(
+                                        r"[a-z0-9]{3,}",
+                                        str(upload.get("context") or "").lower()
+                                    )
+                                    if word not in {"upload", "file", "add", "choose", "button"}
+                                }
+                                if label_words and label_words.intersection(context_words):
+                                    matching_upload = True
+                                    break
+                            if not matching_upload:
+                                incomplete_fields.append(str(label))
                             continue
-                        if current_value is None or (isinstance(current_value, str) and not current_value.strip()):
-                            label = (
-                                field_value(field, "label")
-                                or field_value(field, "name")
-                                or field_value(field, "placeholder")
-                                or field_value(field, "selector")
-                                or "Required field"
+
+                        if not field_value(field, "visible", True):
+                            continue
+
+                        if field_type in ("checkbox", "radio"):
+                            checked = field_value(field, "checked", None)
+                            has_selection = checked is True or str(current_value or "").strip().lower() in (
+                                "checked", "selected", "true", "1"
                             )
+                            if not has_selection:
+                                incomplete_fields.append(str(label))
+                            continue
+
+                        if current_value is None or (isinstance(current_value, str) and not current_value.strip()):
                             incomplete_fields.append(str(label))
 
                     native_validation_errors = []
@@ -1745,6 +1783,22 @@ class TaskManager:
                                 run_action, action, controller, task=task, task_id=task_id, retry_policy=policy
                             )
                         )
+
+                    if action_success and is_upload_step and action.file_name:
+                        verified_uploads = list(getattr(task, "_verified_uploads", []) or [])
+                        upload_record = {
+                            "file_name": str(action.file_name),
+                            "context": " ".join(str(value or "") for value in (
+                                action.reasoning, action.text, action.selector
+                            )).strip(),
+                        }
+                        if not any(
+                            item.get("file_name") == upload_record["file_name"]
+                            and item.get("context") == upload_record["context"]
+                            for item in verified_uploads if isinstance(item, dict)
+                        ):
+                            verified_uploads.append(upload_record)
+                        task._verified_uploads = verified_uploads
 
                     # Independently inspect the result of a user-authorized form submit.
                     # Never retry the submit here: the server may have accepted it even
