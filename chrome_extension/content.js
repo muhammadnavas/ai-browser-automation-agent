@@ -963,8 +963,10 @@
     let childInjected = false;
     let childComplete = false;
     const msgListener = (e) => {
-      if (e.data?.__aiAgentUploadInjected) childInjected = true;
-      if (e.data?.__aiAgentUploadComplete) childComplete = true;
+      const messageFile = normalize(e.data?.fileName || "");
+      const matchesCurrentFile = !messageFile || messageFile === targetName;
+      if (e.data?.__aiAgentUploadInjected && matchesCurrentFile) childInjected = true;
+      if (e.data?.__aiAgentUploadComplete && messageFile === targetName) childComplete = true;
     };
     window.addEventListener("message", msgListener);
 
@@ -1018,7 +1020,7 @@
 
         const currentDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
         const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (filenameVisible || childComplete);
-        const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText || pageText);
+        const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText + " " + pageText);
 
         if ((filenameVisible || explicitDone || dialogClosedAfterAction || childComplete) && progressIndicators.length === 0) {
           return {
