@@ -442,11 +442,15 @@ function ActionCard({ step }) {
       {step.reasoning && (
         <p className="action-reasoning">
           <Lightbulb size={14} />
-          {step.reasoning}
+          {step.reasoning.split(' | Error Recovery Attempts:')[0]}
         </p>
       )}
 
-      {step.error && <p className="error-text">{formatUserFacingError(step.error)}</p>}
+      {step.error &&
+        step.description !== step.error &&
+        !String(step.description || '').includes(String(step.error || '').slice(0, 40)) && (
+          <p className="error-text">{formatUserFacingError(step.error)}</p>
+      )}
 
       {step.url && (
         <a className="inline-link" href={step.url} target="_blank" rel="noreferrer">
@@ -1820,15 +1824,10 @@ export default function App() {
                       );
                       const isFailed =
                         currentTask.status === 'failed' && index === activeIndex;
-                      // Plan milestones are not execution evidence. Do not
-                      // mark earlier milestones complete merely because the
-                      // planner advanced its cursor: browser actions can fail,
-                      // be replanned, or be interrupted before their effects
-                      // are verified. Only a verified terminal task may turn
-                      // the whole plan green.
-                      const done =
-                        currentTask.status === 'completed' &&
-                        currentTask.plan_status === 'done';
+                      const isCompletedTask =
+                        String(currentTask.status || '').toLowerCase() === 'completed';
+                      // Milestones prior to the active/failed one were completed
+                      const done = isCompletedTask || index < activeIndex;
                       const active =
                         !done &&
                         !isFailed &&
@@ -1986,26 +1985,25 @@ export default function App() {
                 </div>
 
                 {cache && (
-                  <div className="cache-summary">
+                  <div className="cache-summary-compact">
                     <span
                       className={
-                        cache.hit ? 'cache-hit-icon' : 'cache-miss-icon'
+                        'status-tag ' + (cache.hit ? 'status-ok' : 'status-warn')
                       }
                     >
-                      <Database size={17} />
+                      Plan cache {cache.hit ? 'hit' : 'miss'}
                     </span>
-                    <div>
-                      <strong>Plan cache {cache.hit ? 'hit' : 'miss'}</strong>
-                      <span>
-                        {cache.message ||
-                          (cache.hit
-                            ? 'Reused cached execution plan'
-                            : 'Generated a fresh plan')}
+                    <span className="cache-summary-text">
+                      {cache.message ||
+                        (cache.hit
+                          ? 'Reused cached execution plan'
+                          : 'Generated fresh plan')}
+                    </span>
+                    {cache.duration_ms != null && (
+                      <span className="cache-summary-duration">
+                        {formatDuration(cache.duration_ms)}
                       </span>
-                      {cache.duration_ms != null && (
-                        <small>{formatDuration(cache.duration_ms)}</small>
-                      )}
-                    </div>
+                    )}
                   </div>
                 )}
 

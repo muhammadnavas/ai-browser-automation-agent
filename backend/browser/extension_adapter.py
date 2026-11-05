@@ -108,7 +108,7 @@ class ExtensionManager:
         task_id: str,
         command_type: str,
         payload: Optional[Dict[str, Any]] = None,
-        timeout: float = 12.0,
+        timeout: float = 30.0,
     ) -> Dict[str, Any]:
         """
         Dispatches a command to the connected Chrome Extension and awaits the result.
@@ -448,11 +448,19 @@ class ExtensionBrowserAdapter:
         if isinstance(action.action, ActionType):
             action_payload["action"] = action.action.value
 
+        is_upload = (
+            action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
+            or bool(action_payload.get("file_name"))
+            or bool(action_payload.get("file_base64"))
+            or any(k in str(action.text or "").lower() for k in ["add file", "upload", "attach", "choose file"])
+            or any(k in str(action.reasoning or "").lower() for k in ["add file", "upload", "attach", "choose file"])
+        )
+        cmd_timeout = 60.0 if is_upload else 25.0
         resp = await self.manager.send_command(
             task_id=self.task_id,
             command_type="execute_action",
             payload={"action": action_payload},
-            timeout=12.0,
+            timeout=cmd_timeout,
         )
 
         success = resp.get("success", False)

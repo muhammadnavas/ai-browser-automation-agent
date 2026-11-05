@@ -1372,7 +1372,7 @@
     });
 
     // 5. Visibly select the file in catalog
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 200));
 
     fileRow.style.backgroundColor = "#cce8ff";
     fileRow.style.border = "1px solid #99d1ff";
@@ -1383,8 +1383,8 @@
       fileNameInput.style.border = "2px solid #0067c0";
     }
 
-    // Keep dialog open and visible for 1.8s so user clearly sees the chosen file in catalog
-    await new Promise((r) => setTimeout(r, 1800));
+    // Keep dialog open and visible so user clearly sees the chosen file in catalog
+    await new Promise((r) => setTimeout(r, 500));
 
     // Visual click on Open button
     const openBtn = bottomPanel.querySelector(".ai-open-btn");
@@ -1392,11 +1392,11 @@
       openBtn.style.transform = "scale(0.93)";
       openBtn.style.backgroundColor = "#005a9e";
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 150));
 
     overlay.style.opacity = "0";
     windowBox.style.transform = "scale(0.95)";
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 100));
     overlay.remove();
 
     // 6. Inject the file into Google Drive

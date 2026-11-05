@@ -1614,6 +1614,12 @@ If the task is already complete, return ["Verify the requested outcome and finis
             ):
                 return find_milestone_idx(["submit", "send", "finalize", "checkout", "apply", "finish"], total_milestones - 1)
 
+            if any(term in action_text for term in ("add file", "upload", "attach", "insert file", "choose file")):
+                upload_idx = find_milestone_idx(["upload", "file", "photo", "document"], -1)
+                if upload_idx >= 0:
+                    return upload_idx
+                return find_milestone_idx(["fill", "input", "enter", "populate", "mock data"], max(1, total_milestones - 2))
+
         # 3. Extraction / Report stage
         if action_type == ActionType.EXTRACT:
             return find_milestone_idx(["extract", "compile", "summary", "report", "collect"], max(1, total_milestones - 2))
