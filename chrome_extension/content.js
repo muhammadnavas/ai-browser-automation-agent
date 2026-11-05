@@ -994,6 +994,18 @@
         }
 
         let question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
+        if (!question && action?.selector) {
+          try {
+            const target = document.querySelector(action.selector);
+            question = target?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
+          } catch (e) {}
+        }
+        if (!question && action?.element_id != null) {
+          const target = document.querySelector(
+            '[data-ai-element-index="' + String(action.element_id).replace(/"/g, '\\"') + '"]'
+          );
+          question = target?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
+        }
         if (!question) {
           const cards = Array.from(document.querySelectorAll(
             '[role="listitem"], .Qr7Oae, [data-params]'
