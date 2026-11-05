@@ -993,7 +993,28 @@
           }
         }
 
-        const question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form');
+        let question = input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
+        if (!question) {
+          const cards = Array.from(document.querySelectorAll(
+            '[role="listitem"], .Qr7Oae, [data-params]'
+          ));
+          const hint = normalize([
+            action?.field_label, action?.label, action?.text, action?.reasoning
+          ].filter(Boolean).join(" "));
+          const hintWords = hint.split(" ").filter(word =>
+            word.length >= 4 && !["upload", "file", "attach", "button", "click", "choose", "browse"].includes(word)
+          );
+          if (hintWords.length) {
+            question = cards.find(card => {
+              const text = normalize(card.innerText || card.textContent || "");
+              return hintWords.some(word => text.includes(word));
+            }) || null;
+          }
+          if (!question) {
+            const fileCards = cards.filter(card => card.querySelector('input[type="file"]'));
+            if (fileCards.length === 1) question = fileCards[0];
+          }
+        }
         const questionText = normalize(question?.innerText || question?.textContent || "");
         const pageText = normalize(document.body?.innerText || document.documentElement?.innerText || "");
         // A filename in the picker/catalog is not proof that the form accepted it.
