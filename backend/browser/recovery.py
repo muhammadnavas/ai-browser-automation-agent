@@ -356,6 +356,9 @@ def classify_browser_error(error: Any) -> str:
         "strict mode violation", "no element", "no elements", "detached",
         "stale element", "stale locator", "waiting for locator",
         "waiting for selector", "locator not found", "selector not found",
+        "target element not found", "element not found",
+        "no longer present", "target control is no longer present",
+        "has no attribute",
     )):
         return "locator_or_stale_state"
     if any(token in message for token in (
@@ -505,7 +508,16 @@ async def execute_with_retry_and_fallback(
                 and classify_browser_error(last_error) == "locator_or_stale_state"
                 and page is not None
             )
-            if not safe_locator_recovery:
+            # Gmail Compose window opening is a timeout-style failure safe to retry:
+            # the button was found but the compose window did not appear, so there is
+            # no duplicate send/submit risk.
+            safe_compose_timeout = (
+                action.action in (ActionType.CLICK, ActionType.DOUBLE_CLICK)
+                and attempt == 2
+                and classify_browser_error(last_error) == "timeout"
+                and b"compose" in last_error.lower().encode()
+            )
+            if not (safe_locator_recovery or safe_compose_timeout):
                 recovery_log.append(
                     f"Recovery paused: {action.action.value} may have side effects; "
                     "automatic retry skipped to avoid duplicate execution."

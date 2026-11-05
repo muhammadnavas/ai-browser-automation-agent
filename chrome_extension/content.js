@@ -170,12 +170,18 @@
   // ---------------------------------------------------------------------------
 
   function inspectPageDOM(showBadges) {
+    const borderEl = document.getElementById("ai-agent-running-border");
     const lockEl = document.getElementById("ai-agent-ui-lock");
+    const prevBorderPointerEvents = borderEl ? borderEl.style.pointerEvents : null;
     const prevLockPointerEvents = lockEl ? lockEl.style.pointerEvents : null;
+    if (borderEl) borderEl.style.pointerEvents = "none";
     if (lockEl) lockEl.style.pointerEvents = "none";
     try {
       return _inspectPageDOMInternal(showBadges);
     } finally {
+      if (borderEl && prevBorderPointerEvents !== null) {
+        borderEl.style.pointerEvents = prevBorderPointerEvents;
+      }
       if (lockEl && prevLockPointerEvents !== null) {
         lockEl.style.pointerEvents = prevLockPointerEvents;
       }
@@ -268,7 +274,15 @@
         Math.min(Math.max(midX, 0), Math.max(0, window.innerWidth - 1)),
         Math.min(Math.max(midY, 0), Math.max(0, window.innerHeight - 1))
       );
-      const centerHit = Boolean(centerElement && (centerElement === el || el.contains(centerElement)));
+      const centerHit = Boolean(
+        centerElement && (
+          centerElement === el ||
+          el.contains(centerElement) ||
+          centerElement.id === "ai-agent-running-border" ||
+          centerElement.id === "ai-agent-ui-lock" ||
+          centerElement.classList?.contains("ai-agent-badge")
+        )
+      );
       const role = el.getAttribute("role") || (
         tag === "a" ? "link" :
         tag === "button" || (tag === "input" && ["button", "submit"].includes(type)) ? "button" :
@@ -577,36 +591,53 @@
       const normalize = (value) => String(value || "")
         .toLowerCase().replace(/[＊*]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
       const wanted = normalize(fieldLabel);
-      const controls = Array.from(document.querySelectorAll(
-        'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]'
-      )).filter(isVisibleActionTarget);
-      const matches = controls.filter((control) => {
-        const card = control.closest('.Qr7Oae,[role="listitem"],[data-params]');
-        const cardTitle = card?.querySelector(
-          '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
-        );
-        const cardLabel = normalize(cardTitle?.innerText || cardTitle?.textContent);
-        const accessibleNames = [
-          control.getAttribute("aria-label"),
-          control.getAttribute("placeholder"),
-          control.labels ? Array.from(control.labels).map((label) => label.innerText).join(" ") : "",
-        ].map(normalize).filter(Boolean);
-        return cardLabel === wanted || accessibleNames.includes(wanted);
-      });
-      if (matches.length === 1) return matches[0];
-      // A supplied semantic label must never fall through to stale positional indexes.
-      return null;
-    }
+      if (wanted) {
+        const controls = Array.from(document.querySelectorAll(
+          'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]'
+        )).filter(isVisibleActionTarget);
 
-    // Google Forms re-renders question cards and changes nth-of-type selectors.
-    // An unlabeled fill must fail safely rather than write into a neighbouring field.
-    if (
-      ["fill", "fill_field", "type_text"].includes(actionKind) &&
-      location.hostname === "docs.google.com" &&
-      /\/forms\//.test(location.pathname) &&
-      !fieldLabel
-    ) {
-      return null;
+        const getLabels = (control) => {
+          const card = control.closest('.Qr7Oae,[role="listitem"],[data-params]');
+          const cardTitle = card?.querySelector(
+            '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
+          );
+          const cardLabel = normalize(cardTitle?.innerText || cardTitle?.textContent);
+          const accessibleNames = [
+            control.getAttribute("aria-label"),
+            control.getAttribute("placeholder"),
+            control.labels ? Array.from(control.labels).map((label) => label.innerText).join(" ") : "",
+          ].map(normalize).filter(Boolean);
+          return { cardLabel, accessibleNames };
+        };
+
+        // 1. Exact match on question title or accessible name
+        const exactMatches = controls.filter((control) => {
+          const { cardLabel, accessibleNames } = getLabels(control);
+          return cardLabel === wanted || accessibleNames.includes(wanted);
+        });
+        if (exactMatches.length === 1) return exactMatches[0];
+
+        // 2. Substring / token-overlap match (e.g. "cgpa" matches "cgpa till current semester")
+        const wantedWords = wanted.split(/\s+/).filter(Boolean);
+        const fuzzyMatches = controls.filter((control) => {
+          const { cardLabel, accessibleNames } = getLabels(control);
+          if (cardLabel && (cardLabel.includes(wanted) || wanted.includes(cardLabel))) return true;
+          if (cardLabel && wantedWords.length > 0 && wantedWords.every((w) => cardLabel.includes(w))) return true;
+          return accessibleNames.some((name) =>
+            name.includes(wanted) || wanted.includes(name) ||
+            (wantedWords.length > 0 && wantedWords.every((w) => name.includes(w)))
+          );
+        });
+        if (fuzzyMatches.length === 1) return fuzzyMatches[0];
+        if (fuzzyMatches.length > 1) {
+          const sorted = [...fuzzyMatches].sort((a, b) => {
+            const lA = getLabels(a).cardLabel.length;
+            const lB = getLabels(b).cardLabel.length;
+            return Math.abs(lA - wanted.length) - Math.abs(lB - wanted.length);
+          });
+          return sorted[0];
+        }
+      }
     }
 
     // Prefer live Gmail compose controls over stale snapshot indexes/selectors.
@@ -626,11 +657,10 @@
     ) return null;
 
     // The planner sometimes serializes an inspected numeric element index as
-    // "selector": "10" instead of "element_id": 10. Resolve that form against
-    // the latest DOM snapshot before treating it as a CSS selector.
-    const numericSelector = typeof action.selector === "string" && /^\d+$/.test(action.selector.trim())
-      ? action.selector.trim()
-      : null;
+    // "selector": "10" or "selector": 10 instead of "element_id": 10.
+    const isNumericSelector = (typeof action.selector === "string" && /^\d+$/.test(action.selector.trim()))
+      || typeof action.selector === "number";
+    const numericSelector = isNumericSelector ? String(action.selector).trim() : null;
     if (numericSelector !== null) {
       const byNumericIndex = document.querySelector(`[data-ai-element-index="${numericSelector}"]`);
       if (byNumericIndex) return byNumericIndex;
@@ -643,11 +673,24 @@
     }
 
     // 2. By Selector
-    if (action.selector) {
+    if (action.selector && !isNumericSelector) {
       try {
         const bySel = document.querySelector(action.selector);
         if (bySel) return bySel;
       } catch (e) {}
+
+      // Self-healing for Google Forms: extract the targeted question card index (.Qr7Oae)
+      if (action.selector.includes(".Qr7Oae")) {
+        const nthMatch = action.selector.match(/\.Qr7Oae(?::nth-of-type\((\d+)\))?/);
+        if (nthMatch) {
+          const cards = Array.from(document.querySelectorAll('.Qr7Oae'));
+          const idx = nthMatch[1] ? parseInt(nthMatch[1], 10) - 1 : 0;
+          if (cards[idx]) {
+            const input = cards[idx].querySelector('input.whsOnd, input:not([type="hidden"]), textarea, select, [contenteditable="true"]');
+            if (input && isVisibleActionTarget(input)) return input;
+          }
+        }
+      }
     }
 
     // 3. By Target Selector (for drag/drop)
@@ -1308,6 +1351,19 @@
   }
 
   async function executeAction(action) {
+    const borderEl = document.getElementById("ai-agent-running-border");
+    const prevBorderPointerEvents = borderEl ? borderEl.style.pointerEvents : null;
+    if (borderEl) borderEl.style.pointerEvents = "none";
+    try {
+      return await _executeActionInternal(action);
+    } finally {
+      if (borderEl && prevBorderPointerEvents !== null) {
+        borderEl.style.pointerEvents = prevBorderPointerEvents;
+      }
+    }
+  }
+
+  async function _executeActionInternal(action) {
     const actType = (action.action || "").toLowerCase();
     const val = action.value || action.text || "";
 
@@ -1528,8 +1584,10 @@
       if (location.hostname === "mail.google.com" && /compose/i.test(
         [action.text, action.reasoning, action.selector].filter(Boolean).join(" ")
       )) {
-        const deadline = Date.now() + 10000;
+        const deadline = Date.now() + 15000;
         let composeReady = false;
+        let retryClickDone = false;
+        const clickedAt = Date.now();
         const composeFieldSelectors = [
           'input[name="to"]',
           'input[aria-label*="To" i]',
@@ -1545,19 +1603,40 @@
         ].join(", ");
 
         while (Date.now() < deadline) {
-          const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .M9, [aria-label*="New Message" i], [aria-label*="Compose" i], [aria-label*="Draft" i], div.AD, div.inboxsdk__compose'))
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .M9, [aria-label*="New Message" i], [aria-label*="Compose" i], [aria-label*="Draft" i], div.AD, div.nH.if, div.inboxsdk__compose'))
             .filter(isVisibleActionTarget);
           const hasFieldInDialog = dialogs.some((dialog) => dialog.querySelector(composeFieldSelectors));
           const hasVisibleFieldDirect = Array.from(document.querySelectorAll(composeFieldSelectors)).some(isVisibleActionTarget);
 
-          if (hasFieldInDialog || hasVisibleFieldDirect) {
+          // Also consider compose window open if the dialog container itself is visible
+          const hasDialogOpen = dialogs.length > 0;
+
+          if (hasFieldInDialog || hasVisibleFieldDirect || hasDialogOpen) {
             composeReady = true;
             break;
           }
+
+          // After 2.5 seconds with no result, retry clicking the compose button
+          if (!retryClickDone && Date.now() - clickedAt > 2500) {
+            retryClickDone = true;
+            try {
+              const composeBtn = (
+                document.querySelector('[gh="cm"]') ||
+                document.querySelector('[data-tooltip*="Compose" i]') ||
+                document.querySelector('div[role="button"][aria-label*="Compose" i]') ||
+                document.querySelector('.T-I.T-I-KE') ||
+                Array.from(document.querySelectorAll('[role="button"]')).find((b) =>
+                  /compose/i.test(b.getAttribute("aria-label") || b.innerText || "")
+                )
+              );
+              if (composeBtn) { composeBtn.focus(); composeBtn.click(); }
+            } catch (_e) {}
+          }
+
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
         if (!composeReady) {
-          return { success: false, error: "Gmail Compose was clicked, but the compose recipient field did not become ready within 10 seconds. Refresh the DOM and recover; do not click Compose again blindly." };
+          return { success: false, error: "Gmail Compose was clicked, but the compose window did not become ready within 15 seconds. Refresh the DOM and recover; do not click Compose again blindly." };
         }
       }
 

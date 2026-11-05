@@ -233,10 +233,15 @@ def classify_sensitivity(text: str, key_name: Optional[str] = None) -> Sensitivi
     return SensitivityTier.NOT_SENSITIVE
 
 
-def is_auth_field(field_info: Dict[str, Any]) -> bool:
+def is_auth_field(field_info: Any) -> bool:
     """Check if a DOM element or form field dictionary represents a password or OTP credential field."""
     if not isinstance(field_info, dict):
-        return False
+        if hasattr(field_info, "model_dump"):
+            field_info = field_info.model_dump()
+        elif hasattr(field_info, "__dict__"):
+            field_info = field_info.__dict__
+        else:
+            return False
 
     ftype = str(field_info.get("type") or field_info.get("field_type") or field_info.get("input_type") or "").lower()
     if ftype == "password":

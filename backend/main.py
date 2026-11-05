@@ -6,8 +6,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = PROJECT_ROOT / 'frontend'
 FRONTEND_DIST_DIR = FRONTEND_DIR / 'dist'
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+for path in [str(BACKEND_DIR), str(PROJECT_ROOT)]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
 os.chdir(PROJECT_ROOT)
 
 import asyncio
@@ -184,4 +185,5 @@ async def serve_test_form():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"Starting AI Browser Automation Agent server at http://localhost:{port}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    reload = "--reload" in sys.argv or os.getenv("RELOAD", "false").lower() in ("true", "1")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=reload)

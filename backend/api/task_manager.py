@@ -981,7 +981,9 @@ class TaskManager:
                     el for el in (page_info.get("elements", []) or [])
                     if is_auth_field(el)
                 ]
-                current_auth_sig = tuple(sorted(str(f.get("selector") or f.get("index") or f.get("name") or f.get("id")) for f in auth_fields_detected)) if auth_fields_detected else None
+                def _get_sig_val(obj, key):
+                    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+                current_auth_sig = tuple(sorted(str(_get_sig_val(f, "selector") or _get_sig_val(f, "index") or _get_sig_val(f, "name") or _get_sig_val(f, "id") or _get_sig_val(f, "field_id")) for f in auth_fields_detected)) if auth_fields_detected else None
 
                 if auth_fields_detected and getattr(task, "_auth_confirmed_state", None) != current_auth_sig:
                     audit_logger.log_auth_event(task_id, action="paused", reason="Password or OTP input field detected on page")
@@ -2415,18 +2417,44 @@ class TaskManager:
             ):
                 return True, "Stale upload locator; live semantic resolution will be used."
             if action.action in (ActionType.FILL, ActionType.FILL_FIELD, ActionType.TYPE_TEXT, ActionType.SELECT, ActionType.SELECT_OPTION):
-                label_match = re.search(r"""['"“]([^'"”]+)['"”]\s+(?:field|question|input)""", reasoning, re.IGNORECASE)
-                if label_match:
-                    wanted = label_match.group(1).strip().lower()
-                    fields = (page_info or {}).get("form_fields") or []
+                label_candidates = [
+                    getattr(action, "field_label", None),
+                    getattr(action, "label", None),
+                ]
+                quoted = re.search(r"""['"“]([^'"”]+)['"”]\s+(?:field|question|input)""", reasoning, re.IGNORECASE)
+                if quoted:
+                    label_candidates.append(quoted.group(1))
+                described = re.search(
+                    r"""(?:fill|enter|type|populate|update)\s+(?:in\s+)?(?:the\s+)?["'“]?([^"'”]+?)["'”]?\s+(?:field|question|input)""",
+                    reasoning, re.IGNORECASE
+                )
+                if described:
+                    label_candidates.append(described.group(1))
+                wanted = next((c.strip().lower() for c in label_candidates if c and c.strip()), "")
+                fields = (page_info or {}).get("form_fields") or []
+                def _get_f_val(f, k):
+                    return f.get(k) if isinstance(f, dict) else getattr(f, k, None)
+
+                if wanted:
                     matches = [
                         field for field in fields
-                        if wanted in " ".join(str(field.get(key) or "") for key in (
-                            "label", "aria_label", "placeholder", "name", "id"
-                        )).lower()
+                        if wanted in " ".join(str(_get_f_val(field, key) or "") for key in (
+                            "label", "aria_label", "placeholder", "name", "id", "field_id"
+                        )).lower() or any(
+                            word in " ".join(str(_get_f_val(field, key) or "") for key in (
+                                "label", "aria_label", "placeholder", "name", "id", "field_id"
+                            )).lower() for word in wanted.split() if len(word) > 2
+                        )
                     ]
-                    if len(matches) == 1:
-                        return True, f"Stale locator; unique field label '{wanted}' will be resolved live."
+                    if len(matches) >= 1:
+                        return True, f"Stale locator; field label '{wanted}' will be resolved live."
+
+                # For dynamic forms like Google Forms or scroll-reconstructed DOMs,
+                # if the action carries a selector or a field intent, allow the extension's
+                # content script (which has full fuzzy matching and Qr7Oae card healing)
+                # to attempt live resolution instead of preemptively failing.
+                if action.selector or (action.element_id is not None) or wanted:
+                    return True, "Snapshot index stale; live extension semantic resolver will be used."
             return False, "Action precondition failed: target control is no longer present in the latest page snapshot."
         if target.get("visible") is False:
             return False, "Action precondition failed: target control is not visible."
