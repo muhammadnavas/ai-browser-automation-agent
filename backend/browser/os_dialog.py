@@ -363,19 +363,25 @@ def get_user_system_file(
             if mock_dir.exists():
                 category = infer_requested_category(goal, context_text, accept_types)
                 if category == "image" or any(w in combined_lower for w in ["photo", "photograph", "picture", "image", "avatar"]):
-                    mock_img = mock_dir / "mock_photograph.jpg"
-                    if mock_img.is_file():
-                        candidate = str(mock_img)
+                    if (mock_dir / "mock_photograph.jpg").is_file():
+                        candidate = str(mock_dir / "mock_photograph.jpg")
                 elif category in ("spreadsheet", "csv") or "csv" in combined_lower:
-                    mock_csv = mock_dir / "mock_data.csv"
-                    if mock_csv.is_file():
-                        candidate = str(mock_csv)
+                    if (mock_dir / "mock_data.csv").is_file():
+                        candidate = str(mock_dir / "mock_data.csv")
+                elif category in ("document", "pdf") or "pdf" in combined_lower or "doc" in combined_lower:
+                    if (mock_dir / "mock_document.pdf").is_file():
+                        candidate = str(mock_dir / "mock_document.pdf")
                 else:
-                    mock_doc = mock_dir / "mock_document.pdf"
-                    if mock_doc.is_file():
-                        candidate = str(mock_doc)
+                    if (mock_dir / "mock_document.pdf").is_file():
+                        candidate = str(mock_dir / "mock_document.pdf")
                     elif (mock_dir / "mock_photograph.jpg").is_file():
                         candidate = str(mock_dir / "mock_photograph.jpg")
+
+                if not candidate:
+                    for fallback_name in ["mock_photograph.jpg", "mock_document.pdf", "mock_data.csv"]:
+                        if (mock_dir / fallback_name).is_file():
+                            candidate = str(mock_dir / fallback_name)
+                            break
 
     if not candidate:
         logger.info("Upload safety: no explicit file path specified. Refusing automatic directory search.")

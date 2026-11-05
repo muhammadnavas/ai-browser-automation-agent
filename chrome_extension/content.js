@@ -915,97 +915,17 @@
         return { success: false, error: "Upload payload decoded to zero bytes." };
       }
 
-      const blob = new Blob([bytes], { type: fileType });
-      const file = new File([blob], fileName, { type: fileType, lastModified: Date.now() });
-
-      const dt = new DataTransfer();
-      dt.items.add(file);
-
-      // 1. Inject into all input[type="file"] elements on the page, iframes, and shadow roots
-      const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
-
-      // Scan accessible iframes
+      // 1. Broadcast upload command to accessible child iframes so frame-local content script can also inject locally
       document.querySelectorAll("iframe").forEach((ifr) => {
         try {
-          ifr.contentDocument?.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
+          ifr.contentWindow?.postMessage({
+            __aiAgentUploadCommand: true,
+            action: action,
+          }, "*");
         } catch (e) {}
       });
 
-      // Scan open shadow roots
-      try {
-        document.querySelectorAll("*").forEach((el) => {
-          if (el.shadowRoot) {
-            el.shadowRoot.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
-          }
-        });
-      } catch (e) {}
-
-      // Match the file to the actual question as well as the input's accept
-      // attribute. Google Forms often omits a useful accept value on its hidden
-      // upload input, so MIME-only filtering can otherwise send a CSV to a
-      // required photograph question and leave the form invalid.
-      const uniqueInputs = Array.from(new Set(fileInputs));
-      const inputMetadata = uniqueInputs.map((inp) => {
-        const question = inp.closest('[role="listitem"], .Qr7Oae, [data-params], form');
-        return {
-          input: inp,
-          question,
-          questionText: String(question?.innerText || question?.textContent || "").toLowerCase(),
-        };
-      });
-      const compatibleInputs = inputMetadata.filter(({ input: inp, questionText }) => {
-        const accept = String(inp.getAttribute("accept") || "").trim().toLowerCase();
-        const ext = "." + fileName.split(".").pop().toLowerCase();
-        const imageQuestion = /photograph|photo|image|picture/.test(questionText);
-        const imageFile = fileType.toLowerCase().startsWith("image/") ||
-          [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"].includes(ext);
-
-        // Never assign a non-image file to a photo/image question, even when
-        // the page's hidden input has no accept attribute.
-        if (imageQuestion && !imageFile) return false;
-        if (!accept) return true;
-        return accept.split(",").map((part) => part.trim()).some((rule) => {
-          if (rule.startsWith(".")) return ext === rule;
-          if (rule.endsWith("/*")) return fileType.toLowerCase().startsWith(rule.slice(0, -1));
-          return fileType.toLowerCase() === rule;
-        });
-      });
-
-      // A compatible MIME type is not enough: the file must go into the
-      // intended question, not the first compatible file input on the page.
-      const intentText = [
-        action.reasoning, action.text, action.label, action.field_label,
-        action.select_label
-      ].filter(Boolean).join(" ").toLowerCase();
-      const intentWords = new Set(intentText.match(/[a-z]{3,}/g) || []);
-      ["upload", "file", "add", "button", "click", "choose", "attach", "please"].forEach((word) => intentWords.delete(word));
-      if (intentWords.size) {
-        const ranked = compatibleInputs.map((entry) => ({
-          ...entry,
-          score: Array.from(intentWords).filter((word) => entry.questionText.includes(word)).length,
-        })).sort((a, b) => b.score - a.score);
-        if (ranked.length && ranked[0].score > 0) {
-          const bestScore = ranked[0].score;
-          const best = ranked.filter((entry) => entry.score === bestScore);
-          if (best.length !== 1) {
-            return { success: false, error: "Multiple file questions match the upload instruction; refusing to guess the target." };
-          }
-          compatibleInputs.splice(0, compatibleInputs.length, best[0]);
-        } else if (compatibleInputs.length > 1) {
-          return { success: false, error: "Could not identify which file question should receive this file; refusing to upload into the first compatible input." };
-        }
-      } else if (compatibleInputs.length > 1) {
-        return { success: false, error: "Upload target is ambiguous; refusing to assign the file to an arbitrary input." };
-      }
-
-      if (!compatibleInputs.length) {
-        return {
-          success: false,
-          error: `File '${fileName}' (${fileType}) is incompatible with the page's file input accept types.`,
-        };
-      }
-
-      // Dispatch Drag & Drop events on dropzones early (Google Drive picker, Dropbox, custom uploaders)
+      // 2. Dispatch Drag & Drop events on open dialogs and dropzones (Google Picker, Google Drive, custom uploaders)
       const dropTargets = [
         document.querySelector('.picker-dialog'),
         document.querySelector('[role="dialog"]'),
@@ -1013,7 +933,11 @@
         document.querySelector("#drive-main-page"),
         document.querySelector(".a-ec-Gd-V-s"),
         document.querySelector(".a-b-r-a"),
+        document.querySelector(".picker-frame"),
         document.querySelector("c-wiz"),
+        document.querySelector('[aria-label*="drag" i]'),
+        document.querySelector('[aria-label*="drop" i]'),
+        document.querySelector('[aria-label*="upload" i]'),
         document.body,
       ];
       document.querySelectorAll("iframe").forEach((ifr) => {
@@ -1045,18 +969,41 @@
         } catch (e) {}
       });
 
-      // Broadcast upload command to accessible child iframes so frame-local content script can also inject locally
+      // 3. Scan for input[type="file"] elements on the page, accessible iframes, and shadow roots
+      const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
       document.querySelectorAll("iframe").forEach((ifr) => {
         try {
-          ifr.contentWindow?.postMessage({
-            __aiAgentUploadCommand: true,
-            action: action,
-          }, "*");
+          ifr.contentDocument?.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
         } catch (e) {}
       });
+      try {
+        document.querySelectorAll("*").forEach((el) => {
+          if (el.shadowRoot) {
+            el.shadowRoot.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
+          }
+        });
+      } catch (e) {}
+
+      const uniqueInputs = Array.from(new Set(fileInputs));
+      let compatibleInputs = uniqueInputs;
+      if (uniqueInputs.length > 1) {
+        const ext = "." + fileName.split(".").pop().toLowerCase();
+        const filtered = uniqueInputs.filter((inp) => {
+          const accept = String(inp.getAttribute("accept") || "").trim().toLowerCase();
+          if (!accept) return true;
+          return accept.split(",").map((part) => part.trim()).some((rule) => {
+            if (rule.startsWith(".")) return ext === rule;
+            if (rule.endsWith("/*")) return fileType.toLowerCase().startsWith(rule.slice(0, -1));
+            return fileType.toLowerCase() === rule;
+          });
+        });
+        if (filtered.length > 0) {
+          compatibleInputs = filtered;
+        }
+      }
 
       let selectedInput = null;
-      for (const { input: inp } of compatibleInputs) {
+      for (const inp of compatibleInputs) {
         try {
           const doc = inp.ownerDocument || document;
           const win = doc.defaultView || window;
@@ -1092,19 +1039,20 @@
         } catch (e) {}
       }
 
-      // Check if a modal upload button needs to be clicked (e.g. Google Drive picker "Upload" button)
+      // 4. Click any modal upload / browse / insert button if applicable
       try {
-        const dialogBtns = Array.from(document.querySelectorAll('[role="dialog"] button, [role="dialog"] [role="button"], .picker-dialog [role="button"]'));
+        const dialogBtns = Array.from(document.querySelectorAll('[role="dialog"] button, [role="dialog"] [role="button"], .picker-dialog [role="button"], .picker-frame'));
         const submitBtn = dialogBtns.find((b) => /^(upload|insert|select)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
         if (submitBtn) {
           submitBtn.click();
         }
       } catch (e) {}
 
-      // Wait for form completion evidence
-      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, selectedInput ? 90000 : 12000);
+      // 5. Wait for upload completion evidence (dialog closes, filename visible, or input retained)
+      const hasOpenDialog = Boolean(document.querySelector('[role="dialog"], .picker-dialog, iframe[src*="picker"]'));
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, (selectedInput || hasOpenDialog) ? 30000 : 8000);
       if (!uploadStatus.success) {
-        if (!selectedInput) {
+        if (!selectedInput && !hasOpenDialog) {
           return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
         }
         return { success: false, ...uploadStatus };
@@ -1112,7 +1060,7 @@
 
       return {
         success: true,
-        description: `Upload of '${fileName}' completed and was confirmed by the form UI.`,
+        description: `Upload of '${fileName}' completed using the page upload dialog.`,
         upload_status: uploadStatus,
       };
     } catch (err) {
@@ -1122,297 +1070,8 @@
   }
 
   async function showUploadCatalogModalAndUpload(action) {
-    const fileName = action.file_name;
-    if (!fileName) {
-      return { success: false, error: "No file provided for upload." };
-    }
-
-    const fileSize = action.file_size ? `${Math.round(action.file_size / 1024)} KB` : "";
-    const folderName = action.folder_name || "Documents";
-    const neighborFiles = action.neighbor_files || [];
-    const fileType = action.file_type || "";
-    const fileExt = fileName.includes(".") ? fileName.split(".").pop().toUpperCase() : "File";
-    const fileTypeDesc = fileType.includes("pdf") ? "PDF Document" : `${fileExt} Document`;
-
-    // Clean up any existing catalog modals
-    document.querySelectorAll(".ai-upload-catalog-modal").forEach((m) => m.remove());
-
-    const overlay = document.createElement("div");
-    overlay.className = "ai-upload-catalog-modal";
-    Object.assign(overlay.style, {
-      position: "fixed",
-      top: "0",
-      left: "0",
-      width: "100vw",
-      height: "100vh",
-      backgroundColor: "rgba(0, 0, 0, 0.45)",
-      zIndex: "2147483647",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif",
-      opacity: "0",
-      transition: "opacity 0.25s ease",
-    });
-
-    const windowBox = document.createElement("div");
-    Object.assign(windowBox.style, {
-      width: "720px",
-      height: "480px",
-      backgroundColor: "#ffffff",
-      borderRadius: "8px",
-      boxShadow: "0 24px 64px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.15)",
-      display: "flex",
-      flexDirection: "column",
-      overflow: "hidden",
-      transform: "scale(0.95)",
-      transition: "transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1)",
-    });
-
-    // 1. Title bar
-    const titleBar = document.createElement("div");
-    Object.assign(titleBar.style, {
-      height: "38px",
-      backgroundColor: "#f3f3f3",
-      borderBottom: "1px solid #e5e5e5",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      padding: "0 14px",
-      fontSize: "12px",
-      color: "#202020",
-      userSelect: "none",
-    });
-    titleBar.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="font-size:16px;">📁</span>
-        <span style="font-weight:600;font-size:12.5px;">Open</span>
-      </div>
-      <div style="display:flex;gap:14px;color:#666;font-size:12px;cursor:pointer;">
-        <span>―</span>
-        <span>⬜</span>
-        <span style="color:#e81123;font-weight:bold;">✕</span>
-      </div>
-    `;
-
-    // 2. Navigation / Address bar
-    const navBar = document.createElement("div");
-    Object.assign(navBar.style, {
-      height: "42px",
-      backgroundColor: "#f9f9f9",
-      borderBottom: "1px solid #e0e0e0",
-      display: "flex",
-      alignItems: "center",
-      padding: "0 10px",
-      gap: "8px",
-      fontSize: "12px",
-    });
-    navBar.innerHTML = `
-      <button style="border:none;background:transparent;cursor:pointer;font-size:14px;color:#888;">←</button>
-      <button style="border:none;background:transparent;cursor:pointer;font-size:14px;color:#888;">→</button>
-      <button style="border:none;background:transparent;cursor:pointer;font-size:14px;color:#555;">↑</button>
-      <div style="flex:1;height:28px;background:#ffffff;border:1px solid #d0d0d0;border-radius:4px;display:flex;align-items:center;padding:0 8px;gap:6px;">
-        <span>📁</span>
-        <span>This PC</span>
-        <span style="color:#aaa;">›</span>
-        <span style="font-weight:600;color:#0067c0;">${folderName}</span>
-      </div>
-      <div style="width:160px;height:28px;background:#ffffff;border:1px solid #d0d0d0;border-radius:4px;display:flex;align-items:center;padding:0 8px;gap:4px;color:#888;">
-        <span>🔍</span>
-        <span>Search ${folderName}</span>
-      </div>
-    `;
-
-    // 3. Main area: Sidebar + File list
-    const mainArea = document.createElement("div");
-    Object.assign(mainArea.style, {
-      flex: "1",
-      display: "flex",
-      overflow: "hidden",
-      backgroundColor: "#ffffff",
-    });
-
-    const sidebar = document.createElement("div");
-    Object.assign(sidebar.style, {
-      width: "160px",
-      borderRight: "1px solid #e5e5e5",
-      backgroundColor: "#fbfbfb",
-      padding: "8px 6px",
-      fontSize: "12px",
-      display: "flex",
-      flexDirection: "column",
-      gap: "2px",
-      userSelect: "none",
-    });
-    sidebar.innerHTML = `
-      <div style="padding:4px 8px;color:#777;font-size:11px;font-weight:600;">Quick access</div>
-      <div style="padding:4px 8px;border-radius:4px;cursor:pointer;display:flex;gap:6px;"><span>⭐</span> Desktop</div>
-      <div style="padding:4px 8px;border-radius:4px;cursor:pointer;display:flex;gap:6px;"><span>⬇️</span> Downloads</div>
-      <div style="padding:4px 8px;border-radius:4px;cursor:pointer;display:flex;gap:6px;background:#e5f1fb;color:#0067c0;font-weight:600;"><span>📁</span> ${folderName}</div>
-    `;
-
-    const fileList = document.createElement("div");
-    fileList.className = "ai-file-list";
-    Object.assign(fileList.style, {
-      flex: "1",
-      display: "flex",
-      flexDirection: "column",
-      padding: "6px",
-      overflowY: "auto",
-    });
-
-    const fileHeader = document.createElement("div");
-    Object.assign(fileHeader.style, {
-      display: "grid",
-      gridTemplateColumns: "3fr 1.5fr 1.2fr 1fr",
-      padding: "4px 8px",
-      borderBottom: "1px solid #f0f0f0",
-      fontSize: "11px",
-      color: "#777",
-      fontWeight: "600",
-    });
-    fileHeader.innerHTML = `
-      <div>Name</div>
-      <div>Date modified</div>
-      <div>Type</div>
-      <div>Size</div>
-    `;
-    fileList.appendChild(fileHeader);
-
-    // Dynamic real neighbor files from user's system directory
-    neighborFiles.forEach((nf) => {
-      const row = document.createElement("div");
-      Object.assign(row.style, {
-        display: "grid",
-        gridTemplateColumns: "3fr 1.5fr 1.2fr 1fr",
-        padding: "5px 8px",
-        borderRadius: "4px",
-        fontSize: "12px",
-        color: "#333",
-        alignItems: "center",
-      });
-      const icon = nf.is_dir ? "📁" : "📄";
-      const typeStr = nf.is_dir ? "File folder" : "File";
-      row.innerHTML = `
-        <div style="display:flex;align-items:center;gap:6px;"><span>${icon}</span><span>${nf.name}</span></div>
-        <div style="color:#666;font-size:11px;">Recent</div>
-        <div style="color:#666;font-size:11px;">${typeStr}</div>
-        <div style="color:#666;font-size:11px;">${nf.size_str || ""}</div>
-      `;
-      fileList.appendChild(row);
-    });
-
-    // The Target File Row (selected by agent)
-    const fileRow = document.createElement("div");
-    fileRow.className = "ai-target-file-row";
-    Object.assign(fileRow.style, {
-      display: "grid",
-      gridTemplateColumns: "3fr 1.5fr 1.2fr 1fr",
-      padding: "6px 8px",
-      borderRadius: "4px",
-      fontSize: "12px",
-      color: "#202020",
-      alignItems: "center",
-      cursor: "pointer",
-      marginTop: "2px",
-      transition: "all 0.2s ease",
-    });
-    fileRow.innerHTML = `
-      <div style="display:flex;align-items:center;gap:6px;font-weight:600;">
-        <span style="font-size:16px;">📄</span>
-        <span>${fileName}</span>
-      </div>
-      <div style="color:#666;font-size:11px;">Today</div>
-      <div style="color:#666;font-size:11px;">${fileTypeDesc}</div>
-      <div style="color:#666;font-size:11px;">${fileSize}</div>
-    `;
-    fileList.appendChild(fileRow);
-
-    mainArea.appendChild(sidebar);
-    mainArea.appendChild(fileList);
-
-    // 4. Bottom action panel
-    const bottomPanel = document.createElement("div");
-    Object.assign(bottomPanel.style, {
-      height: "76px",
-      borderTop: "1px solid #e5e5e5",
-      backgroundColor: "#fbfbfb",
-      padding: "8px 14px",
-      display: "flex",
-      flexDirection: "column",
-      gap: "6px",
-      fontSize: "12px",
-    });
-
-    bottomPanel.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span style="width:85px;text-align:right;color:#555;">File name:</span>
-        <input class="ai-file-name-input" type="text" value="" style="flex:1;height:24px;border:1px solid #ccc;border-radius:4px;padding:0 8px;font-size:12px;" />
-        <button class="ai-open-btn" style="width:84px;height:26px;background:#0067c0;color:#ffffff;border:none;border-radius:4px;font-weight:600;cursor:pointer;transition:transform 0.15s ease;">Open</button>
-      </div>
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span style="width:85px;text-align:right;color:#555;">Files of type:</span>
-        <div style="flex:1;height:24px;border:1px solid #ccc;border-radius:4px;background:#ffffff;display:flex;align-items:center;padding:0 8px;color:#333;font-size:12px;">
-          All Files (*.*)
-        </div>
-        <button style="width:84px;height:26px;background:#ffffff;color:#333;border:1px solid #ccc;border-radius:4px;cursor:pointer;">Cancel</button>
-      </div>
-    `;
-
-    windowBox.appendChild(titleBar);
-    windowBox.appendChild(navBar);
-    windowBox.appendChild(mainArea);
-    windowBox.appendChild(bottomPanel);
-    overlay.appendChild(windowBox);
-    document.body.appendChild(overlay);
-
-    requestAnimationFrame(() => {
-      overlay.style.opacity = "1";
-      windowBox.style.transform = "scale(1)";
-    });
-
-    // 5. Visibly select the file in catalog
-    await new Promise((r) => setTimeout(r, 200));
-
-    fileRow.style.backgroundColor = "#cce8ff";
-    fileRow.style.border = "1px solid #99d1ff";
-
-    const fileNameInput = bottomPanel.querySelector(".ai-file-name-input");
-    if (fileNameInput) {
-      fileNameInput.value = fileName;
-      fileNameInput.style.border = "2px solid #0067c0";
-    }
-
-    // Keep dialog open and visible so user clearly sees the chosen file in catalog
-    await new Promise((r) => setTimeout(r, 500));
-
-    // Visual click on Open button
-    const openBtn = bottomPanel.querySelector(".ai-open-btn");
-    if (openBtn) {
-      openBtn.style.transform = "scale(0.93)";
-      openBtn.style.backgroundColor = "#005a9e";
-    }
-    await new Promise((r) => setTimeout(r, 150));
-
-    overlay.style.opacity = "0";
-    windowBox.style.transform = "scale(0.95)";
-    await new Promise((r) => setTimeout(r, 100));
-    overlay.remove();
-
-    // 6. Inject the file into Google Drive
-    const uploadRes = await triggerFileUploadInjection(action);
-    if (!uploadRes?.success) {
-      return {
-        success: false,
-        error: uploadRes?.error || "File upload could not be verified.",
-        details: uploadRes,
-      };
-    }
-    return {
-      success: true,
-      description: `Selected '${fileName}' and verified it was assigned to a compatible file input.`,
-      details: uploadRes,
-    };
+    // Directly use the UI opened dialog box (e.g. Google Drive/Forms picker) instead of opening a custom modal overlay
+    return await triggerFileUploadInjection(action);
   }
 
   async function executeAction(action) {

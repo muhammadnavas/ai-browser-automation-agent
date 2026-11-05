@@ -285,7 +285,7 @@ class ReportGenerator:
                     pdf.set_text_color(31, 48, 40)
                     self._paragraph(pdf, f"{index:02d}.  {item}", 5)
 
-            self._section(pdf, "Execution Timeline", "Chronological action log. Each entry includes the action, timestamp and duration when available, page, result, errors, and screenshot evidence. URLs omit query strings and fragments to reduce exposure of private page state.")
+            self._section(pdf, "Execution Timeline")
             if not steps:
                 self._paragraph(pdf, "No execution steps were recorded.", 5)
 
