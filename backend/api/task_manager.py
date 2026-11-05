@@ -2689,6 +2689,37 @@ class TaskManager:
             return False, "Radio postcondition inconclusive: selected state was not exposed by the extension."
 
         if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+            upload_intent = bool(
+                getattr(action, "file_name", None)
+                or getattr(action, "file_base64", None)
+                or re.search(
+                    r"add\s+file|choose\s+file|browse|upload|attach",
+                    " ".join(str(value or "") for value in (
+                        action.text, action.reasoning, action.selector
+                    )).lower(),
+                )
+            )
+            if upload_intent and getattr(action, "file_name", None):
+                expected_name = str(action.file_name).replace("\\", "/").split("/")[-1].lower()
+                upload_questions = after.get("file_inputs") or []
+                question_evidence = any(
+                    expected_name in str(item.get("question_text") or "").lower()
+                    for item in upload_questions if isinstance(item, dict)
+                )
+                field_evidence = any(
+                    expected_name in str(
+                        field.get("current_value", "") if isinstance(field, dict)
+                        else getattr(field, "current_value", "")
+                    ).replace("\\", "/").split("/")[-1].lower()
+                    for field in (after.get("form_fields") or [])
+                )
+                if question_evidence or field_evidence:
+                    return True, "File upload verified: the selected filename is visible in its form question."
+                return False, (
+                    "Upload click is not complete: the selected filename is not yet visible "
+                    "in the target upload question. Wait for the upload to finish before continuing."
+                )
+
             before_elements = before.get("elements") or []
             after_elements = after.get("elements") or []
             target_label = str(action.text or "").strip().lower()
