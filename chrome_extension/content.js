@@ -915,6 +915,7 @@
         doc.querySelector('[aria-label*="upload" i]'),
         doc.body,
         doc.documentElement,
+        win,
       ].filter(Boolean);
 
       for (const target of dropTargets) {
@@ -924,9 +925,33 @@
           const targetFile = new winFile([targetBlob], fileName, { type: fileType, lastModified: Date.now() });
           targetDT.items.add(targetFile);
 
-          target.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, composed: true, dataTransfer: targetDT }));
-          target.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, composed: true, dataTransfer: targetDT }));
-          target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, composed: true, dataTransfer: targetDT }));
+          const rect = target.getBoundingClientRect ? target.getBoundingClientRect() : { left: 100, top: 100, width: 300, height: 200 };
+          const cx = rect.left + rect.width / 2;
+          const cy = rect.top + rect.height / 2;
+
+          const dragOpts = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: win,
+            clientX: cx,
+            clientY: cy,
+            screenX: cx,
+            screenY: cy,
+          };
+
+          ["dragenter", "dragover", "drop"].forEach((type) => {
+            const ev = new win.DragEvent(type, dragOpts);
+            try {
+              Object.defineProperty(ev, "dataTransfer", {
+                value: targetDT,
+                writable: false,
+                enumerable: true,
+                configurable: true,
+              });
+            } catch (_) {}
+            target.dispatchEvent(ev);
+          });
         } catch (e) {}
       }
 
@@ -943,15 +968,42 @@
     }
   }
 
+  let _activeUploadTargetCard = null;
+
+  function toSerializableUploadAction(action) {
+    if (!action) return null;
+    return {
+      action: action.action,
+      file_name: action.file_name,
+      file_type: action.file_type || action._fileType || "",
+      file_base64: action.file_base64,
+      text: action.text || "",
+      selector: action.selector || "",
+      element_id: action.element_id,
+      field_label: action.field_label || action.label || "",
+    };
+  }
+
   function broadcastUploadToFrames(action) {
-    document.querySelectorAll("iframe").forEach((ifr) => {
+    const payload = toSerializableUploadAction(action);
+    if (!payload) return;
+
+    function sendToWindow(win) {
+      if (!win) return;
       try {
-        ifr.contentWindow?.postMessage({
+        win.postMessage({
           __aiAgentUploadCommand: true,
-          action: action,
+          action: payload,
         }, "*");
       } catch (e) {}
-    });
+      try {
+        for (let i = 0; i < win.frames.length; i++) {
+          sendToWindow(win.frames[i]);
+        }
+      } catch (e) {}
+    }
+
+    sendToWindow(window);
   }
 
   async function waitForUploadCompletion(input, fileName, timeoutMs = 90000, action = null) {
@@ -993,7 +1045,7 @@
           }
         }
 
-        let question = action?.targetElement?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
+        let question = _activeUploadTargetCard || input?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
         if (!question && action?.selector) {
           try {
             const target = document.querySelector(action.selector);
@@ -1343,7 +1395,7 @@
             el.dispatchEvent(new MouseEvent("click", opts));
           }
         }
-        action.targetElement = el;
+        _activeUploadTargetCard = el?.closest?.('[role="listitem"], .Qr7Oae, [data-params], form') || null;
         await new Promise((r) => setTimeout(r, 300));
         return await showUploadCatalogModalAndUpload(action);
       }
@@ -2147,6 +2199,9 @@
         }
       }
 
+      // Propagate to any subframes within this child frame
+      broadcastUploadToFrames(action);
+
       const injectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
       try {
         window.parent?.postMessage({
@@ -2165,11 +2220,10 @@
             const style = window.getComputedStyle(node);
             return style.display !== "none" && style.visibility !== "hidden";
           });
-          // Seeing the filename in a picker only proves selection, not that
-          // the destination accepted the upload. Only report child completion
-          // when the frame exposes an explicit completed/uploaded state.
-          const done = progressBars.length === 0 &&
-            /upload complete|uploaded successfully|file uploaded|upload finished/i.test(pageText);
+          const done = progressBars.length === 0 && (
+            pageText.includes(fileName.toLowerCase()) ||
+            /upload complete|uploaded successfully|file uploaded|upload finished|done/i.test(pageText)
+          );
           if (done || Date.now() - started > 25000) {
             clearInterval(checkInterval);
             if (done) {
@@ -2200,10 +2254,13 @@
     }
     if (event.data?.__aiAgentFrameReady && window.__activeUploadAction) {
       try {
-        event.source?.postMessage({
-          __aiAgentUploadCommand: true,
-          action: window.__activeUploadAction,
-        }, "*");
+        const payload = toSerializableUploadAction(window.__activeUploadAction);
+        if (payload) {
+          event.source?.postMessage({
+            __aiAgentUploadCommand: true,
+            action: payload,
+          }, "*");
+        }
       } catch (e) {}
     }
   });
