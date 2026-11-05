@@ -118,8 +118,41 @@ async def test_extension_click_postcondition_does_not_claim_success_from_missing
         action, controller,
         before_page={"url": "https://example.com", "elements": [{"index": 1, "text": "Continue", "selector": "#continue"}]},
     )
+    assert verified is False
+    assert "unverified" in message.lower()
+    assert "did not observably change" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_extension_click_postcondition_verifies_target_removal(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com",
+        "elements": [],
+    })
+    action = BrowserAction(action=ActionType.CLICK, selector="#continue", text="Continue")
+    verified, message = await tm._verify_extension_action_postcondition(
+        action, controller,
+        before_page={"url": "https://example.com", "elements": [{"index": 1, "text": "Continue", "selector": "#continue"}]},
+    )
     assert verified is True
-    assert "unchanged" in message
+    assert "observable page or target-state change" in message
+
+
+@pytest.mark.asyncio
+async def test_extension_click_postcondition_verifies_navigation(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://example.com/next-step",
+        "elements": [{"index": 2, "text": "Submit", "selector": "#submit"}],
+    })
+    action = BrowserAction(action=ActionType.CLICK, selector="#continue", text="Continue")
+    verified, message = await tm._verify_extension_action_postcondition(
+        action, controller,
+        before_page={"url": "https://example.com/first-step", "elements": [{"index": 1, "text": "Continue", "selector": "#continue"}]},
+    )
+    assert verified is True
+    assert "observable page or target-state change" in message
 
 
 @pytest.mark.asyncio

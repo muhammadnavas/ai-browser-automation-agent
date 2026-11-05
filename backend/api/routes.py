@@ -1,3 +1,14 @@
+"""
+SECURITY ARCHITECTURE NOTE — AUTHENTICATION & TASK AUTHORIZATION:
+The AI Browser Automation Agent is currently architected as a single-tenant local application.
+User authentication, per-user task ownership validation, and RBAC are not implemented in the
+backend API routes; all incoming HTTP and WebSocket connections operate within the shared local
+runtime trust boundary.
+In multi-user deployments, an upstream reverse proxy or authentication gateway (e.g., OAuth2/OIDC
+proxy or JWT gateway) must authenticate requests and enforce authorization before traffic reaches
+these endpoints.
+"""
+
 import os
 import logging
 import ipaddress
@@ -31,6 +42,56 @@ from browser.security import install_navigation_guard
 router = APIRouter(prefix="/api")
 logger = logging.getLogger("api.routes")
 MAX_ACTIVE_TASKS = max(1, int(os.getenv("MAX_ACTIVE_TASKS", "8")))
+
+
+def _sanitize_task_response(task: TaskResponse) -> TaskResponse:
+    """Sanitize sensitive goal, steps, error, and context before returning to API clients."""
+    if task is None:
+        return task
+    try:
+        from backend.security import (
+            redact_sensitive_data,
+            sanitize_user_facing_error,
+            strip_internal_placeholders,
+        )
+        is_explicit_contact = any(
+            k in (task.goal or "").lower()
+            for k in ["contact", "email", "phone", "address", "directory", "lead", "who to call"]
+        )
+        task_dict = task.model_dump()
+        sanitized_dict = redact_sensitive_data(
+            task_dict,
+            mask_tier3=not is_explicit_contact,
+            preserve_contact_info=is_explicit_contact,
+        )
+        if sanitized_dict.get("error"):
+            sanitized_dict["error"] = sanitize_user_facing_error(sanitized_dict["error"])
+        if sanitized_dict.get("goal"):
+            sanitized_dict["goal"] = strip_internal_placeholders(sanitized_dict["goal"])
+        if sanitized_dict.get("steps"):
+            for s in sanitized_dict["steps"]:
+                if isinstance(s, dict):
+                    if s.get("error"):
+                        s["error"] = sanitize_user_facing_error(s["error"])
+                    if s.get("reasoning"):
+                        s["reasoning"] = strip_internal_placeholders(s["reasoning"])
+                    if s.get("description"):
+                        s["description"] = strip_internal_placeholders(s["description"])
+        return TaskResponse.model_validate(sanitized_dict)
+    except Exception as exc:
+        logger.error("Error sanitizing TaskResponse, failing closed: %s", exc)
+        return TaskResponse(
+            task_id=getattr(task, "task_id", "unknown"),
+            goal="[REDACTED]",
+            status=TaskStatus.FAILED,
+            error="Task response could not be safely sanitized.",
+            created_at=getattr(task, "created_at", None),
+            updated_at=getattr(task, "updated_at", None),
+            max_steps=getattr(task, "max_steps", 0),
+            steps=[],
+            extracted_data=[],
+            reports={},
+        )
 
 
 def _validate_public_http_url(raw_url: str) -> str:
@@ -76,7 +137,7 @@ async def create_task(req: TaskRequest):
     task = task_manager.create_task(req)
     bg_task = asyncio.create_task(task_manager.run_task_execution(task.task_id, req))
     task_manager.running_tasks[task.task_id] = bg_task
-    return task
+    return _sanitize_task_response(task)
 
 @router.post("/tasks/{task_id}/subagents", tags=["subagents"])
 async def run_subagents(task_id: str, specs: List[SubagentSpec], fail_fast: bool = False):
@@ -125,20 +186,20 @@ async def list_task_history():
     history = list(history_by_id.values())
     # Return newest first; malformed timestamps must not break the whole history view.
     history.sort(key=lambda task: float(task.updated_at or 0), reverse=True)
-    return history
+    return [_sanitize_task_response(task) for task in history]
 
 @router.get("/tasks", response_model=List[TaskResponse])
 async def list_tasks():
-    """Lists all currently in-flight (live) automation tasks."""
-    return list(task_manager.tasks.values())
+    """Lists all currently in-flight (live) automation tasks with sanitized sensitive fields."""
+    return [_sanitize_task_response(task) for task in task_manager.tasks.values()]
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: str):
-    """Retrieves specific task status, steps, and report links."""
+    """Retrieves specific task status, steps, and report links with sanitized sensitive fields."""
     task = task_manager.tasks.get(task_id) or task_manager.task_history.get(task_id) or task_archive.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+    return _sanitize_task_response(task)
 
 @router.get("/tasks/{task_id}/replay", tags=["tasks"])
 async def get_task_replay(task_id: str):
@@ -165,17 +226,23 @@ async def get_task_replay(task_id: str):
 
     timeline.sort(key=lambda item: (item["timestamp"] or 0, item["step_number"]))
     context = getattr(task, "context", None)
-    return {
-        "task_id": task_id,
-        "goal": task.goal,
-        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
-        "timeline": timeline,
-        "action_history": [
+    from backend.security import redact_sensitive_data, redact_text
+    sanitized_timeline = redact_sensitive_data(timeline, mask_tier3=True)
+    sanitized_history = redact_sensitive_data(
+        [
             record.model_dump() if hasattr(record, "model_dump") else dict(record)
             for record in (getattr(context, "action_history", []) or [])[-100:]
         ],
+        mask_tier3=True,
+    )
+    return {
+        "task_id": task_id,
+        "goal": redact_text(task.goal or "", mask_tier3=True),
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "timeline": sanitized_timeline,
+        "action_history": sanitized_history,
         "screenshots_available": sum(1 for item in timeline if item["screenshot_url"]),
         "replay_mode": "read_only",
     }
@@ -189,13 +256,15 @@ async def get_task_recovery(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     events = task_manager.recovery_diagnostics.get(task_id, [])
     unresolved = [event for event in events if event.get("outcome") == "unresolved"]
+    from backend.security import redact_sensitive_data, redact_text
+    sanitized_events = redact_sensitive_data(events[-25:], mask_tier3=True)
     return {
         "task_id": task_id,
         "status": task.status.value if hasattr(task.status, "value") else str(task.status),
         "needs_intervention": bool(unresolved) or task.status == TaskStatus.FAILED,
-        "latest_error": task.error,
+        "latest_error": redact_text(task.error, mask_tier3=True) if task.error else None,
         "attempt_count": len(events),
-        "events": events[-25:],
+        "events": sanitized_events,
     }
 
 
@@ -217,22 +286,42 @@ async def get_task_diagnostics(task_id: str):
             "duration_ms": step.duration_ms,
         })
     context = getattr(task, "context", None)
+    from backend.security import redact_sensitive_data, redact_text
+    sanitized_steps = redact_sensitive_data(steps, mask_tier3=True)
+    sanitized_errors = redact_sensitive_data(
+        list(getattr(context, "recent_errors", []) or [])[-5:],
+        mask_tier3=True,
+    )
+    sanitized_recovery = redact_sensitive_data(
+        task_manager.recovery_diagnostics.get(task_id, [])[-25:],
+        mask_tier3=True,
+    )
     return {
         "task_id": task_id,
         "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-        "error": task.error,
-        "recent_errors": list(getattr(context, "recent_errors", []) or [])[-5:],
-        "steps": steps,
-        "recovery": task_manager.recovery_diagnostics.get(task_id, [])[-25:],
+        "error": redact_text(task.error, mask_tier3=True) if task.error else None,
+        "recent_errors": sanitized_errors,
+        "steps": sanitized_steps,
+        "recovery": sanitized_recovery,
     }
 
 
+class ApproveRequest(BaseModel):
+    approved: bool = True
+    user_input: Optional[str] = None
+
+
 @router.post("/tasks/{task_id}/approve")
-async def approve_human_step(task_id: str, approved: bool = True, user_input: Optional[str] = None):
-    """Approve or reject a Human-In-The-Loop action (CAPTCHA/Payment)."""
+async def approve_human_step(
+    task_id: str,
+    body: Optional[ApproveRequest] = None,
+    approved: Optional[bool] = None,
+    user_input: Optional[str] = None,
+):
+    """Approve or reject a Human-In-The-Loop action (CAPTCHA/Payment/Upload/Auth)."""
     if task_id not in task_manager.tasks:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     task = task_manager.tasks[task_id]
     if task.status != TaskStatus.WAITING_APPROVAL:
         raise HTTPException(
@@ -240,16 +329,29 @@ async def approve_human_step(task_id: str, approved: bool = True, user_input: Op
             detail=f"Task is not waiting for approval (current status: {task.status.value if hasattr(task.status, 'value') else task.status}).",
         )
 
-    task_manager.approve_human_step(task_id, approved, user_input)
+    # Resolve from request body, with backward-compatible query parameter fallback
+    final_approved = body.approved if body is not None else (approved if approved is not None else True)
+    raw_user_input = body.user_input if body is not None and body.user_input is not None else user_input
+
+    # Sanitize user_input before planner use: never pass raw approval responses
+    clean_user_input = None
+    if raw_user_input:
+        try:
+            from backend.security import redact_text
+            clean_user_input = redact_text(raw_user_input, mask_tier3=True)
+        except Exception:
+            clean_user_input = "[REDACTED]"
+
+    task_manager.approve_human_step(task_id, final_approved, clean_user_input)
     await task_manager.broadcast_task_update(task_id)
     return {
         "status": "accepted",
         "task_id": task_id,
-        "approved": approved,
+        "approved": final_approved,
         "task_status": task.status.value if hasattr(task.status, "value") else str(task.status),
         "message": (
             "Approval received. Checking the live Chrome tab for session recovery."
-            if approved else "Task cancellation accepted."
+            if final_approved else "Task cancellation accepted."
         ),
     }
 
@@ -261,7 +363,8 @@ class TaskCancelRequest(BaseModel):
 async def pause_task(task_id: str):
     """Pause a running task at the next safe action boundary."""
     try:
-        return await task_manager.pause_task(task_id)
+        task = await task_manager.pause_task(task_id)
+        return _sanitize_task_response(task)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found")
     except ValueError as exc:
@@ -272,7 +375,8 @@ async def pause_task(task_id: str):
 async def resume_task(task_id: str):
     """Resume a cooperatively paused task."""
     try:
-        return await task_manager.resume_task(task_id)
+        task = await task_manager.resume_task(task_id)
+        return _sanitize_task_response(task)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found")
     except ValueError as exc:
@@ -290,11 +394,13 @@ async def cancel_task(
     try:
         if task_id in research_service.research_tasks:
             research_service.cancel_research_task(task_id)
-        return await task_manager.cancel_task(task_id, reason=cancel_reason)
+        task = await task_manager.cancel_task(task_id, reason=cancel_reason)
+        return _sanitize_task_response(task)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to cancel task: {exc}")
+        logger.exception("Failed to cancel task: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to cancel task due to an internal error.")
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str):
@@ -327,7 +433,7 @@ async def get_pool_status():
     running_list = []
     for tid, t in task_manager.tasks.items():
         if t.status in (TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL, TaskStatus.PENDING):
-            running_list.append(t.model_dump())
+            running_list.append(_sanitize_task_response(t).model_dump())
 
     return {
         "active_tasks_count": len(running_list),
@@ -392,7 +498,8 @@ async def click_human_step(task_id: str, x: float, y: float):
         return {"status": "success", "screenshot_url": screenshot_url}
         
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Click failed: {exc}")
+        logger.exception("Click failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Click failed due to an internal error.")
 
 
 @router.get("/reports/{task_id}/download")
@@ -438,9 +545,13 @@ async def task_websocket(websocket: WebSocket, task_id: str):
     await websocket.accept()
     await task_manager.register_subscriber(task_id, websocket)
     
-    # Send current state immediately if available
+    # Send current state immediately if available (sanitized)
     if task_id in task_manager.tasks:
-        await websocket.send_json(task_manager.tasks[task_id].model_dump())
+        try:
+            sanitized_task = _sanitize_task_response(task_manager.tasks[task_id])
+            await websocket.send_json(sanitized_task.model_dump())
+        except Exception as ws_err:
+            logger.error("Failed to send initial websocket state safely: %s", ws_err)
 
     try:
         while True:
@@ -505,13 +616,16 @@ async def extract_page(req: ExtractionRequest):
             result = await extractor.extract(
                 page     = page,
                 category = req.category,
+                user_intent = req.user_intent,
+                is_explicit_contact_request = req.explicit_contact_request,
             )
             return result
 
     except Exception as exc:
+        logger.exception("Extraction failed: %s", exc)
         raise HTTPException(
             status_code = 502,
-            detail      = f"Extraction failed: {exc}",
+            detail      = "Extraction failed due to an internal error.",
         )
 
 
@@ -541,9 +655,10 @@ async def discover_form_fields(req: FormDiscoveryRequest):
             return result
 
     except Exception as exc:
+        logger.exception("Form discovery failed: %s", exc)
         raise HTTPException(
             status_code = 502,
-            detail      = f"Form discovery failed: {exc}",
+            detail      = "Form discovery failed due to an internal error.",
         )
 
 
@@ -564,7 +679,7 @@ async def submit_research_task(req: ResearchRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Failed to submit research task: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to submit research task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to submit research task due to an internal error.")
 
 
 @router.get("/research/{task_id}", response_model=ResearchTaskResponse, tags=["research"])

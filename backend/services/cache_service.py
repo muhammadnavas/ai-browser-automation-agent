@@ -34,6 +34,12 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple, U
 from redis.asyncio import Redis, from_url
 from redis.exceptions import ConnectionError, RedisError, TimeoutError
 
+from backend.security import (
+    is_sensitive_key as sec_is_sensitive_key,
+    redact_text as sec_redact_text,
+    redact_sensitive_data as sec_redact_sensitive_data,
+)
+
 logger = logging.getLogger("services.cache_service")
 
 
@@ -474,12 +480,15 @@ class CacheService:
         """Check if a dictionary key name represents sensitive data.
 
         Handles snake_case, camelCase, kebab-case, and PascalCase.
+        Delegates to centralized security module while respecting legacy class attributes.
         """
+        if sec_is_sensitive_key(key_name):
+            return True
+
         if not key_name or not isinstance(key_name, (str, int, float)):
             return False
 
         key_str = str(key_name)
-        # Convert camelCase to snake_case
         normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key_str).lower()
         normalized = re.sub(r"[^a-z0-9]", "_", normalized)
         parts = set(filter(None, normalized.split("_")))
@@ -498,7 +507,7 @@ class CacheService:
         if not isinstance(text, str):
             return text
 
-        result = text
+        result = sec_redact_text(text)
         for pattern, replacement in self._VALUE_PATTERNS:
             result = pattern.sub(replacement, result)
         return result
@@ -510,75 +519,9 @@ class CacheService:
 
         API keys, payment cards, CVVs, PINs) before caching.
 
-        Handles dicts, lists, tuples, sets, Pydantic models, dataclasses, and strings.
-        Includes cycle detection to prevent infinite recursion on circular objects.
+        Delegates to the centralized security module.
         """
-        if data is None:
-            return None
-
-        if _visited is None:
-            _visited = set()
-
-        obj_id = id(data)
-        if obj_id in _visited:
-            return "[CIRCULAR_REFERENCE]"
-
-        # Support Pydantic models (v1 and v2)
-        if hasattr(data, "model_dump") and callable(data.model_dump):
-            data = data.model_dump()
-        elif hasattr(data, "dict") and callable(data.dict):
-            data = data.dict()
-        elif hasattr(data, "__dict__") and not isinstance(
-            data, (type, int, float, str, bool, bytes)
-        ):
-            data = dict(data.__dict__)
-
-        if isinstance(data, dict):
-            _visited.add(obj_id)
-            sanitized_dict: Dict[str, Any] = {}
-            for k, v in data.items():
-                if self.is_sensitive_key(str(k)):
-                    sanitized_dict[str(k)] = "[REDACTED]"
-                else:
-                    sanitized_dict[str(k)] = self.sanitize_sensitive_data(v, _visited)
-            _visited.remove(obj_id)
-            return sanitized_dict
-
-        if isinstance(data, list):
-            _visited.add(obj_id)
-            sanitized_list = [
-                self.sanitize_sensitive_data(item, _visited) for item in data
-            ]
-            _visited.remove(obj_id)
-            return sanitized_list
-
-        if isinstance(data, tuple):
-            _visited.add(obj_id)
-            sanitized_tuple = tuple(
-                self.sanitize_sensitive_data(item, _visited) for item in data
-            )
-            _visited.remove(obj_id)
-            return sanitized_tuple
-
-        if isinstance(data, set):
-            _visited.add(obj_id)
-            sanitized_set = [
-                self.sanitize_sensitive_data(item, _visited) for item in data
-            ]
-            _visited.remove(obj_id)
-            return sanitized_set
-
-        if isinstance(data, str):
-            return self.sanitize_string(data)
-
-        if isinstance(data, (int, float, bool)):
-            return data
-
-        # Default string fallback
-        try:
-            return self.sanitize_string(str(data))
-        except Exception:
-            return "[UNSERIALIZABLE]"
+        return sec_redact_sensitive_data(data, mask_tier3=False, _visited=_visited)
 
     # -----------------------------------------------------------------------
     # JSON Serialization Helper

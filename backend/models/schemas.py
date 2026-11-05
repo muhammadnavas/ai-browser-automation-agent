@@ -206,7 +206,13 @@ SENSITIVE_FIELD_KEYWORDS = (
 def _is_sensitive_label(label: str) -> bool:
     """Return True if a field label/key looks like it holds sensitive data."""
     lower = (label or "").lower()
-    return any(kw in lower for kw in SENSITIVE_FIELD_KEYWORDS)
+    if any(kw in lower for kw in SENSITIVE_FIELD_KEYWORDS):
+        return True
+    try:
+        from backend.security import is_sensitive_key, is_tier1_key, is_tier2_key
+        return is_tier1_key(lower) or is_tier2_key(lower) or is_sensitive_key(lower)
+    except Exception:
+        return False
 
 
 class ActionRecord(BaseModel):
@@ -294,11 +300,36 @@ class TaskContext(BaseModel):
             self.action_history = self.action_history[-50:]
 
     def record_fill(self, selector: str, label: str, value: Any) -> None:
-        """Record a field fill, masking sensitive values."""
-        display_value = (
-            "********" if _is_sensitive_label(label) or _is_sensitive_label(selector)
-            else value
-        )
+        """Record a field fill, masking sensitive values and preventing contact/vault plaintext from leaking."""
+        val_str = str(value) if value is not None else ""
+        if val_str.startswith("{{") and val_str.endswith("}}"):
+            display_value = val_str
+        elif _is_sensitive_label(label) or _is_sensitive_label(selector):
+            display_value = "********"
+        else:
+            try:
+                from backend.security import (
+                    is_sensitive_key,
+                    is_tier3_key,
+                    contains_tier1_secrets,
+                    contains_tier2_identifiers,
+                    classify_sensitivity,
+                    SensitivityTier,
+                )
+                if (
+                    is_sensitive_key(label)
+                    or is_sensitive_key(selector)
+                    or is_tier3_key(label)
+                    or is_tier3_key(selector)
+                    or contains_tier1_secrets(val_str)
+                    or contains_tier2_identifiers(val_str)
+                    or classify_sensitivity(val_str, key_name=label) == SensitivityTier.TIER_3_CONTACT_PII
+                ):
+                    display_value = "********"
+                else:
+                    display_value = value
+            except Exception:
+                display_value = "********" if _is_sensitive_label(label) or _is_sensitive_label(selector) else value
         self.filled_fields[selector] = {"label": label, "value": display_value}
 
     def record_error(self, error: str) -> None:
@@ -582,6 +613,8 @@ class ExtractionRequest(BaseModel):
     category: Optional[PageCategory] = None   # None = auto-detect
     headless: bool                   = True
     timeout:  int                    = Field(default=30000, ge=1000, le=60000)   # ms
+    user_intent: Optional[str]       = None
+    explicit_contact_request: bool   = False
 
 
 class ExtractionResult(BaseModel):

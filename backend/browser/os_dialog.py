@@ -41,6 +41,8 @@ import asyncio
 import mimetypes
 from typing import Optional, Dict, Any, List, Set, Tuple
 
+from backend.security import is_sensitive_file as sec_is_sensitive_file, validate_upload_path
+
 logger = logging.getLogger("OsDialogHandler")
 
 # ---------------------------------------------------------------------------
@@ -129,6 +131,8 @@ IGNORED_DIRS: Set[str] = {
 
 def is_sensitive_file(filename: str) -> bool:
     """Returns True if the file name or path suggests private credentials/secrets."""
+    if sec_is_sensitive_file(filename):
+        return True
     for pat in SENSITIVE_PATTERNS:
         if pat.search(filename):
             return True
@@ -211,114 +215,17 @@ def extract_target_file_name(text: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Guaranteed Mock File Generator (Fallback)
+# Guaranteed Mock File Generator (Removed for Security)
 # ---------------------------------------------------------------------------
 
 def generate_clean_mock_file(category: str = "image", filename: Optional[str] = None, context_text: str = "") -> str:
+    """Mock file generation has been removed to satisfy Upload Safety requirements.
+    Never substitute a mock file for a requested file.
     """
-    Generates a valid, high-quality sample file when no user file exists for the requested category.
-    Guarantees form upload questions never fail validation.
-    """
-    out_dir = os.path.join(os.getcwd(), "downloads", "mock_files")
-    os.makedirs(out_dir, exist_ok=True)
-
-    if category == "image":
-        target_name = filename or "mock_photograph.jpg"
-        if not target_name.lower().endswith((".jpg", ".jpeg", ".png")):
-            target_name += ".jpg"
-        target_path = os.path.join(out_dir, target_name)
-
-        try:
-            from PIL import Image, ImageDraw
-            img = Image.new("RGB", (420, 420), color=(240, 244, 250))
-            draw = ImageDraw.Draw(img)
-            # Frame border
-            draw.rectangle([8, 8, 412, 412], outline=(59, 130, 246), width=4)
-            # Avatar Head
-            draw.ellipse([150, 70, 270, 190], fill=(99, 102, 241), outline=(67, 56, 202), width=2)
-            # Avatar Torso
-            draw.ellipse([90, 205, 330, 395], fill=(59, 130, 246), outline=(37, 99, 235), width=2)
-            # Clean header text
-            draw.rectangle([100, 340, 320, 375], fill=(255, 255, 255), outline=(59, 130, 246))
-            draw.text((120, 350), "STUDENT PHOTOGRAPH", fill=(30, 41, 59))
-            if target_path.lower().endswith(".png"):
-                img.save(target_path, format="PNG")
-            else:
-                img.save(target_path, format="JPEG", quality=92)
-            logger.info(f"Generated clean mock portrait photograph at: {target_path}")
-            return target_path
-        except Exception as e:
-            logger.warning(f"PIL portrait generation note: {e}")
-            # Valid 1x1 JFIF JPEG binary fallback
-            jpeg_bytes = bytes([
-                0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
-                0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
-                0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
-                0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
-                0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20,
-                0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
-                0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
-                0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
-                0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00,
-                0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                0x09, 0x0A, 0x0B, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
-                0x00, 0x7F, 0x00, 0xFF, 0xD9
-            ])
-            with open(target_path, "wb") as f:
-                f.write(jpeg_bytes)
-            return target_path
-
-    elif category in ("resume", "document"):
-        target_name = filename or "mock_document.pdf"
-        if not target_name.lower().endswith(".pdf"):
-            target_name += ".pdf"
-        target_path = os.path.join(out_dir, target_name)
-        try:
-            from reportlab.lib.pagesizes import letter
-            from reportlab.pdfgen import canvas
-            c = canvas.Canvas(target_path, pagesize=letter)
-            c.setFont("Helvetica-Bold", 16)
-            doc_title = "Document Profile & Summary" if "resume" not in category else "Candidate Profile & Resume"
-            c.drawString(72, 740, doc_title)
-            c.setFont("Helvetica", 10)
-            c.drawString(72, 715, "Contact: user@example.com | Status: Verified | Date: 2025-01-15")
-            c.line(72, 700, 540, 700)
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(72, 675, "Summary & Key Information")
-            c.setFont("Helvetica", 10)
-            c.drawString(72, 650, "• Autonomous system documentation prepared for task verification.")
-            c.drawString(72, 630, "• Valid structure formatted to satisfy portal attachment criteria.")
-            c.save()
-            logger.info(f"Generated clean mock PDF at: {target_path}")
-            return target_path
-        except Exception:
-            with open(target_path, "wb") as f:
-                f.write(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000010 00000 n \n0000000060 00000 n \n0000000117 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n190\n%%EOF")
-            return target_path
-
-    elif category == "spreadsheet":
-        target_name = filename or "mock_data.csv"
-        if not target_name.lower().endswith(".csv"):
-            target_name += ".csv"
-        target_path = os.path.join(out_dir, target_name)
-        ctx_lower = (context_text or "").lower()
-        if "sale" in ctx_lower or "metric" in ctx_lower or "revenue" in ctx_lower:
-            csv_content = "ID,Date,Product,Quantity,Revenue,Status\n1,2025-01-15,Standard Package,10,1500.00,Completed\n"
-        elif "student" in ctx_lower or "academic" in ctx_lower or "applicant" in ctx_lower:
-            csv_content = "ID,Name,Email,Department,Status\n1001,Applicant,applicant@example.com,Engineering,Submitted\n"
-        else:
-            csv_content = "ID,Name,Category,Date,Status\n1,Item Alpha,General,2025-01-15,Active\n2,Item Beta,General,2025-01-16,Completed\n"
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(csv_content)
-        return target_path
-
-    else:
-        target_name = filename or "mock_document.txt"
-        target_path = os.path.join(out_dir, target_name)
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(f"Sample attachment document for autonomous automation task.\nContext: {context_text}\n")
-        return target_path
+    raise PermissionError(
+        "Automatic mock file fallback has been removed for upload security. "
+        "Explicit file paths are required."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -347,12 +254,21 @@ def _format_file_info(file_path: str) -> Dict[str, Any]:
     b64_content = ""
     file_size = 0
     try:
-        file_size = os.path.getsize(file_path)
-        with open(file_path, "rb") as f:
-            content_bytes = f.read()
+        from backend.security.policy import MAX_UPLOAD_FILE_SIZE
+        canonical_path = os.path.realpath(file_path)
+        if canonical_path != file_path:
+            logger.warning("Path resolution discrepancy detected between validation and read.")
+            return None
+        file_size = os.path.getsize(canonical_path)
+        if file_size > MAX_UPLOAD_FILE_SIZE:
+            logger.warning(f"File {os.path.basename(canonical_path)} exceeds max upload size.")
+            return None
+        with open(canonical_path, "rb") as f:
+            content_bytes = f.read(MAX_UPLOAD_FILE_SIZE)
         b64_content = base64.b64encode(content_bytes).decode("ascii")
     except Exception as exc:
         logger.warning(f"Could not read binary file content: {exc}")
+        return None
 
     # Discover neighbor files in user's directory for realistic OS catalog display
     neighbor_files = []
@@ -390,210 +306,55 @@ def _format_file_info(file_path: str) -> Dict[str, Any]:
     }
 
 
+def resolve_upload_file(
+    file_path: str,
+    allowlist_dirs: list[str] | None = None,
+    user_approved: bool = False,
+) -> dict | None:
+    """Validate an explicit upload path and return structured file info if permitted."""
+    is_valid, reason, canonical = validate_upload_path(
+        file_path,
+        allowlist_dirs=allowlist_dirs,
+        user_approved=user_approved,
+    )
+    if not is_valid or not canonical:
+        logger.warning(f"Upload file rejected by policy: {reason}")
+        return None
+    return _format_file_info(canonical)
+
+
 def get_user_system_file(
     goal: str = "",
     context_text: str = "",
-    accept_types: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    accept_types: str | None = None,
+    allowlist_dirs: list[str] | None = None,
+    user_approved: bool = False,
+) -> dict | None:
     """
-    Finds a real file matching prompt requirements by searching user folders,
-    recursively traversing into subdirectories, and respecting category constraints.
-    Falls back to generating a valid mock file if none exists on the system.
+    Finds a file matching prompt requirements ONLY when an explicit, valid file path is provided.
+    Automatic personal-folder discovery and mock-file generation are removed for upload safety.
     """
     combined_context = f"{goal} {context_text}".strip()
-    target_category = infer_requested_category(goal, context_text, accept_types)
-    target_folder = extract_target_folder(combined_context)
-    target_filename = extract_target_file_name(combined_context)
 
-    logger.info(
-        f"File search intent: category='{target_category}', "
-        f"target_folder='{target_folder}', target_file='{target_filename}'"
-    )
-
-    # 1. Check for explicit absolute path in goal or context
-    path_match = re.search(r'[A-Za-z]:[/\\][^\s"\'<>]+', combined_context)
+    # 1. Check for explicit path in goal or context
+    path_match = re.search(r"[A-Za-z]:[/\\][^\s\"'<>]+", combined_context)
+    candidate: str | None = None
     if path_match:
-        candidate = path_match.group(0).strip().strip("\"'")
-        if os.path.isfile(candidate) and not is_sensitive_file(candidate):
-            logger.info(f"Matched explicit absolute path: {candidate}")
-            return _format_file_info(candidate)
+        candidate = path_match.group(0).strip().strip('"\'')
+    else:
+        file_match = re.search(r'(?:file|path|upload|attach)[:=\s]+["\']?([^\s"\'<>]+\.[a-zA-Z0-9]{2,5})["\']?', combined_context)
+        if file_match:
+            candidate = file_match.group(1).strip().strip('"\'')
+    if not candidate:
+        target_fn = extract_target_file_name(combined_context)
+        if target_fn and os.path.isabs(target_fn):
+            candidate = target_fn
 
-    # 2. Build root search locations
-    home = os.path.expanduser("~")
-    search_roots = [
-        os.path.join(home, "Pictures"),
-        os.path.join(home, "Documents"),
-        os.path.join(home, "Downloads"),
-        os.path.join(home, "Desktop"),
-        os.path.join(home, "Videos"),
-        os.path.join(home, "Music"),
-        os.path.join(home, "OneDrive"),
-        os.getcwd(),
-    ]
+    if not candidate:
+        logger.info("Upload safety: no explicit file path specified. Refusing automatic directory search.")
+        return None
 
-    valid_extensions: Set[str] = (
-        set(CATEGORY_EXTENSIONS.get(target_category, ALL_VALID_EXTENSIONS))
-        if target_category
-        else set(ALL_VALID_EXTENSIONS)
-    )
-
-    # Honor the actual file input accept attribute, not just the question text.
-    # This prevents selecting a JPEG when the target input only accepts PDF/PNG.
-    if accept_types:
-        accepted_extensions: Set[str] = set()
-        mime_extensions = {
-            "image/jpeg": {".jpg", ".jpeg"},
-            "image/png": {".png"},
-            "image/webp": {".webp"},
-            "application/pdf": {".pdf"},
-            "text/csv": {".csv"},
-            "application/zip": {".zip"},
-        }
-        for raw_rule in accept_types.split(","):
-            rule = raw_rule.strip().lower()
-            if not rule:
-                continue
-            if rule.startswith("."):
-                accepted_extensions.add(rule)
-            elif rule == "image/*":
-                accepted_extensions.update(CATEGORY_EXTENSIONS["image"])
-            elif rule in mime_extensions:
-                accepted_extensions.update(mime_extensions[rule])
-            elif "/" in rule and "*" not in rule:
-                # Cover Office formats and other registered MIME types without
-                # silently falling back to an unrestricted file search.
-                accepted_extensions.update(
-                    ext.lower() for ext in mimetypes.guess_all_extensions(rule)
-                )
-        if not accepted_extensions:
-            logger.warning(
-                "Could not interpret file input accept rules '%s'; refusing an unrestricted file search.",
-                accept_types
-            )
-            return None
-        valid_extensions.intersection_update(accepted_extensions)
-        if not valid_extensions:
-            logger.warning(
-                "No supported local/mock file extension matches accept='%s' and category='%s'",
-                accept_types, target_category
-            )
-            return None
-
-    # 3. Recursive directory traversal (travel into folders!)
-    candidates: List[Tuple[float, str, str, str]] = []  # (score, path, filename, folder_name)
-
-    for root_dir in search_roots:
-        if not os.path.isdir(root_dir):
-            continue
-
-        for current_root, dirs, files in os.walk(root_dir):
-            # Prune noise/system directories
-            dirs[:] = [
-                d for d in dirs
-                if not d.startswith(".") and d.lower() not in IGNORED_DIRS
-            ]
-
-            # Depth limit: max 4 levels from root
-            rel = os.path.relpath(current_root, root_dir)
-            depth = len(rel.split(os.sep)) if rel != "." else 0
-            if depth > 4:
-                dirs.clear()
-                continue
-
-            folder_name = os.path.basename(current_root)
-            folder_lower = folder_name.lower()
-
-            for fname in files:
-                if fname.startswith((".", "~", "ai_")) or is_sensitive_file(fname):
-                    continue
-
-                ext = os.path.splitext(fname)[1].lower()
-                if ext not in ALL_VALID_EXTENSIONS:
-                    continue
-
-                full_path = os.path.join(current_root, fname)
-
-                # Strict category enforcement: disqualify non-matching file types
-                if target_category and ext not in valid_extensions:
-                    continue
-
-                try:
-                    fsize = os.path.getsize(full_path)
-                    if fsize == 0 or fsize > 100 * 1024 * 1024:  # 100MB limit
-                        continue
-                    mtime = os.path.getmtime(full_path)
-                except OSError:
-                    continue
-
-                # Compute match score
-                score = 0.0
-
-                # Target file name match
-                fname_lower = fname.lower()
-                if target_filename and target_filename.lower() in fname_lower:
-                    score += 500.0
-
-                # Target folder traveling match
-                if target_folder and target_folder.lower() in folder_lower:
-                    score += 250.0
-
-                # Natural category alignment with folder name
-                if target_category == "image" and any(k in folder_lower for k in ["picture", "photo", "image", "camera"]):
-                    score += 100.0
-                elif target_category in ("resume", "document") and any(k in folder_lower for k in ["doc", "resume", "cv", "work"]):
-                    score += 80.0
-
-                # Keyword overlap with context
-                words = set(re.findall(r"\b[a-z]{3,}\b", combined_context.lower()))
-                stop_words = {"upload", "file", "document", "open", "folder", "the", "and", "for", "select"}
-                keywords = words - stop_words
-                for kw in keywords:
-                    if kw in fname_lower:
-                        score += 30.0
-
-                # Ideal file size bonus (10KB - 8MB)
-                if 10 * 1024 <= fsize <= 8 * 1024 * 1024:
-                    score += 15.0
-
-                # Recency bonus (more recent = higher score)
-                age_days = (time.time() - mtime) / 86400.0
-                if age_days < 7:
-                    score += 20.0
-                elif age_days < 30:
-                    score += 10.0
-
-                candidates.append((score, full_path, fname, folder_name))
-
-    # 4. Select the best scoring candidate if found
-    if candidates:
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        best_candidate = candidates[0]
-        logger.info(
-            f"Selected candidate file (score={best_candidate[0]:.1f}): "
-            f"'{best_candidate[1]}' in folder '{best_candidate[3]}'"
-        )
-        return _format_file_info(best_candidate[1])
-
-    # 5. Guaranteed Fallback: dynamically generate clean mock file of correct category
-    cat_to_generate = target_category or "image"
-    if accept_types:
-        # Never manufacture a fallback whose extension is not accepted by the
-        # target input. The image generator supports PNG/JPEG; document fallback
-        # supports PDF. If the accept list requires another format, stop safely.
-        preferred = next((ext for ext in (".png", ".jpg", ".jpeg", ".pdf", ".csv") if ext in valid_extensions), None)
-        if cat_to_generate == "image" and preferred in {".png", ".jpg", ".jpeg"}:
-            target_filename = f"mock_photograph{preferred}"
-        elif cat_to_generate in ("document", "resume") and preferred == ".pdf":
-            target_filename = "mock_document.pdf"
-        else:
-            logger.warning(
-                "Cannot generate a safe fallback for category='%s' and accept='%s'; refusing an incompatible file.",
-                cat_to_generate, accept_types
-            )
-            return None
-    logger.info(f"No local candidate found on system. Generating mock file for category '{cat_to_generate}' with accepted extensions {sorted(valid_extensions)}.")
-    generated_path = generate_clean_mock_file(category=cat_to_generate, filename=target_filename, context_text=combined_context)
-    return _format_file_info(generated_path)
+    return resolve_upload_file(candidate, allowlist_dirs=allowlist_dirs, user_approved=user_approved)
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +405,7 @@ async def handle_os_file_dialog(
     screen_y: Optional[int] = None,
     wait_for_dialog_secs: float = 5.0,
     accept_types: Optional[str] = None,
+    user_approved: bool = False,
 ) -> bool:
     """
     Automates uploading an actual file from the user's system:
@@ -661,7 +423,12 @@ async def handle_os_file_dialog(
         logger.warning("pyautogui / pyperclip not installed.")
         return False
 
-    file_info = get_user_system_file(goal=goal, context_text=context_text, accept_types=accept_types)
+    file_info = get_user_system_file(
+        goal=goal,
+        context_text=context_text,
+        accept_types=accept_types,
+        user_approved=user_approved,
+    )
     if not file_info:
         logger.error("No valid user file could be found or generated to upload.")
         return False

@@ -498,11 +498,37 @@ class BrowserController:
         if not self.current_page:
             return "", ""
 
+        # Protect against capturing screenshots of local dashboard or backend administrative origins
+        try:
+            from urllib.parse import urlparse
+            p_url = urlparse(self.current_page.url or "")
+            h = (p_url.hostname or "").lower()
+            p = p_url.port
+            if h in ("localhost", "127.0.0.1", "0.0.0.0", "::1") and (p in (8000, 5173, 3000, 8080)):
+                logger.warning("Skipping screenshot: protected backend/dashboard origin.")
+                return "", ""
+        except Exception:
+            pass
+
         filename = f"{task_id}_step_{step_num}.png"
         filepath = os.path.join(self.screenshots_dir, filename)
 
         try:
-            await self.current_page.screenshot(path=filepath, full_page=full_page)
+            mask_locators = []
+            try:
+                passwords = self.current_page.locator(
+                    'input[type="password"], input[autocomplete*="password"], input[autocomplete*="one-time-code"], [data-sensitive="true"]'
+                )
+                if await passwords.count() > 0:
+                    mask_locators.append(passwords)
+            except Exception as mask_err:
+                logger.warning(f"Safe masking cannot be guaranteed for screenshot: {mask_err}")
+                return "", ""
+
+            if mask_locators:
+                await self.current_page.screenshot(path=filepath, full_page=full_page, mask=mask_locators)
+            else:
+                await self.current_page.screenshot(path=filepath, full_page=full_page)
             relative_url = f"/screenshots/{filename}"
             logger.debug(f"Screenshot saved: '{filepath}'")
             return filepath, relative_url
@@ -532,12 +558,48 @@ class BrowserController:
         if not self.current_page:
             return "", ""
 
+        # Protect against capturing screenshots of local dashboard or backend administrative origins
+        try:
+            from urllib.parse import urlparse
+            p_url = urlparse(self.current_page.url or "")
+            h = (p_url.hostname or "").lower()
+            p = p_url.port
+            if h in ("localhost", "127.0.0.1", "0.0.0.0", "::1") and (p in (8000, 5173, 3000, 8080)):
+                logger.warning("Skipping element screenshot: protected backend/dashboard origin.")
+                return "", ""
+        except Exception:
+            pass
+
+        # Protect against capturing element screenshots of sensitive/secret inputs directly
+        try:
+            from backend.security import is_sensitive_key
+            sel_lower = selector.lower()
+            if any(term in sel_lower for term in ("password", "passwd", "pwd", "otp", "token", "cvv", "secret", "card", "ssn")) or is_sensitive_key(selector):
+                logger.warning(f"Skipping element screenshot: target selector '{selector}' represents sensitive input.")
+                return "", ""
+        except Exception:
+            return "", ""
+
         filename = f"{task_id}_step_{step_num}_{suffix}.png"
         filepath = os.path.join(self.screenshots_dir, filename)
 
         try:
+            mask_locators = []
+            try:
+                passwords = self.current_page.locator(
+                    'input[type="password"], input[autocomplete*="password"], input[autocomplete*="one-time-code"], [data-sensitive="true"]'
+                )
+                if await passwords.count() > 0:
+                    mask_locators.append(passwords)
+            except Exception as mask_err:
+                logger.warning(f"Safe masking cannot be guaranteed for element screenshot: {mask_err}")
+                return "", ""
+
             locator = self.current_page.locator(selector).first
-            await locator.screenshot(path=filepath)
+            if mask_locators:
+                await locator.screenshot(path=filepath, mask=mask_locators)
+            else:
+                await locator.screenshot(path=filepath)
             relative_url = f"/screenshots/{filename}"
             logger.debug(f"Element screenshot saved: '{filepath}'")
             return filepath, relative_url
@@ -562,6 +624,26 @@ class BrowserController:
         """
         if not self.current_page:
             return {"elements": [], "summary": "No page open"}
+
+        # Prevent dashboard/backend-origin content from being exposed as webpage content
+        curr_url = self.current_page.url if self.current_page else ""
+        try:
+            from urllib.parse import urlparse
+            p_url = urlparse(curr_url)
+            h = (p_url.hostname or "").lower()
+            p = p_url.port
+            if h in ("localhost", "127.0.0.1", "0.0.0.0", "::1") and (p in (8000, 5173, 3000, 8080)):
+                logger.warning(f"Protected internal dashboard/backend origin: '{curr_url}'. Refusing to inspect.")
+                return {
+                    "title": "Protected Origin",
+                    "url": curr_url,
+                    "elements": [],
+                    "page_text": "",
+                    "form_questions": [],
+                    "headings": [],
+                }
+        except Exception:
+            pass
 
         js_script = """
         (showBadges) => {
@@ -730,9 +812,9 @@ class BrowserController:
                     disabled: el.disabled || false,
                     placeholder: el.placeholder || '',
                     href: el.href || '',
-                    value: (el.tagName === 'SELECT')
-                           ? el.options[el.selectedIndex]?.value
-                           : el.value || '',
+                    value: (tag === 'input' && (el.type === 'password' || (el.getAttribute('autocomplete') || '').includes('password') || (el.name || '').toLowerCase().includes('password') || (el.name || '').toLowerCase().includes('otp')))
+                           ? ''
+                           : ((el.tagName === 'SELECT') ? el.options[el.selectedIndex]?.value : el.value || ''),
                 });
 
                 index++;
@@ -782,6 +864,46 @@ class BrowserController:
         """
         try:
             data = await self.current_page.evaluate(js_script, self.show_badges)
+
+            # Sanitize sensitive inputs, labels, placeholders, headings, questions, and page text
+            try:
+                from backend.security import redact_text, is_auth_field, redact_sensitive_data
+                for item in data.get("elements", []):
+                    if is_auth_field(item):
+                        item["value"] = ""
+                    elif item.get("value"):
+                        item["value"] = redact_text(str(item["value"]), mask_tier3=True, preserve_public_contacts=True)
+                    if item.get("placeholder"):
+                        item["placeholder"] = redact_text(str(item["placeholder"]), mask_tier3=True, preserve_public_contacts=True)
+                    if item.get("label"):
+                        item["label"] = redact_text(str(item["label"]), mask_tier3=True, preserve_public_contacts=True)
+                    if item.get("text"):
+                        item["text"] = redact_text(str(item["text"]), mask_tier3=True, preserve_public_contacts=True)
+                    if item.get("aria_label"):
+                        item["aria_label"] = redact_text(str(item["aria_label"]), mask_tier3=True, preserve_public_contacts=True)
+                    if item.get("title"):
+                        item["title"] = redact_text(str(item["title"]), mask_tier3=True, preserve_public_contacts=True)
+
+                if data.get("page_text"):
+                    data["page_text"] = redact_text(data["page_text"], mask_tier3=True, preserve_public_contacts=True)
+                if data.get("headings"):
+                    data["headings"] = [redact_text(h, mask_tier3=True, preserve_public_contacts=True) for h in data["headings"]]
+                if data.get("form_questions"):
+                    data["form_questions"] = [redact_text(q, mask_tier3=True, preserve_public_contacts=True) for q in data["form_questions"]]
+                if data.get("form_fields"):
+                    data["form_fields"] = redact_sensitive_data(data["form_fields"], mask_tier3=True, preserve_contact_info=False)
+            except Exception as sec_exc:
+                logger.error(f"DOM sanitization failed, failing closed: {sec_exc}")
+                return {
+                    "title": "Error",
+                    "url": self.current_page.url if self.current_page else "",
+                    "elements": [],
+                    "page_text": "",
+                    "headings": [],
+                    "form_questions": [],
+                    "form_fields": [],
+                }
+
             self.element_map = {item["index"]: item for item in data.get("elements", [])}
             version = data.get("dom_version")
             self._observed_dom_version = int(version) if version is not None else None

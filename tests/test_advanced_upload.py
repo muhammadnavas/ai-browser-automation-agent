@@ -47,24 +47,80 @@ def test_extract_target_file_name():
     assert extract_target_file_name("upload client_secret.json") is None  # Blocked sensitive
 
 
-def test_get_user_system_file_never_picks_json_for_photograph():
+def test_explicit_file_path_requirement(tmp_path):
+    # 1. Explicit file-path requirements: Without explicit file path in goal or context, returns None
+    result = get_user_system_file(
+        goal="Fill registration form and upload photograph",
+        context_text="The form was not submitted because a required file upload field failed",
+    )
+    assert result is None
+
+    # 2. When explicit file path in allowlisted folder is provided, it succeeds
+    test_file = tmp_path / "sample_photo.jpg"
+    test_file.write_bytes(b"dummy image content")
+    result = get_user_system_file(
+        goal=f"Upload file {test_file}",
+        context_text=f"Selecting file {test_file}",
+    )
+    assert result is not None
+    assert result["name"] == "sample_photo.jpg"
+    assert result["mime_type"] == "image/jpeg"
+
+
+def test_allowlisted_directory_enforcement():
+    # Allowlisted directory enforcement: Paths outside allowlist are rejected
+    from browser.os_dialog import validate_upload_path
+    is_allowed, reason, resolved = validate_upload_path("C:/Windows/System32/cmd.exe")
+    assert is_allowed is False
+    assert "outside allowlisted" in reason
+
+    is_allowed, reason, resolved = validate_upload_path("../../sensitive.txt")
+    assert is_allowed is False
+
+
+def test_sensitive_file_rejection(tmp_path):
+    # Sensitive-file rejection: Prohibited file names (.env, credentials.json, id_rsa) are rejected
+    from browser.os_dialog import validate_upload_path
+    env_file = tmp_path / ".env"
+    env_file.write_text("SECRET=123")
+    is_allowed, reason, resolved = validate_upload_path(str(env_file))
+    assert is_allowed is False
+    assert "sensitive file" in reason.lower()
+
+    cred_file = tmp_path / "credentials.json"
+    cred_file.write_text('{"token": "xyz"}')
+    is_allowed, reason, resolved = validate_upload_path(str(cred_file))
+    assert is_allowed is False
+    assert "sensitive file" in reason.lower()
+
+
+def test_rejection_of_mock_file_substitution():
+    # Rejection of mock-file substitution: generate_clean_mock_file raises PermissionError
+    with pytest.raises(PermissionError) as exc_info:
+        generate_clean_mock_file("image")
+    assert "mock file fallback has been removed" in str(exc_info.value).lower()
+
+    with pytest.raises(PermissionError) as exc_info:
+        generate_clean_mock_file("resume")
+    assert "mock file fallback has been removed" in str(exc_info.value).lower()
+
+
+def test_upload_approval_required(tmp_path):
+    # Approval requirements: Upload path must be explicit and validated
+    from browser.os_dialog import get_user_system_file, validate_upload_path
+    sample_file = tmp_path / "document.pdf"
+    sample_file.write_bytes(b"%PDF-1.4 dummy pdf")
+
+    is_allowed, reason, resolved = validate_upload_path(str(sample_file))
+    assert is_allowed is True
+    assert resolved == str(sample_file.resolve())
+
     file_info = get_user_system_file(
-        goal="Fill registration form",
-        context_text="The form was not submitted because a required file upload field ('Upload Recent Photograph') failed validation",
+        goal=f"Upload document {sample_file} to portal",
+        context_text=f"File at {sample_file}",
     )
     assert file_info is not None
-    assert file_info["mime_type"].startswith("image/")
-    assert any(file_info["name"].lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"])
-
-
-def test_generate_clean_mock_file():
-    img_path = generate_clean_mock_file("image")
-    assert os.path.isfile(img_path)
-    assert img_path.lower().endswith(".jpg")
-
-    pdf_path = generate_clean_mock_file("resume")
-    assert os.path.isfile(pdf_path)
-    assert pdf_path.lower().endswith(".pdf")
+    assert file_info["path"] == str(sample_file.resolve())
 
 
 def test_domains_match_shortener_aliases():
@@ -116,11 +172,10 @@ def test_heuristic_prevents_navigation_loop():
     assert action.text is not None and len(action.text) > 0
 
 
-@pytest.mark.asyncio
-async def test_guardrail_prevents_premature_submission_with_unfilled_file_upload():
+def test_guardrail_prevents_premature_submission_with_unfilled_file_upload():
     from agents.planner import AIAgentPlanner
     from models.schemas import ActionType
-    planner = AIAgentPlanner()
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
 
     goal = "Submit the completed Google Form"
     page_info = {
@@ -138,14 +193,12 @@ async def test_guardrail_prevents_premature_submission_with_unfilled_file_upload
         {"action": "fill", "element_id": 11, "description": "Filled Branch"},
     ]
 
-    action = await planner.decide_next_action(
+    action = planner._heuristic_decide_action(
         goal=goal,
         step_number=6,
-        max_steps=10,
         page_info=page_info,
         extracted_data=[],
         trajectory_history=trajectory_history,
-        use_cache=False,
     )
 
     # The guardrail MUST intercept and choose to click the 'Add file' element rather than submitting!

@@ -300,7 +300,9 @@
         placeholder: el.placeholder || "",
         accept: el.getAttribute("accept") || "",
         href: el.href || "",
-        value: tag === "select" ? el.options[el.selectedIndex]?.value || "" : el.value || "",
+        value: (tag === "input" && (el.type === "password" || (el.getAttribute("autocomplete") || "").includes("password")))
+          ? ""
+          : (tag === "select" ? el.options[el.selectedIndex]?.value || "" : el.value || ""),
         rect: {
           x: Math.round(rect.left),
           y: Math.round(rect.top),
@@ -378,7 +380,9 @@
         required: inp.required || inp.getAttribute("aria-required") === "true",
         disabled: inp.disabled || false,
         readonly: inp.readOnly || false,
-        current_value: tag === "select" ? inp.options[inp.selectedIndex]?.value || "" : inp.value || (inp.checked ? "checked" : ""),
+        current_value: (ftype === "password" || (inp.getAttribute("autocomplete") || "").includes("password"))
+          ? ""
+          : (tag === "select" ? inp.options[inp.selectedIndex]?.value || "" : inp.value || (inp.checked ? "checked" : "")),
         options: options,
         visible: !inp.hidden && inp.type !== "hidden",
         aria_label: inp.getAttribute("aria-label") || null,
@@ -820,7 +824,7 @@
     };
   }
 
-  function triggerFileUploadInjection(action) {
+  async function triggerFileUploadInjection(action) {
     try {
       const fileName = action.file_name;
       if (!fileName) {
@@ -1288,7 +1292,7 @@
     overlay.remove();
 
     // 6. Inject the file into Google Drive
-    const uploadRes = triggerFileUploadInjection(action);
+    const uploadRes = await triggerFileUploadInjection(action);
     if (!uploadRes?.success) {
       return {
         success: false,
@@ -2237,6 +2241,49 @@
     else if (event.data.command === "unlock_ui") unlockUI();
   });
 
+  let _maskedElements = [];
+
+  function maskSensitiveElements() {
+    _maskedElements = [];
+    const sensitiveSelectors = [
+      'input[type="password"]',
+      'input[autocomplete*="password"]',
+      'input[autocomplete*="one-time-code"]',
+      '[data-sensitive="true"]',
+      'input[name*="password" i]',
+      'input[name*="otp" i]',
+      'input[name*="cvv" i]',
+      'input[name*="ssn" i]',
+    ];
+    try {
+      const nodes = document.querySelectorAll(sensitiveSelectors.join(","));
+      nodes.forEach(el => {
+        _maskedElements.push({
+          element: el,
+          originalFilter: el.style.filter,
+          originalColor: el.style.color,
+          originalBg: el.style.backgroundColor,
+        });
+        el.style.setProperty("filter", "blur(10px)", "important");
+        el.style.setProperty("color", "transparent", "important");
+        el.style.setProperty("background-color", "#000", "important");
+      });
+    } catch (_) {}
+  }
+
+  function unmaskSensitiveElements() {
+    try {
+      _maskedElements.forEach(item => {
+        if (item.element) {
+          item.element.style.filter = item.originalFilter || "";
+          item.element.style.color = item.originalColor || "";
+          item.element.style.backgroundColor = item.originalBg || "";
+        }
+      });
+    } catch (_) {}
+    _maskedElements = [];
+  }
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
@@ -2259,6 +2306,12 @@
           });
         } else if (message.type === "unlock_ui") {
           unlockUI();
+          sendResponse({ success: true });
+        } else if (message.type === "mask_sensitive_elements") {
+          maskSensitiveElements();
+          sendResponse({ success: true });
+        } else if (message.type === "unmask_sensitive_elements") {
+          unmaskSensitiveElements();
           sendResponse({ success: true });
         } else if (message.type === "ping") {
           sendResponse({ success: true, pong: true, url: window.location.href });

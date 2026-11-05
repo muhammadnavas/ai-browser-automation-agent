@@ -402,11 +402,17 @@ class ReportGenerator:
         text = str(value).strip()
         if not text:
             return ""
-        # Remove common credential-like assignments and truncate overly verbose planner output.
+        try:
+            from backend.security import redact_text, sanitize_user_facing_error, strip_internal_placeholders
+            text = redact_text(text, mask_tier3=True)
+            text = sanitize_user_facing_error(text) or ""
+            text = strip_internal_placeholders(text, replacement="[protected]")
+        except Exception:
+            pass
         import re
         text = re.sub(
             r"(?i)\b(password|passwd|api[_ -]?key|access[_ -]?token|authorization|secret|cvv|pin)\b\s*[:=]\s*[^,;\s]+",
-            r"\1=[REDACTED]",
+            r"\1=[protected]",
             text,
         )
         text = re.sub(r"\s+", " ", text)
@@ -417,8 +423,15 @@ class ReportGenerator:
     @staticmethod
     def _sanitize_step_data(data: Any) -> str:
         """Redact credential-like fields recursively before report serialization."""
-        import re
+        try:
+            from backend.security import redact_sensitive_data, strip_internal_placeholders
+            sanitized = redact_sensitive_data(data, mask_tier3=True)
+            dumped = json.dumps(sanitized, ensure_ascii=False, default=str)
+            return strip_internal_placeholders(dumped, replacement="[protected]")
+        except Exception:
+            pass
 
+        import re
         sensitive_key = re.compile(
             r"(?i)(password|passwd|secret|token|api[_-]?key|authorization|cookie|"
             r"session|credential|cvv|cvc|pin|private[_-]?key)"
