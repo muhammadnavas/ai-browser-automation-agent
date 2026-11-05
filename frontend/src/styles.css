@@ -1962,3 +1962,31 @@ h1 {
     width: 100%;
   }
 }
+
+
+/* Approval & Warning Styles (Yellow/Amber Palette) */
+.task-error.is-warning {
+  color: #fcd34d !important;
+  background: rgba(245, 158, 11, 0.08) !important;
+  border: 1px solid rgba(251, 191, 36, 0.3) !important;
+}
+
+.warn-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #fcd34d !important;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.action-card.action-approval {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.tag-request_approval,
+.tag-approval {
+  color: #fcd34d !important;
+  background: rgba(245, 158, 11, 0.12) !important;
+  border: 1px solid rgba(251, 191, 36, 0.3) !important;
+}

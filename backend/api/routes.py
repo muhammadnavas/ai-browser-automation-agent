@@ -64,8 +64,16 @@ def _sanitize_task_response(task: TaskResponse) -> TaskResponse:
             mask_tier3=not is_explicit_contact,
             preserve_contact_info=is_explicit_contact,
         )
-        if sanitized_dict.get("error"):
-            sanitized_dict["error"] = sanitize_user_facing_error(sanitized_dict["error"])
+        # Never surface transient approval messages or errors on completed tasks
+        status_str = str(sanitized_dict.get("status") or "").lower()
+        if status_str in ("completed", "taskstatus.completed"):
+            sanitized_dict["error"] = None
+        elif sanitized_dict.get("error"):
+            err_text = str(sanitized_dict["error"])
+            if any(w in err_text.lower() for w in ["approval received", "recovering session", "browser session"]):
+                sanitized_dict["error"] = None
+            else:
+                sanitized_dict["error"] = sanitize_user_facing_error(err_text)
         if sanitized_dict.get("goal"):
             sanitized_dict["goal"] = strip_internal_placeholders(sanitized_dict["goal"])
         if sanitized_dict.get("steps"):

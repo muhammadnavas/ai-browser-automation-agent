@@ -104,39 +104,26 @@ class ReportGenerator:
             pdf.set_font("Helvetica", "", 7.5)
             self._paragraph(pdf, subtitle, 3.6)
         pdf.set_text_color(31, 48, 40)
+        pdf.set_font("Helvetica", "", 8.5)
         pdf.ln(0.8)
 
-    def _paragraph(self, pdf: PDFReport, value: Any, line_height: float = 5) -> None:
-        """Render wrapped text using FPDF's measured width and safe page boundaries."""
+    def _paragraph(self, pdf: PDFReport, value: Any, line_height: float = 4.5) -> None:
+        """Render wrapped text using FPDF's native multi_cell and safe page boundaries."""
         if value is None or str(value).strip() == "":
             return
         text = self._safe_text(value).replace("\r\n", "\n").replace("\r", "\n")
         usable_width = pdf.w - pdf.l_margin - pdf.r_margin
-        pdf.set_x(pdf.l_margin)
         for paragraph in text.split("\n"):
-            words = paragraph.split()
-            if not words:
+            paragraph_str = paragraph.strip()
+            if not paragraph_str:
                 if pdf.get_y() + line_height > pdf.h - pdf.b_margin:
                     pdf.add_page()
                 pdf.ln(line_height)
                 continue
-            line = ""
-            for word in words:
-                candidate = f"{line} {word}".strip()
-                if line and pdf.get_string_width(candidate) > usable_width:
-                    if pdf.get_y() + line_height > pdf.h - pdf.b_margin:
-                        pdf.add_page()
-                    pdf.set_x(pdf.l_margin)
-                    pdf.multi_cell(usable_width, line_height, line, new_x="LMARGIN", new_y="NEXT")
-                    line = word
-                else:
-                    line = candidate
-            if line:
-                if pdf.get_y() + line_height > pdf.h - pdf.b_margin:
-                    pdf.add_page()
-                pdf.set_x(pdf.l_margin)
-                # multi_cell handles long unbroken tokens safely in current FPDF2.
-                pdf.multi_cell(usable_width, line_height, line, new_x="LMARGIN", new_y="NEXT")
+            if pdf.get_y() + line_height > pdf.h - pdf.b_margin:
+                pdf.add_page()
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(usable_width, line_height, paragraph_str, new_x="LMARGIN", new_y="NEXT")
 
     def _key_value(self, pdf: PDFReport, label: str, value: Any) -> None:
         """Render compact two-column metadata with safe wrapping and page breaks."""
@@ -176,7 +163,11 @@ class ReportGenerator:
             rendered = json.dumps(json.loads(rendered), indent=2, ensure_ascii=False, default=str)
         except Exception:
             pass
-        self._paragraph(pdf, rendered, 4)
+        pdf.set_font("Courier", "", 8)
+        pdf.set_text_color(25, 40, 30)
+        self._paragraph(pdf, rendered, 3.8)
+        pdf.set_font("Helvetica", "", 8.5)
+        pdf.set_text_color(31, 48, 40)
 
     def generate_report(self, task_id: str, task: Any) -> bytes:
         """Generate a professional PDF report for a terminal task and return it as bytes."""
@@ -246,15 +237,22 @@ class ReportGenerator:
             self._key_value(pdf, "Recorded steps", len(steps))
             self._key_value(pdf, "Steps with errors", failed_steps)
             self._key_value(pdf, "Human approval steps", approval_steps)
-            if getattr(task, "error", None):
+            err_lower = str(getattr(task, "error", "") or "").lower()
+            is_transient_approval_msg = any(
+                w in err_lower
+                for w in ["approval", "approved", "recovering", "browser session"]
+            )
+            if getattr(task, "error", None) and status != "COMPLETED" and not is_transient_approval_msg:
                 pdf.set_text_color(160, 25, 25)
                 self._key_value(pdf, "Task error", self._sanitize_decision_explanation(task.error))
                 pdf.set_text_color(35, 43, 55)
 
             # State clearly what the report can and cannot conclude.
             self._section(pdf, "Outcome")
+            pdf.set_font("Helvetica", "", 8.5)
+            pdf.set_text_color(31, 48, 40)
             if status == "COMPLETED":
-                self._paragraph(pdf, "The task manager reported this task as completed. Review the execution evidence below for the actions and observed page states.", 5)
+                self._paragraph(pdf, "The task manager reported this task as completed. Review the execution evidence below for the actions and observed page states.", 4.5)
             elif status == "FAILED":
                 self._paragraph(pdf, "The task failed. The error and failed steps, when available, are listed below.", 5)
             elif status == "CANCELLED":
@@ -271,6 +269,8 @@ class ReportGenerator:
             visited_urls = list(getattr(context, "visited_urls", []) or [])
             if visited_urls:
                 self._section(pdf, "Visited Pages")
+                pdf.set_font("Helvetica", "", 8.5)
+                pdf.set_text_color(35, 75, 55)
                 for visited_url in visited_urls[-20:]:
                     self._paragraph(pdf, self._safe_url(visited_url), 4.5)
 
@@ -301,8 +301,15 @@ class ReportGenerator:
                 )
                 if pdf.get_y() > pdf.h - 42:
                     pdf.add_page()
-                pdf.set_fill_color(255, 235, 235) if error else pdf.set_fill_color(226, 246, 234)
-                pdf.set_text_color(150, 30, 30) if error else pdf.set_text_color(17, 105, 62)
+                if error:
+                    pdf.set_fill_color(255, 235, 235)
+                    pdf.set_text_color(150, 30, 30)
+                elif is_approval:
+                    pdf.set_fill_color(254, 243, 199)
+                    pdf.set_text_color(180, 83, 9)
+                else:
+                    pdf.set_fill_color(226, 246, 234)
+                    pdf.set_text_color(17, 105, 62)
                 pdf.set_font("Helvetica", "B", 10)
                 label = f"STEP {step_number} | {action.upper()}"
                 if error:
@@ -323,7 +330,7 @@ class ReportGenerator:
                 timestamp = getattr(step, "timestamp", None)
                 if timestamp:
                     try:
-                        self._key_value(pdf, "Time", datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S"))
+                        self._key_value(pdf, "Time", datetime.fromtimestamp(timestamp).strftime("%H:%M:%S"))
                     except (TypeError, ValueError, OSError, OverflowError):
                         pass
                 duration_ms = getattr(step, "duration_ms", None)

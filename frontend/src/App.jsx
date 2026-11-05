@@ -387,6 +387,7 @@ function ActionCard({ step }) {
     typeof step.action === 'string'
       ? step.action
       : step.action?.action || 'action';
+  const isApprovalAction = String(action).toLowerCase().includes('approval');
   const cacheHit = String(step.reasoning || '')
     .toLowerCase()
     .includes('redis cache hit');
@@ -395,7 +396,8 @@ function ActionCard({ step }) {
     <article
       className={
         'action-card' +
-        (step.error ? ' action-failed' : '') +
+        (step.error && !isApprovalAction ? ' action-failed' : '') +
+        (isApprovalAction ? ' action-approval' : '') +
         (cacheHit ? ' cache-hit' : '')
       }
     >
@@ -419,9 +421,13 @@ function ActionCard({ step }) {
               {formatDuration(step.duration_ms)}
             </span>
           )}
-          {step.error ? (
+          {step.error && !isApprovalAction ? (
             <span className="failed-text">
               <AlertCircle size={14} /> Failed
+            </span>
+          ) : isApprovalAction ? (
+            <span className="warn-text">
+              <ShieldCheck size={14} /> Approved
             </span>
           ) : (
             <span className="success-text">
@@ -1880,8 +1886,18 @@ export default function App() {
                 );
               })()}
 
-              {currentTask.error && (
-                <div className="task-error">
+              {currentTask.error &&
+                String(currentTask.status || '').toLowerCase() !== 'completed' &&
+                String(currentTask.status || '').toLowerCase() !== 'waiting_approval' &&
+                !/approval received|recovering session|waiting for the browser session/i.test(currentTask.error) && (
+                <div
+                  className={
+                    'task-error' +
+                    (/approval|waiting|recovering|human|paused|notice/i.test(currentTask.error)
+                      ? ' is-warning'
+                      : '')
+                  }
+                >
                   <AlertCircle size={15} />
                   {formatUserFacingError(currentTask.error)}
                 </div>

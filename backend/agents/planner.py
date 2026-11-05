@@ -396,7 +396,10 @@ FORM-FILLING WORKFLOW (apply this for any form task):
 IMPORTANT RULES:
 ═══════════════════════════════════════════════════════════
   • Output ONLY ONE action per response.
-  • Never submit a form without first using request_approval.
+  • APPROVAL RULES:
+    1. NEVER request approval in the middle of filling a form. Fill EVERY required text input, dropdown, and file upload first before requesting approval.
+    2. NEVER request approval more than once. If RECENT ACTION HISTORY shows approval was already requested or granted ("User granted approval"), DO NOT call "request_approval" again! Proceed directly to click the Submit button.
+    3. Never submit a form without first using request_approval (unless already approved in recent history).
   • MANDATORY FILE UPLOADS: If a form contains any file upload field or question (e.g. "Add file", "Upload Photograph", "Upload Resume", "Attach file", or any question marked with * for file/photo upload), you MUST fulfill it by clicking the "Add file" button or emitting an upload action BEFORE requesting approval and BEFORE submitting. Submitting a form with unfilled mandatory file upload fields causes Google Forms and web forms to fail with validation errors.
   • Map fields intelligently based on label, name, placeholder, ID, ARIA, and context.
   • Use "scroll" to reveal off-screen fields before interacting with them.
@@ -2097,6 +2100,66 @@ If the task is already complete, return ["Verify the requested outcome and finis
                     selector=upload_btn.get("selector"),
                     text=upload_btn.get("text") or "Add File",
                     reasoning="Clicking 'Add File' to open the file upload modal and attach photograph/file before form submission.",
+                )
+
+        # 4c. Duplicate Approval Guardrail: Auto-advance to Submit if user already approved
+        user_already_approved = (
+            getattr(task_context, "form_confirmed", False)
+            or getattr(task_context, "_form_submission_approved", False)
+            or getattr(task_context, "_form_confirmed", False)
+            or any(
+                h.get("action") in ("request_approval", ActionType.REQUEST_APPROVAL)
+                and "granted" in str(h.get("result", "")).lower()
+                for h in trajectory_history
+            )
+        )
+        if action and action.action == ActionType.REQUEST_APPROVAL and user_already_approved:
+            logger.info("Guardrail: user has already granted form approval; auto-advancing to click Submit instead of requesting duplicate approval.")
+            submit_btn = None
+            for el in elements:
+                el_desc = f"{el.get('text', '')} {el.get('aria_label', '')}".lower().strip()
+                if any(w in el_desc for w in ["submit", "submit form", "send", "apply now"]):
+                    submit_btn = el
+                    break
+            if submit_btn:
+                action = BrowserAction(
+                    action=ActionType.CLICK,
+                    element_id=submit_btn.get("index"),
+                    selector=submit_btn.get("selector"),
+                    text=submit_btn.get("text") or "Submit",
+                    reasoning="User has already granted approval; proceeding directly to click the Submit button.",
+                )
+
+        # 4d. Premature Approval Guardrail: Intercept approval if visible input fields are still unfilled
+        if action and action.action == ActionType.REQUEST_APPROVAL and not user_already_approved:
+            filled_indices = {
+                h.get("element_id") for h in trajectory_history
+                if h.get("action") == "fill" and h.get("element_id") is not None
+            }
+            unfilled_input = None
+            for el in elements:
+                el_tag = el.get("tag", "").lower()
+                el_type = el.get("type", "").lower()
+                el_idx = el.get("index")
+                if el_idx in filled_indices:
+                    continue
+                if el_tag in ("input", "textarea") and el_type not in ("hidden", "submit", "button", "reset", "image", "checkbox", "radio"):
+                    el_desc = f"{el.get('text', '')} {el.get('name', '')} {el.get('placeholder', '')} {el.get('aria_label', '')}".lower()
+                    if "search" in el_desc or el.get("name") in ("q", "query"):
+                        continue
+                    if not el.get("value"):
+                        unfilled_input = el
+                        break
+            if unfilled_input:
+                logger.info("Guardrail: intercepted premature approval request because form input is still unfilled. Filling '%s' first.", unfilled_input.get("name") or unfilled_input.get("placeholder") or "field")
+                val, field_name = synthesize_generalized_field_value(unfilled_input, goal=goal)
+                action = BrowserAction(
+                    action=ActionType.FILL,
+                    element_id=unfilled_input.get("index"),
+                    selector=unfilled_input.get("selector"),
+                    text=val,
+                    value=val,
+                    reasoning=f"Populate the '{field_name}' field with dynamic value '{val}' before requesting approval.",
                 )
 
         # 5. Store Safe Action in Redis

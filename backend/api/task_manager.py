@@ -900,10 +900,7 @@ class TaskManager:
                     task.approval_request = None
                     task.status = TaskStatus.RUNNING
                     task.plan_status = "recovering_session"
-                    task.error = (
-                        "Approval received. Checking the original Gmail task tab. "
-                        "The separate recovery tab is not used as the automation tab."
-                    )
+                    task.error = None
                     task.updated_at = time.time()
                     await self.broadcast_task_update(task_id)
 
@@ -2173,6 +2170,7 @@ class TaskManager:
             if task.status == TaskStatus.RUNNING and finish_verified:
                 task.status = TaskStatus.COMPLETED
                 task.plan_status = "done"
+                task.error = None
                 task.current_plan_step = len(task.initial_plan)
                 self._refresh_milestone_graph(task)
                 if isinstance(task.plan_metadata, dict):
@@ -3070,7 +3068,7 @@ Task evidence:
             if approved:
                 task.status = TaskStatus.RUNNING
                 task.plan_status = "recovering_session"
-                task.error = "Approval received. Waiting for the browser session to recover..."
+                task.error = None
             else:
                 task.status = TaskStatus.CANCELLED
                 task.plan_status = "cancelled"
