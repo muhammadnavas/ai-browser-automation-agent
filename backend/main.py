@@ -64,12 +64,104 @@ _cors_origins = [
     if origin.strip()
 ]
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import JSONResponse
+from fastapi import Request
+from backend.security.auth import (
+    session_manager,
+    extract_session_id,
+    get_client_ip,
+    SESSION_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    SESSION_LIFETIME_SECONDS,
+)
+
+class SecurityAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        method = request.method
+
+        # 1. Exempt CORS preflights, public static files, test forms, docs, and favicon
+        if (
+            method == "OPTIONS"
+            or path == "/favicon.ico"
+            or path.startswith("/assets")
+            or path == "/test-form"
+            or path == "/api/docs"
+            or path == "/api/openapi.json"
+        ):
+            return await call_next(request)
+
+        # 2. Transparent session auto-issue on root dashboard load (GET /)
+        if path == "/":
+            response = await call_next(request)
+            session_id = extract_session_id(request)
+            session = session_manager.get_session(session_id)
+            if not session:
+                client_ip = get_client_ip(request)
+                session = session_manager.create_session(client_ip=client_ip)
+                response.set_cookie(
+                    key=SESSION_COOKIE_NAME,
+                    value=session.session_id,
+                    httponly=True,
+                    samesite="lax",
+                    secure=False,
+                    max_age=SESSION_LIFETIME_SECONDS,
+                )
+                response.set_cookie(
+                    key=CSRF_COOKIE_NAME,
+                    value=session.csrf_token,
+                    httponly=False,
+                    samesite="lax",
+                    secure=False,
+                    max_age=SESSION_LIFETIME_SECONDS,
+                )
+            return response
+
+        # 3. Exempt session handshake and websocket paths
+        if (
+            path == "/api/auth/session"
+            or path.startswith("/api/extension/ws")
+            or path.startswith("/ws/extension")
+            or path.startswith("/api/ws/tasks")
+            or path.startswith("/ws/tasks")
+        ):
+            return await call_next(request)
+
+        # 4. Protect all API endpoints, screenshots, and reports
+        if path.startswith("/api") or path.startswith("/screenshots") or path.startswith("/reports"):
+            session_id = extract_session_id(request)
+            session = session_manager.get_session(session_id)
+
+            if not session:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required. Active session required."},
+                )
+
+            # 5. Verify CSRF on state-changing operations (POST, PUT, DELETE, PATCH)
+            if method in ("POST", "PUT", "DELETE", "PATCH") and path.startswith("/api"):
+                csrf_token = request.headers.get(CSRF_HEADER_NAME)
+                if not session_manager.verify_csrf(session, csrf_token):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "CSRF validation failed. Missing or invalid X-CSRF-Token."},
+                    )
+
+        return await call_next(request)
+
+# SecurityAuthMiddleware added first
+app.add_middleware(SecurityAuthMiddleware)
+
+# CORSMiddleware added after SecurityAuthMiddleware so it wraps around it
+# and attaches CORS headers to all responses (including 401 and 403).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-CSRF-Token", "X-Session-ID", "X-Bootstrap-Token"],
 )
 
 # Include API Router
@@ -186,4 +278,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"Starting AI Browser Automation Agent server at http://localhost:{port}")
     reload = "--reload" in sys.argv or os.getenv("RELOAD", "false").lower() in ("true", "1")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=reload)
+    host = os.getenv("HOST", "127.0.0.1")
+    uvicorn.run("main:app", host=host, port=port, reload=reload)

@@ -15,7 +15,7 @@ import ipaddress
 import socket
 from urllib.parse import urlsplit
 from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -350,7 +350,10 @@ async def approve_human_step(
         except Exception:
             clean_user_input = "[REDACTED]"
 
-    task_manager.approve_human_step(task_id, final_approved, clean_user_input)
+    try:
+        task_manager.approve_human_step(task_id, final_approved, clean_user_input)
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
     await task_manager.broadcast_task_update(task_id)
     return {
         "status": "accepted",
@@ -550,6 +553,29 @@ async def download_screenshot(filename: str):
 @router.websocket("/ws/tasks/{task_id}")
 async def task_websocket(websocket: WebSocket, task_id: str):
     """WebSocket endpoint for real-time task log streaming and screenshot updates."""
+    from backend.security.auth import session_manager, SESSION_COOKIE_NAME
+    ticket = websocket.query_params.get("ticket")
+    cookie_session_id = websocket.cookies.get(SESSION_COOKIE_NAME)
+    auth_session = None
+
+    if ticket:
+        auth_session = session_manager.consume_ws_ticket(ticket, expected_task_id=task_id)
+    elif cookie_session_id:
+        auth_session = session_manager.get_session(cookie_session_id)
+
+    if not auth_session:
+        protocols = websocket.headers.get("sec-websocket-protocol", "").split(",")
+        for p in protocols:
+            p_clean = p.strip()
+            if p_clean.startswith("wst_"):
+                auth_session = session_manager.consume_ws_ticket(p_clean, expected_task_id=task_id)
+                if auth_session:
+                    break
+
+    if not auth_session:
+        await websocket.close(code=4001, reason="Unauthorized: Missing or invalid authentication ticket/session.")
+        return
+
     await websocket.accept()
     await task_manager.register_subscriber(task_id, websocket)
     
@@ -572,6 +598,187 @@ async def task_websocket(websocket: WebSocket, task_id: str):
     finally:
         await task_manager.unregister_subscriber(task_id, websocket)
 
+
+# ---------------------------------------------------------------------------
+# Authentication & Session Endpoints
+# ---------------------------------------------------------------------------
+
+class WSTicketRequest(BaseModel):
+    task_id: Optional[str] = None
+
+class RevokeExtensionRequest(BaseModel):
+    token: Optional[str] = None
+    extension_id: Optional[str] = None
+    revoke_all: bool = False
+
+@router.post("/auth/session", tags=["auth"])
+async def create_or_refresh_session(request: Request, response: Response):
+    """Secure session initialization and refresh with Origin check, bootstrap authorization, and rate limiting."""
+    import hmac
+    from backend.security.auth import (
+        session_manager,
+        session_rate_limiter,
+        is_origin_allowed,
+        get_bootstrap_token,
+        SESSION_COOKIE_NAME,
+        CSRF_COOKIE_NAME,
+        SESSION_LIFETIME_SECONDS,
+        get_client_ip,
+        extract_session_id,
+    )
+    from backend.security.audit import audit_logger
+
+    client_ip = get_client_ip(request)
+
+    # 1. Rate limiting
+    if not session_rate_limiter.is_allowed(client_ip):
+        audit_logger.record_event(
+            event_type="session_rate_limit_exceeded",
+            task_id="system",
+            details={"client_ip": client_ip},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Session creation rate limit exceeded. Please wait before retrying.",
+            headers={"Retry-After": "5"},
+        )
+
+    # 2. Origin / Referer validation (against malicious websites attempting cross-origin session minting)
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    allowed_raw = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    cors_allowed = [o.strip().rstrip("/") for o in allowed_raw.split(",") if o.strip()]
+
+    if origin and not is_origin_allowed(origin, cors_allowed):
+        audit_logger.record_event(
+            event_type="session_origin_rejected",
+            task_id="system",
+            details={"origin": origin, "client_ip": client_ip},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Cross-origin session creation forbidden for untrusted origin.",
+        )
+
+    if not origin and referer and not is_origin_allowed(referer, cors_allowed):
+        audit_logger.record_event(
+            event_type="session_origin_rejected",
+            task_id="system",
+            details={"referer": referer, "client_ip": client_ip},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Cross-origin session creation forbidden for untrusted referer.",
+        )
+
+    # 3. Bootstrap verification for non-browser local processes
+    existing_session_id = extract_session_id(request)
+    existing_session = session_manager.get_session(existing_session_id) if existing_session_id else None
+
+    user_agent = request.headers.get("user-agent", "").lower()
+    is_programmatic_tool = any(prog in user_agent for prog in ["curl/", "python-requests", "httpie", "postman", "wget"])
+
+    # Legitimate browser context:
+    # 1. Allowed Origin header, OR
+    # 2. Allowed Referer header (e.g. from Vite dev server proxy at http://localhost:5173), OR
+    # 3. Sec-Fetch-Site or Sec-Fetch-Mode headers from browser engine, OR
+    # 4. Refreshing an existing active session, OR
+    # 5. Loopback connection with standard browser User-Agent
+    is_browser = (
+        bool(origin and is_origin_allowed(origin, cors_allowed))
+        or bool(referer and is_origin_allowed(referer, cors_allowed))
+        or bool(request.headers.get("sec-fetch-site"))
+        or bool(request.headers.get("sec-fetch-mode"))
+        or existing_session is not None
+        or (
+            session_manager.is_loopback(client_ip)
+            and not is_programmatic_tool
+            and any(b in user_agent for b in ["mozilla", "chrome", "safari", "edg", "firefox"])
+        )
+    )
+
+    bootstrap_token_header = request.headers.get("X-Bootstrap-Token")
+    if not is_browser:
+        expected_token = get_bootstrap_token()
+        if not bootstrap_token_header or not hmac.compare_digest(bootstrap_token_header, expected_token):
+            audit_logger.record_event(
+                event_type="session_bootstrap_rejected",
+                task_id="system",
+                details={"client_ip": client_ip},
+            )
+            raise HTTPException(
+                status_code=401,
+                detail="Bootstrap authorization required for programmatic session provisioning.",
+            )
+
+    session = session_manager.create_session(client_ip=client_ip)
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session.session_id,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=SESSION_LIFETIME_SECONDS,
+    )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=session.csrf_token,
+        httponly=False,
+        samesite="lax",
+        secure=False,
+        max_age=SESSION_LIFETIME_SECONDS,
+    )
+    return {
+        "status": "authenticated",
+        "session_id": session.session_id,
+        "csrf_token": session.csrf_token,
+        "expires_at": session.created_at + SESSION_LIFETIME_SECONDS,
+    }
+
+@router.get("/auth/session", tags=["auth"])
+async def get_session_status(request: Request):
+    """Retrieve status of the currently active session."""
+    from backend.security.auth import get_current_session, SESSION_LIFETIME_SECONDS
+    session = get_current_session(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="No active session found.")
+    return {
+        "status": "authenticated",
+        "session_id": session.session_id,
+        "csrf_token": session.csrf_token,
+        "expires_at": session.created_at + SESSION_LIFETIME_SECONDS,
+    }
+
+@router.post("/auth/ws-ticket", tags=["auth"])
+async def create_ws_ticket_endpoint(request: Request, body: Optional[WSTicketRequest] = None):
+    """Generate a single-use 15-second ticket for WebSocket connections."""
+    from backend.security.auth import require_session, session_manager, WS_TICKET_LIFETIME_SECONDS
+    session = require_session(request)
+    task_id = body.task_id if body else None
+    ticket = session_manager.create_ws_ticket(session.session_id, task_id=task_id)
+    return {
+        "ticket": ticket,
+        "expires_in": WS_TICKET_LIFETIME_SECONDS,
+    }
+
+@router.post("/extension/revoke", tags=["extension"])
+async def revoke_extension_endpoint(request: Request, body: Optional[RevokeExtensionRequest] = None):
+    """Revoke one or all extension pairing credentials and disconnect clients."""
+    from backend.security.auth import require_session
+    from backend.security.extension_auth import extension_auth_manager
+    require_session(request)
+    if body and body.revoke_all:
+        count = extension_auth_manager.revoke_all()
+        await extension_manager.disconnect_all()
+        return {"status": "revoked_all", "count": count}
+    elif body and body.token:
+        revoked = extension_auth_manager.revoke_token(body.token)
+        await extension_manager.disconnect_token(body.token)
+        return {"status": "revoked" if revoked else "not_found"}
+    else:
+        count = extension_auth_manager.revoke_all()
+        await extension_manager.disconnect_all()
+        return {"status": "revoked_all", "count": count}
 
 # ---------------------------------------------------------------------------
 # Chrome Extension Bridge Endpoints

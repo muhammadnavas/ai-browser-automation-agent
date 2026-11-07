@@ -24,6 +24,82 @@ const wsUrl = (path) => {
     path;
 };
 
+let currentSessionId = null;
+let currentCsrfToken = null;
+let sessionPromise = null;
+let sessionBackoffUntil = 0;
+
+async function ensureSession() {
+  if (currentSessionId && currentCsrfToken) {
+    return { sessionId: currentSessionId, csrfToken: currentCsrfToken };
+  }
+  if (Date.now() < sessionBackoffUntil) {
+    return { sessionId: currentSessionId, csrfToken: currentCsrfToken };
+  }
+  if (!sessionPromise) {
+    sessionPromise = (async () => {
+      try {
+        // Direct fetch without authFetch to avoid recursive promise deadlocks
+        const res = await fetch(api('/api/auth/session'), {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          currentSessionId = data.session_id;
+          currentCsrfToken = data.csrf_token;
+          return { sessionId: currentSessionId, csrfToken: currentCsrfToken };
+        } else if (res.status === 429) {
+          console.warn('Session rate limit encountered, backing off for 5s.');
+          sessionBackoffUntil = Date.now() + 5000;
+        } else if (res.status === 401 || res.status === 403) {
+          console.warn('Session initialization rejected (' + res.status + ').');
+          sessionBackoffUntil = Date.now() + 3000;
+        }
+      } catch (e) {
+        console.warn('Session initialization network error:', e);
+        sessionBackoffUntil = Date.now() + 2000;
+      } finally {
+        sessionPromise = null;
+      }
+      return { sessionId: currentSessionId, csrfToken: currentCsrfToken };
+    })();
+  }
+  return sessionPromise;
+}
+
+async function authFetch(url, options = {}, isRetry = false) {
+  const session = await ensureSession();
+  const headers = { ...(options.headers || {}) };
+  const method = (options.method || 'GET').toUpperCase();
+  if (session?.csrfToken && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+    headers['X-CSRF-Token'] = session.csrfToken;
+  }
+  if (session?.sessionId && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${session.sessionId}`;
+  }
+  const opt = {
+    ...options,
+    credentials: 'include',
+    headers,
+  };
+  const res = await fetch(url, opt);
+  // Only retry once on 401, never retry on auth/session, and only if we refreshed a valid session
+  if (res.status === 401 && !isRetry && !url.includes('/api/auth/session')) {
+    currentSessionId = null;
+    currentCsrfToken = null;
+    const refreshed = await ensureSession();
+    if (refreshed?.sessionId) {
+      return authFetch(url, options, true);
+    }
+  }
+  return res;
+}
+
 const isActive = (status) => ACTIVE.includes(status);
 const isTerminal = (status) => TERMINAL.includes(status);
 
@@ -1099,7 +1175,7 @@ export default function App() {
     const timer = window.setTimeout(async () => {
       reconnectTimers.current.delete(id);
       try {
-        const response = await fetch(api('/api/tasks'));
+        const response = await authFetch(api('/api/tasks'));
         if (!response.ok) throw new Error('Task refresh failed');
         const active = await response.json();
         const task = active.find((item) => item.task_id === id && isActive(item.status));
@@ -1111,6 +1187,42 @@ export default function App() {
     reconnectTimers.current.set(id, timer);
   }, []);
 
+  const pollingTimers = useRef(new Map());
+
+  const startPolling = useCallback((id) => {
+    if (!id || pollingTimers.current.has(id)) return;
+    const poll = async () => {
+      try {
+        const res = await authFetch(api('/api/tasks/' + encodeURIComponent(id)));
+        if (res.ok) {
+          const raw = await res.json();
+          if (raw?.task_id) {
+            setTasks((prev) => ({
+              ...prev,
+              [id]: mergeTask(prev[id], raw),
+            }));
+            if (isTerminal(raw.status)) {
+              stopPolling(id);
+              return;
+            }
+          }
+        }
+      } catch (e) {}
+      if (pollingTimers.current.has(id)) {
+        const timer = window.setTimeout(poll, 1500);
+        pollingTimers.current.set(id, timer);
+      }
+    };
+    const timer = window.setTimeout(poll, 1500);
+    pollingTimers.current.set(id, timer);
+  }, []);
+
+  const stopPolling = useCallback((id) => {
+    const timer = pollingTimers.current.get(id);
+    if (timer) window.clearTimeout(timer);
+    pollingTimers.current.delete(id);
+  }, []);
+
   const connectTask = useCallback(
     (id) => {
       if (!id || sockets.current.has(id)) return;
@@ -1118,56 +1230,80 @@ export default function App() {
       if (oldTimer) window.clearTimeout(oldTimer);
       reconnectTimers.current.delete(id);
 
-      let socket;
-      try {
-        socket = new WebSocket(wsUrl('/api/ws/tasks/' + encodeURIComponent(id)));
-      } catch {
-        scheduleReconnect(id);
-        return;
-      }
-      sockets.current.set(id, socket);
-
-      socket.onopen = () => {
-        reconnectAttempts.current.delete(id);
-      };
-      socket.onmessage = (event) => {
+      (async () => {
+        let ticket = '';
         try {
-          const raw = JSON.parse(event.data);
-          if (!raw?.task_id) return;
-          setTasks((prev) => ({
-            ...prev,
-            [id]: mergeTask(prev[id], raw),
-          }));
-          if (isTerminal(raw.status)) {
-            reconnectAttempts.current.delete(id);
-            const timer = reconnectTimers.current.get(id);
-            if (timer) window.clearTimeout(timer);
-            reconnectTimers.current.delete(id);
-            window.setTimeout(() => closeSocket(id), 3000);
+          const tRes = await authFetch(api('/api/auth/ws-ticket'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: id }),
+          });
+          if (tRes.ok) {
+            const tData = await tRes.json();
+            ticket = tData.ticket || '';
           }
-        } catch (err) {
-          console.error('Could not process task update', err);
-        }
-      };
+        } catch (e) {}
 
-      socket.onerror = () => {
-        // onclose handles retrying, avoiding duplicate reconnect timers.
-      };
-      socket.onclose = () => {
-        if (sockets.current.get(id) !== socket) return;
-        sockets.current.delete(id);
-        scheduleReconnect(id);
-      };
+        let socket;
+        try {
+          const wsEndpoint = wsUrl('/api/ws/tasks/' + encodeURIComponent(id) + (ticket ? `?ticket=${encodeURIComponent(ticket)}` : ''));
+          socket = new WebSocket(wsEndpoint);
+        } catch {
+          startPolling(id);
+          scheduleReconnect(id);
+          return;
+        }
+        sockets.current.set(id, socket);
+
+        socket.onopen = () => {
+          stopPolling(id);
+          reconnectAttempts.current.delete(id);
+        };
+        socket.onmessage = (event) => {
+          try {
+            const raw = JSON.parse(event.data);
+            if (!raw?.task_id) return;
+            setTasks((prev) => ({
+              ...prev,
+              [id]: mergeTask(prev[id], raw),
+            }));
+            if (isTerminal(raw.status)) {
+              reconnectAttempts.current.delete(id);
+              stopPolling(id);
+              const timer = reconnectTimers.current.get(id);
+              if (timer) window.clearTimeout(timer);
+              reconnectTimers.current.delete(id);
+              window.setTimeout(() => closeSocket(id), 3000);
+            }
+          } catch (err) {
+            console.error('Could not process task update', err);
+          }
+        };
+
+        socket.onerror = () => {
+          startPolling(id);
+        };
+        socket.onclose = () => {
+          if (sockets.current.get(id) !== socket) return;
+          sockets.current.delete(id);
+          startPolling(id);
+          scheduleReconnect(id);
+        };
+      })();
     },
-    [closeSocket, scheduleReconnect]
+    [closeSocket, scheduleReconnect, startPolling, stopPolling]
   );
   connectTaskRef.current = connectTask;
 
   const refreshTasks = useCallback(async () => {
     try {
-      const response = await fetch(api('/api/tasks'));
-      if (!response.ok)
+      const response = await authFetch(api('/api/tasks'));
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403 || response.status === 429) {
+          return;
+        }
         throw new Error('Task refresh failed (' + response.status + ')');
+      }
       const list = await response.json();
       (Array.isArray(list) ? list : []).forEach((raw) => {
         if (!raw?.task_id) return;
@@ -1190,7 +1326,7 @@ export default function App() {
 
   const refreshPool = useCallback(async () => {
     try {
-      const response = await fetch(api('/api/pool/status'));
+      const response = await authFetch(api('/api/pool/status'));
       if (!response.ok) return;
       const data = await response.json();
       setPool(data);
@@ -1210,7 +1346,7 @@ export default function App() {
 
   const refreshHistory = useCallback(async () => {
     try {
-      const response = await fetch(api('/api/tasks/history'));
+      const response = await authFetch(api('/api/tasks/history'));
       if (response.ok) {
         const data = await response.json();
         setHistory(Array.isArray(data) ? data : []);
@@ -1343,7 +1479,7 @@ export default function App() {
     setError('');
 
     try {
-      const response = await fetch(api('/api/tasks'), {
+      const response = await authFetch(api('/api/tasks'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1354,8 +1490,15 @@ export default function App() {
         }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok)
+      if (!response.ok) {
+        if (response.status === 429) {
+          throw new Error('Too many requests. Please wait a moment before launching a new task.');
+        }
+        if (response.status === 401 || response.status === 403) {
+          throw new Error('Authentication required. Session is initializing, please retry.');
+        }
         throw new Error(payload.detail || 'Server returned ' + response.status);
+      }
 
       const task = normalizeTask(payload);
       setTasks((prev) => ({
@@ -1377,7 +1520,7 @@ export default function App() {
   async function updateTaskExecutionState(id, action) {
     setBusyAction(true);
     try {
-      const response = await fetch(
+      const response = await authFetch(
         api('/api/tasks/' + encodeURIComponent(id) + '/' + action),
         { method: 'POST' }
       );
@@ -1403,7 +1546,7 @@ export default function App() {
   async function cancelTask(id) {
     setBusyAction(true);
     try {
-      const response = await fetch(
+      const response = await authFetch(
         api('/api/tasks/' + encodeURIComponent(id) + '/cancel'),
         {
           method: 'POST',
@@ -1429,7 +1572,7 @@ export default function App() {
   async function cancelAllTasks() {
     setBusyAction(true);
     try {
-      const response = await fetch(api('/api/tasks/cancel-all'), {
+      const response = await authFetch(api('/api/tasks/cancel-all'), {
         method: 'POST',
       });
       const payload = await response.json().catch(() => ({}));
@@ -1456,7 +1599,7 @@ export default function App() {
     if (!currentTask) return;
     setBusyAction(true);
     try {
-      const response = await fetch(
+      const response = await authFetch(
         api('/api/tasks/' + encodeURIComponent(currentTask.task_id) + '/approve'),
         {
           method: 'POST',
@@ -1507,7 +1650,7 @@ export default function App() {
     setBusyAction(true);
     try {
       const params = new URLSearchParams({ x: String(x), y: String(y) });
-      const response = await fetch(
+      const response = await authFetch(
         api(
           '/api/tasks/' +
           encodeURIComponent(currentTask.task_id) +
@@ -1555,7 +1698,7 @@ export default function App() {
     }
     closeSocket(id);
     try {
-      await fetch(api('/api/tasks/' + encodeURIComponent(id)), { method: 'DELETE' });
+      await authFetch(api('/api/tasks/' + encodeURIComponent(id)), { method: 'DELETE' });
     } catch {
       /* non-fatal */
     }
@@ -1577,7 +1720,7 @@ export default function App() {
 
     await Promise.allSettled(
       finishedIds.map((id) =>
-        fetch(api('/api/tasks/' + encodeURIComponent(id)), { method: 'DELETE' })
+        authFetch(api('/api/tasks/' + encodeURIComponent(id)), { method: 'DELETE' })
       )
     );
   }

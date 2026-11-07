@@ -37,6 +37,8 @@ class ExtensionManager:
         self.task_connections: Dict[str, WebSocket] = {}
         self.closed_tasks: Set[str] = set()
         self.disconnected_tasks: Set[str] = set()
+        self.connection_tokens: Dict[WebSocket, str] = {}
+        self.token_connections: Dict[str, WebSocket] = {}
         self.lock = asyncio.Lock()
 
     @property
@@ -64,6 +66,10 @@ class ExtensionManager:
                 self.task_tabs.pop(task_id, None)
                 self.disconnected_tasks.add(task_id)
 
+            tok = self.connection_tokens.pop(websocket, None)
+            if tok and self.token_connections.get(tok) is websocket:
+                self.token_connections.pop(tok, None)
+
             for msg_id, (origin, fut) in list(self.pending_requests.items()):
                 if origin is websocket:
                     self.pending_requests.pop(msg_id, None)
@@ -84,6 +90,45 @@ class ExtensionManager:
         if msg_type == "pong":
             return
 
+        if msg_type == "register":
+            from backend.security.extension_auth import extension_auth_manager
+            from backend.security.auth import session_manager
+            token = message.get("token")
+            extension_id = message.get("extension_id")
+            client_host = "127.0.0.1"
+            if hasattr(websocket, "client") and websocket.client and getattr(websocket.client, "host", None):
+                client_host = websocket.client.host
+            is_loop = session_manager.is_loopback(client_host)
+
+            auth_ok, active_token, reason = extension_auth_manager.register_or_authenticate(
+                token=token,
+                extension_id=extension_id,
+                is_loopback=is_loop,
+            )
+            if not auth_ok:
+                try:
+                    await websocket.send_json({"type": "auth_failed", "reason": reason})
+                    await websocket.close(code=4003, reason=reason)
+                except Exception:
+                    pass
+                await self.unregister(websocket)
+                return
+
+            async with self.lock:
+                if active_token:
+                    self.connection_tokens[websocket] = active_token
+                    self.token_connections[active_token] = websocket
+
+            try:
+                await websocket.send_json({
+                    "type": "registered",
+                    "token": active_token,
+                    "client_count": len(self.active_connections),
+                })
+            except Exception:
+                pass
+            return
+
         if msg_type == "tab_closed":
             task_id = message.get("task_id")
             if task_id:
@@ -102,6 +147,32 @@ class ExtensionManager:
                     origin, fut = pending
                     if origin is websocket and not fut.done():
                         fut.set_result(message)
+
+    async def disconnect_token(self, token: str) -> None:
+        """Disconnect and invalidate an extension socket matching a revoked token."""
+        async with self.lock:
+            ws = self.token_connections.pop(token, None)
+            if ws:
+                self.connection_tokens.pop(ws, None)
+                self.active_connections.discard(ws)
+                try:
+                    await ws.send_json({"type": "auth_failed", "reason": "Credential revoked."})
+                    await ws.close(code=4003, reason="Revoked")
+                except Exception:
+                    pass
+
+    async def disconnect_all(self) -> None:
+        """Disconnect all connected extension clients."""
+        async with self.lock:
+            for ws in list(self.active_connections):
+                try:
+                    await ws.send_json({"type": "auth_failed", "reason": "All extension credentials revoked."})
+                    await ws.close(code=4003, reason="Revoked")
+                except Exception:
+                    pass
+            self.active_connections.clear()
+            self.connection_tokens.clear()
+            self.token_connections.clear()
 
     async def send_command(
         self,
@@ -235,6 +306,12 @@ class ExtensionBrowserAdapter:
 
     async def open_auth_tab(self, url: str) -> dict:
         """Open a dedicated, foreground Chrome tab for manual Google sign-in."""
+        from backend.browser.security import validate_url_security
+        safe, reason, normalized = validate_url_security(url, resolve_dns=True)
+        if not safe:
+            raise ValueError(f"Auth tab navigation blocked by security policy: {reason}")
+        url = normalized or url
+
         result = await self.manager.send_command(
             task_id=self.task_id,
             command_type="open_auth_tab",
@@ -249,6 +326,12 @@ class ExtensionBrowserAdapter:
 
     async def open_recovery_tab(self, url: str) -> dict:
         """Open the detected Google recovery URL in a separate tab without remapping the task tab."""
+        from backend.browser.security import validate_url_security
+        safe, reason, normalized = validate_url_security(url, resolve_dns=True)
+        if not safe:
+            raise ValueError(f"Recovery tab navigation blocked by security policy: {reason}")
+        url = normalized or url
+
         result = await self.manager.send_command(
             task_id=self.task_id,
             command_type="open_recovery_tab",
@@ -275,6 +358,13 @@ class ExtensionBrowserAdapter:
                 "Please load the extension in Chrome Developer Mode and ensure it is connected to http://localhost:8000."
             )
 
+        if initial_url and initial_url != "about:blank":
+            from backend.browser.security import validate_url_security
+            safe, reason, normalized = validate_url_security(initial_url, resolve_dns=True)
+            if not safe:
+                raise ValueError(f"Initial tab creation blocked by security policy: {reason}")
+            initial_url = normalized or initial_url
+
         resp = await self.manager.send_command(
             task_id=self.task_id,
             command_type="create_tab",
@@ -300,6 +390,13 @@ class ExtensionBrowserAdapter:
         if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("about:"):
             url = f"https://{url}"
 
+        if url != "about:blank":
+            from backend.browser.security import validate_url_security
+            safe, reason, normalized = validate_url_security(url, resolve_dns=True)
+            if not safe:
+                raise ValueError(f"Navigation blocked by security policy: {reason}")
+            url = normalized or url
+
         resp = await self.manager.send_command(
             task_id=self.task_id,
             command_type="navigate",
@@ -310,7 +407,14 @@ class ExtensionBrowserAdapter:
             raise RuntimeError(resp.get("error", f"Failed to navigate to {url}"))
 
         data = resp.get("data", {})
-        self._current_url = data.get("url", url)
+        new_url = data.get("url", url)
+        if new_url and new_url != "about:blank":
+            from backend.browser.security import validate_url_security
+            safe, reason, _ = validate_url_security(new_url, resolve_dns=False)
+            if not safe:
+                self.is_running = False
+                raise RuntimeError(f"Unauthorized navigation detected in Chrome tab: {reason}")
+        self._current_url = new_url
         await self.lock_ui()
         return self._current_url
 
@@ -443,6 +547,17 @@ class ExtensionBrowserAdapter:
         if not self.is_running:
             raise RuntimeError(f"Task {self.task_id} execution has been cancelled/stopped.")
 
+        # Validate target link or form submission destination before dispatch
+        element_id = getattr(action, "element_id", None)
+        if element_id is not None and element_id in self.element_map:
+            elem = self.element_map[element_id]
+            dest = elem.get("href") or elem.get("form_action") or elem.get("action")
+            if dest and isinstance(dest, str) and dest.strip() and not dest.startswith(("#", "javascript:", "about:")):
+                from backend.browser.security import validate_url_security
+                safe, reason, _ = validate_url_security(dest, resolve_dns=True)
+                if not safe:
+                    raise ValueError(f"Action target URL blocked by security policy: {reason}")
+
         action_payload = action.model_dump(exclude_none=True)
         # Ensure enum string values
         if isinstance(action.action, ActionType):
@@ -500,7 +615,14 @@ class ExtensionBrowserAdapter:
         exec_desc = data.get("description", f"Action {action.action.value.upper()} executed in Chrome")
         extracted_data = data.get("extracted_data")
         if data.get("url"):
-            self._current_url = data.get("url")
+            new_url = data.get("url")
+            if new_url and new_url != "about:blank":
+                from backend.browser.security import validate_url_security
+                safe, reason, _ = validate_url_security(new_url, resolve_dns=False)
+                if not safe:
+                    self.is_running = False
+                    raise RuntimeError(f"Unauthorized navigation detected in Chrome tab after action: {reason}")
+            self._current_url = new_url
 
         return exec_desc, extracted_data
 

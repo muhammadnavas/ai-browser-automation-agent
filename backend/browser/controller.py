@@ -317,6 +317,11 @@ class BrowserController:
 
             self.context = await self.browser.new_context(**context_opts)
             self.current_page = await self.context.new_page()
+            try:
+                from backend.browser.security import install_navigation_guard
+                await install_navigation_guard(self.current_page)
+            except Exception as _guard_err:
+                logger.warning(f"Could not install navigation guard on initial page: {_guard_err}")
 
             self._tab_manager = TabManager(self.context)
             self._download_manager = DownloadManager(save_dir=self.downloads_dir)
@@ -404,6 +409,12 @@ class BrowserController:
 
         if not url.startswith("http://") and not url.startswith("https://"):
             url = "https://" + url
+
+        from backend.browser.security import validate_url_security
+        safe, reason, normalized = validate_url_security(url, resolve_dns=True)
+        if not safe:
+            raise ValueError(f"Navigation blocked by security policy: {reason}")
+        url = normalized or url
 
         self._invalidate_page_observation()
         try:
@@ -1488,8 +1499,19 @@ class BrowserController:
 
     async def open_new_tab(self, url: Optional[str] = None) -> Page:
         """Open a new tab and optionally navigate to url. Updates current_page."""
+        if url:
+            from backend.browser.security import validate_url_security
+            safe, reason, normalized = validate_url_security(url, resolve_dns=True)
+            if not safe:
+                raise ValueError(f"New tab navigation blocked by security policy: {reason}")
+            url = normalized or url
         new_page = await self.tabs.open_new_tab(url)
         self.current_page = new_page
+        try:
+            from backend.browser.security import install_navigation_guard
+            await install_navigation_guard(new_page)
+        except Exception:
+            pass
         return new_page
 
     async def switch_tab(self, index: int) -> Optional[Page]:

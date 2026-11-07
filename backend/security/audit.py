@@ -162,6 +162,78 @@ class SecurityAuditLogger:
             details={"action": action, "reason": reason},
         )
 
+    def log_session_event(
+        self, session_id: str, action: str, details: Optional[Dict[str, Any]] = None
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type=f"session_{action}",
+            task_id="system",
+            details=details or {},
+        )
+
+    def log_extension_pairing(
+        self, extension_id: str, paired: bool, reason: str = ""
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type="extension_paired" if paired else "extension_pair_rejected",
+            task_id="system",
+            details={"extension_id": extension_id, "reason": reason},
+        )
+
+    def log_extension_revocation(
+        self, extension_id: str, reason: str = ""
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type="extension_revoked",
+            task_id="system",
+            details={"extension_id": extension_id, "reason": reason},
+        )
+
+    def log_navigation_blocked(
+        self, task_id: str, url: str, reason: str
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type="navigation_blocked",
+            task_id=task_id,
+            details={"url": url, "reason": reason},
+        )
+
+    def log_policy_decision(
+        self, task_id: str, action: str, decision: str, reason: str = ""
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type=f"policy_{decision}",
+            task_id=task_id,
+            details={"action": action, "decision": decision, "reason": reason},
+        )
+
+    def log_cross_origin_blocked(
+        self, task_id: str, source: str, destination: str, reason: str = ""
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type="cross_origin_blocked",
+            task_id=task_id,
+            details={"source": source, "destination": destination, "reason": reason},
+        )
+
+    def log_approval_event(
+        self, task_id: str, approval_id: str, decision: str, reason: str = ""
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type=f"approval_{decision}",
+            task_id=task_id,
+            details={"approval_id": approval_id, "decision": decision, "reason": reason},
+        )
+
+    def log_prompt_injection(
+        self, task_id: str, pattern: str, details: str = ""
+    ) -> SecurityAuditEvent:
+        return self.record_event(
+            event_type="prompt_injection_prevented",
+            task_id=task_id,
+            details={"pattern": pattern, "details": details},
+        )
+
     def get_events_for_task(self, task_id: str) -> List[SecurityAuditEvent]:
         return [e for e in self.events if e.task_id == task_id]
 

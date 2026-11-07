@@ -25,10 +25,11 @@ from urllib.parse import urlparse
 
 from fastapi import WebSocket
 
+import threading
 from models.schemas import (
     TaskRequest, TaskResponse, TaskStatus, AgentStep,
     ActionType, HumanApprovalRequest, ApprovalType, DialogAction,
-    BrowserAction
+    BrowserAction, compute_action_fingerprint
 )
 from browser.extension_adapter import ExtensionBrowserAdapter, extension_manager
 from browser.controller import BrowserController
@@ -80,6 +81,7 @@ class TaskManager:
         self._report_store: Dict[str, bytes] = {}  # short-lived report cache
         # Bounded structured recovery diagnostics, keyed by task id.
         self.recovery_diagnostics: Dict[str, List[Dict[str, Any]]] = {}
+        self._sync_approval_lock = threading.Lock()
         try:
             self.task_history.update({task.task_id: task for task in task_archive.list_tasks()})
         except Exception as exc:
@@ -3088,6 +3090,81 @@ Task evidence:
         """
         if self._is_cancelled(task_id) or getattr(controller, "is_running", True) is False:
             return "Task execution was cancelled by user.", None, False
+
+        # --- Deterministic Action Security Policy Check ---
+        from backend.security.action_policy import action_policy, PolicyDecision
+        from backend.security.data_tracker import data_tracker
+        from backend.models.schemas import ApprovalType, HumanApprovalRequest
+
+        cur_url = getattr(controller, "current_url", "")
+        if callable(cur_url):
+            try:
+                cur_url = cur_url()
+            except Exception:
+                cur_url = ""
+        elif hasattr(controller, "current_page") and getattr(controller, "current_page", None):
+            cur_url = getattr(controller.current_page, "url", "")
+
+        decision, policy_reason = action_policy.evaluate_action(
+            action=action,
+            current_url=str(cur_url or ""),
+            task_id=task_id,
+            task_goal=getattr(task, "goal", "") or "",
+        )
+        if decision == PolicyDecision.BLOCK:
+            return f"Action blocked: {policy_reason}", {"status": "Blocked", "error": policy_reason}, False
+        elif decision == PolicyDecision.REQUIRE_APPROVAL:
+            if not getattr(action, "_is_approved", False):
+                task.status = TaskStatus.WAITING_APPROVAL
+                task.plan_status = "waiting_approval"
+                task.error = policy_reason
+                fp = compute_action_fingerprint(
+                    task_id=task_id,
+                    action_type=action.action.value if hasattr(action.action, "value") else str(action.action),
+                    target_url=str(cur_url or ""),
+                    selector=action.selector,
+                    text=action.text,
+                    value=action.value,
+                )
+                task.approval_request = HumanApprovalRequest(
+                    task_id=task_id,
+                    type=ApprovalType.CUSTOM,
+                    prompt_message=policy_reason,
+                    screenshot_url=None,
+                    expires_at=time.time() + 300.0,
+                    action_fingerprint=fp,
+                )
+                event = asyncio.Event()
+                self.approval_events[task_id] = event
+                task.updated_at = time.time()
+                await self.broadcast_task_update(task_id)
+                if not self._is_cancelled(task_id):
+                    await event.wait()
+                if self._is_cancelled(task_id) or (task.approval_request and task.approval_request.status != "approved"):
+                    return "Action cancelled by user during approval.", None, False
+
+                # Cryptographic verification of approval fingerprint
+                if task.approval_request and task.approval_request.action_fingerprint:
+                    import hmac
+                    current_fp = compute_action_fingerprint(
+                        task_id=task_id,
+                        action_type=action.action.value if hasattr(action.action, "value") else str(action.action),
+                        target_url=str(cur_url or ""),
+                        selector=action.selector,
+                        text=action.text,
+                        value=action.value,
+                    )
+                    if not hmac.compare_digest(task.approval_request.action_fingerprint, current_fp):
+                        from backend.security.audit import audit_logger
+                        audit_logger.record_event(
+                            event_type="approval_fingerprint_mismatch",
+                            task_id=task_id,
+                            details={"action": str(action.action)},
+                        )
+                        return "Action rejected: Security approval fingerprint mismatch.", {"status": "Blocked", "error": "Approval signature mismatch"}, False
+
+                action._is_approved = True
+
         if isinstance(controller, ExtensionBrowserAdapter) or (hasattr(controller, "execute_action") and not getattr(controller, "current_page", None)):
             form_fields = getattr(task, "_current_form_fields", None)
             try:
@@ -3127,6 +3204,15 @@ Task evidence:
                         return f"Extraction refused: {user_error}", {"status": "Refused", "error": user_error}, False
                     extracted_item = safe_extracted
                     task.extracted_data.append(extracted_item)
+                    try:
+                        data_tracker.track_extraction(
+                            task_id=task_id,
+                            origin_url=str(cur_url or ""),
+                            data=extracted_item,
+                            is_explicit_contact=is_explicit_contact,
+                        )
+                    except Exception:
+                        pass
                 elif action.action == ActionType.FINISH:
                     verified, verification_message = await self._verify_goal_completion(controller, task, planner, trajectory_history)
                     if not verified:
@@ -3161,29 +3247,36 @@ Task evidence:
         approved: bool,
         user_input: Optional[str] = None,
     ) -> None:
-        """Signal the execution loop to resume (or cancel) after human review."""
-        if task_id in self.tasks:
-            task = self.tasks[task_id]
-            if task.approval_request:
-                # Count each approval request once. Repeated network/UI submissions
-                # for the same request must not inflate the report metric.
-                if approved and task.approval_request.status == "pending":
-                    task.human_approval_count = int(getattr(task, "human_approval_count", 0) or 0) + 1
-                task.approval_request.status = "approved" if approved else "rejected"
-                task.approval_request.user_input = user_input
+        """Signal the execution loop to resume (or cancel) after human review (thread-safe and atomic)."""
+        with self._sync_approval_lock:
+            if task_id in self.tasks:
+                task = self.tasks[task_id]
+                if task.approval_request:
+                    if task.approval_request.is_expired():
+                        raise ValueError("Approval request has expired.")
+                    if task.approval_request.consumed:
+                        raise ValueError("Approval request has already been consumed.")
+                    task.approval_request.consumed = True
 
-            if approved:
-                task.status = TaskStatus.RUNNING
-                task.plan_status = "recovering_session"
-                task.error = None
-            else:
-                task.status = TaskStatus.CANCELLED
-                task.plan_status = "cancelled"
-                task.error = "Rejected by human operator."
-            task.updated_at = time.time()
+                    # Count each approval request once. Repeated network/UI submissions
+                    # for the same request must not inflate the report metric.
+                    if approved and task.approval_request.status == "pending":
+                        task.human_approval_count = int(getattr(task, "human_approval_count", 0) or 0) + 1
+                    task.approval_request.status = "approved" if approved else "rejected"
+                    task.approval_request.user_input = user_input
 
-        if task_id in self.approval_events:
-            self.approval_events[task_id].set()
+                if approved:
+                    task.status = TaskStatus.RUNNING
+                    task.plan_status = "recovering_session"
+                    task.error = None
+                else:
+                    task.status = TaskStatus.CANCELLED
+                    task.plan_status = "cancelled"
+                    task.error = "Rejected by human operator."
+                task.updated_at = time.time()
+
+            if task_id in self.approval_events:
+                self.approval_events[task_id].set()
 
     async def pause_task(self, task_id: str) -> TaskResponse:
         """Pause after the currently executing browser action safely completes."""

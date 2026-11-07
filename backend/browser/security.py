@@ -7,19 +7,24 @@ Protects against:
 - Localhost and loopback destinations (127.0.0.0/8, ::1, localhost)
 - Private network addresses (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7)
 - Link-local and cloud metadata destinations (169.254.0.0/16, fe80::/10, metadata.google.internal)
-- Prohibited administrative/internal ports
+- Prohibited administrative/internal ports including agent backend (8000) and frontend (5173)
 - Non-HTTP/HTTPS schemes (file://, javascript:, data:, blob:, gopher:, ftp:, etc.)
 - Unsafe redirects and DNS rebinding paths
+- Agent's own backend origin/port and local agent endpoints (/api/*, /screenshots/*, /reports/*)
 """
 
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 from typing import Optional, Set, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger("browser.security")
+
+AGENT_PORT = int(os.getenv("PORT", "8000"))
+FRONTEND_PORT = int(os.getenv("VITE_PORT", "5173"))
 
 # Prohibited dangerous/administrative network ports
 PROHIBITED_PORTS: Set[int] = {
@@ -36,12 +41,16 @@ PROHIBITED_PORTS: Set[int] = {
     2376,  # Docker SSL
     3306,  # MySQL
     3389,  # RDP
+    5173,  # Vite dev server default
     5432,  # PostgreSQL
     5900,  # VNC
     6379,  # Redis
+    8000,  # FastAPI backend default
     9200,  # Elasticsearch
     11211, # Memcached
     27017, # MongoDB
+    AGENT_PORT,
+    FRONTEND_PORT,
 }
 
 # Blocked hostnames and suffixes
@@ -64,21 +73,34 @@ def is_ip_safe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> Tuple[bool,
     """
     Check if an IPv4 or IPv6 address is safe for external research navigation.
     Rejects loopback, private, link-local, multicast, reserved, and cloud metadata IPs.
+    Properly unwraps IPv4-mapped IPv6 addresses (e.g. ::ffff:100.100.100.200) before checking.
     """
-    if ip in CLOUD_METADATA_IPS:
+    # Unwrap IPv4-mapped IPv6 addresses
+    check_ip = getattr(ip, "ipv4_mapped", None) or ip
+
+    if check_ip in CLOUD_METADATA_IPS:
         return False, f"Cloud metadata IP prohibited: {ip}"
-    if ip.is_loopback:
+    if check_ip.is_loopback:
         return False, f"Loopback address prohibited: {ip}"
-    if ip.is_private:
+    if check_ip.is_private:
         return False, f"Private/internal network address prohibited: {ip}"
-    if ip.is_link_local:
+    if check_ip.is_link_local:
         return False, f"Link-local address prohibited: {ip}"
-    if ip.is_multicast:
+    if check_ip.is_multicast:
         return False, f"Multicast address prohibited: {ip}"
-    if ip.is_reserved:
+    if check_ip.is_reserved:
         return False, f"Reserved address prohibited: {ip}"
-    if ip.is_unspecified:
+    if check_ip.is_unspecified:
         return False, f"Unspecified address prohibited: {ip}"
+
+    # Also verify the original address if it differs from check_ip
+    if ip != check_ip:
+        if ip.is_loopback:
+            return False, f"Loopback address prohibited: {ip}"
+        if ip.is_private:
+            return False, f"Private/internal network address prohibited: {ip}"
+        if ip.is_link_local:
+            return False, f"Link-local address prohibited: {ip}"
 
     return True, "Safe"
 
@@ -126,6 +148,12 @@ def validate_url_security(url: str, resolve_dns: bool = True) -> Tuple[bool, str
     if parsed.port and parsed.port in PROHIBITED_PORTS:
         return False, f"Prohibited port {parsed.port}", None
 
+    # Check for targeting local agent endpoints
+    path_lower = (parsed.path or "").lower()
+    if path_lower.startswith(("/api", "/screenshots", "/reports", "/ws")):
+        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or parsed.port in (AGENT_PORT, FRONTEND_PORT, 8000, 5173):
+            return False, f"Direct access to agent internal endpoint '{parsed.path}' is prohibited", None
+
     # Check IP literal or resolve domain
     try:
         ip_obj = ipaddress.ip_address(hostname)
@@ -158,6 +186,7 @@ def validate_url_security(url: str, resolve_dns: bool = True) -> Tuple[bool, str
 
     normalized = parsed.geturl()
     return True, "Safe", normalized
+
 
 async def install_navigation_guard(page) -> None:
     """
