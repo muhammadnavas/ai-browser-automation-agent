@@ -2034,7 +2034,7 @@ If the task is already complete, return ["Verify the requested outcome and finis
         # The LLM tends to hallucinate wrong CSS selectors for these structured workflows.
         goal_lower_check = goal.lower()
         _is_drive_task = any(k in goal_lower_check for k in [
-            "upload", "file upload", "new folder", "create folder", "gdrive", "google drive", "drive"
+            "upload", "file upload", "new folder", "create folder", "gdrive", "google drive", "drive", "folder"
         ])
         _current_url = page_info.get("url", "").lower()
         _on_drive = "drive.google.com" in _current_url
@@ -2534,12 +2534,15 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 )
 
         # ── Step 2b: Autonomous Form Filling (Google Forms, Portals, Inputs) ─
+        is_drive_context = any(k in goal_lower for k in ["drive", "gdrive", "folder"]) or "drive.google.com" in url
         is_form_task = (
-            intent.get("category_key") in ("form_filling", "job_application")
-            or _has_keyword(goal_lower, ["form", "fill", "register", "registration", "apply", "submit", "student", "survey", "details", "applicant"])
-            or "docs.google.com/forms" in url
-            or "forms.gle" in url
-            or len(page_info.get("form_questions", [])) > 0
+            not is_drive_context
+            and (
+                intent.get("category_key") in ("form_filling", "job_application")
+                or _has_keyword(goal_lower, ["form", "fill", "register", "registration", "apply", "submit", "student", "survey", "details", "applicant"])
+                or "docs.google.com/forms" in url
+                or "forms.gle" in url
+            )
         )
         if is_form_task:
             filled_indices = {
@@ -2687,18 +2690,30 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
             # Priority 1: Look for "+ New" button if we haven't clicked it yet
             if not has_clicked_new and not has_clicked_file_upload and not has_clicked_new_folder:
                 upload_btn = None
-                upload_keywords = ["new", "+ new", "upload", "add", "import", "attach"]
+                # First pass: check for exact "New" / "+ New" button (Google Drive, Cloud storage)
                 for el in elements:
                     el_text = (el.get("text") or "").lower().strip()
+                    el_aria = (el.get("aria_label") or "").lower().strip()
                     el_tag = el.get("tag", "").lower()
-                    el_aria = (el.get("aria_label") or "").lower()
-                    el_title = (el.get("title") or "").lower()
-                    combined = f"{el_text} {el_aria} {el_title}"
-                    if el_tag in ("button", "a", "div", "span", "li") and any(
-                        kw in combined for kw in upload_keywords
+                    if el_tag in ("button", "div", "a", "span") and (
+                        el_text in ("new", "+ new", "+new") or el_aria in ("new", "new item", "create new") or el_aria.startswith("new ")
                     ):
                         upload_btn = el
                         break
+
+                if not upload_btn:
+                    upload_keywords = ["new", "+ new", "upload", "add", "import", "attach"]
+                    for el in elements:
+                        el_text = (el.get("text") or "").lower().strip()
+                        el_tag = el.get("tag", "").lower()
+                        el_aria = (el.get("aria_label") or "").lower()
+                        el_title = (el.get("title") or "").lower()
+                        combined = f"{el_text} {el_aria} {el_title}"
+                        if el_tag in ("button", "a", "div", "span", "li") and any(
+                            kw in combined for kw in upload_keywords
+                        ):
+                            upload_btn = el
+                            break
 
                 if upload_btn:
                     return BrowserAction(
@@ -2707,6 +2722,12 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                         selector=upload_btn.get("selector"),
                         text=upload_btn.get("text"),
                         reasoning=f"Clicking '{upload_btn.get('text') or 'New/Upload'}' button to start the upload/create flow.",
+                    )
+                elif "drive.google.com" in url or is_drive_context:
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=2000,
+                        reasoning="Waiting for Google Drive navigation and '+ New' button to render.",
                     )
 
             # Priority 2: After clicking New, look for "File upload" or "New folder" option in the menu
@@ -2717,10 +2738,11 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 for el in elements:
                     el_text = (el.get("text") or "").lower()
                     el_aria = (el.get("aria_label") or "").lower()
-                    if is_folder_task and ("new folder" in el_text or "new folder" in el_aria):
+                    combined_item = f"{el_text} {el_aria}"
+                    if is_folder_task and "new folder" in combined_item:
                         target_el = el
                         break
-                    elif not is_folder_task and ("file upload" in el_text or "file upload" in el_aria or "upload file" in el_text):
+                    elif not is_folder_task and any(k in combined_item for k in ["file upload", "upload file"]):
                         target_el = el
                         break
                 

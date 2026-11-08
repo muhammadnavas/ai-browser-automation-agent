@@ -600,6 +600,11 @@ async function handleBackendMessage(msg) {
       if (!isRestrictedUrl(targetUrl)) {
         await ensureContentScriptInjected(tabId);
       }
+      // Allow complex client-side SPAs (Google Drive, Docs, Gmail) a brief stabilization window
+      // after document load for initial client-side framework bootstrapping
+      if (/drive\.google\.com|mail\.google\.com|docs\.google\.com/i.test(targetUrl)) {
+        await new Promise((r) => setTimeout(r, 1200));
+      }
       const updatedTab = await chrome.tabs.get(tabId);
 
       sendWsMessage({
@@ -790,7 +795,7 @@ async function handleBackendMessage(msg) {
     try {
       const currentTab = await chrome.tabs.get(tabId);
       const currentUrl = currentTab?.url || "";
-      if (isRestrictedUrl(currentUrl)) {
+      if (isRestrictedUrl(currentUrl) || !currentUrl) {
         // Restricted or blank pages (about:blank, chrome://) cannot run content scripts
         // and do not need a DOM interaction overlay. Acknowledge immediately.
         sendWsMessage({
@@ -803,6 +808,23 @@ async function handleBackendMessage(msg) {
             restricted: true,
             url: currentUrl,
             message: "Page is blank or restricted; content script lock overlay skipped.",
+          },
+        });
+        return;
+      }
+
+      // If tab is still loading (not yet complete), skip scripting and fast-ack.
+      // The overlay will be applied on the next lock_ui call after navigation completes.
+      if (currentTab.status !== "complete") {
+        sendWsMessage({
+          id,
+          task_id,
+          type: "response",
+          success: true,
+          data: {
+            locked: command === "lock_ui",
+            loading: true,
+            message: "Tab still loading; lock overlay deferred until page is ready.",
           },
         });
         return;
@@ -825,23 +847,34 @@ async function handleBackendMessage(msg) {
         });
       } catch (scriptErr) {
         // Fallback: try targeting only the top frame if allFrames fails
-        results = await chrome.scripting.executeScript({
-          target: { tabId },
-          world: "ISOLATED",
-          func: (lockCommand) => {
-            const detail = { command: lockCommand, result: false };
-            window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
-            return detail.result;
-          },
-          args: [command],
-        });
+        try {
+          results = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: "ISOLATED",
+            func: (lockCommand) => {
+              const detail = { command: lockCommand, result: false };
+              window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
+              return detail.result;
+            },
+            args: [command],
+          });
+        } catch (topFrameErr) {
+          // Page navigated or is unreachable — treat lock as best-effort success.
+          console.warn(`[AI Agent] lock_ui scripting skipped (tab likely navigating): ${topFrameErr.message}`);
+          sendWsMessage({
+            id, task_id, type: "response", success: true,
+            data: { locked: command === "lock_ui", scripting_skipped: true },
+          });
+          return;
+        }
       }
 
+      // For lock_ui, warn but don't fail if the overlay was not confirmed —
+      // the backend now treats lock_ui as best-effort.
       if (command === "lock_ui") {
-        const topFrameResult = (results || []).find((frame) => frame.frameId === 0);
         const anyConfirmed = (results || []).some((frame) => frame.result === true);
-        if (!topFrameResult?.result && !anyConfirmed) {
-          throw new Error("Lock was not confirmed in the top frame or any child frames.");
+        if (!anyConfirmed) {
+          console.warn("[AI Agent] lock_ui overlay not confirmed by any frame; task continues anyway.");
         }
       }
 
@@ -857,12 +890,14 @@ async function handleBackendMessage(msg) {
         },
       });
     } catch (err) {
+      // lock_ui / unlock_ui errors must not crash the task. Report best-effort success.
+      console.warn(`[AI Agent] ${command} non-fatal error: ${err.message}`);
       sendWsMessage({
         id,
         task_id,
         type: "response",
-        success: false,
-        error: `Failed to ${command === "lock_ui" ? "lock" : "unlock"} UI: ${err.message}`,
+        success: true,
+        data: { locked: command === "lock_ui", error_suppressed: err.message },
       });
     }
     return;

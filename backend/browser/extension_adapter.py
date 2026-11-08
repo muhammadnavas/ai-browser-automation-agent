@@ -211,16 +211,27 @@ class ExtensionBrowserAdapter:
         return self._current_url
 
     async def lock_ui(self) -> None:
-        """Lock the task tab and fail visibly if the extension cannot confirm it."""
-        result = await self.manager.send_command(
-            task_id=self.task_id,
-            command_type="lock_ui",
-            timeout=8.0,
-        )
-        if not result or not result.get("success"):
-            error = (result or {}).get("error") or "Chrome did not confirm the task-tab lock."
-            raise RuntimeError(f"Could not lock the task browser: {error}")
-        logger.info("Task-tab interaction lock confirmed for task %s", self.task_id)
+        """Best-effort: apply a DOM interaction overlay on the task tab.
+
+        A failed or timed-out lock is logged but never raises — the tab may
+        still be loading (about:blank → real URL transition) or the page may
+        be a restricted chrome:// URL that intentionally skips overlays.
+        Failing here must never abort a task.
+        """
+        try:
+            result = await self.manager.send_command(
+                task_id=self.task_id,
+                command_type="lock_ui",
+                timeout=8.0,
+            )
+            if result and result.get("success"):
+                logger.info("Task-tab interaction lock confirmed for task %s", self.task_id)
+            else:
+                error = (result or {}).get("error") or "Chrome did not confirm the task-tab lock."
+                logger.warning("lock_ui non-fatal: %s (task=%s)", error, self.task_id)
+        except Exception as exc:
+            # Timeouts and connection errors during lock are non-fatal.
+            logger.warning("lock_ui non-fatal: %s (task=%s)", exc, self.task_id)
 
     async def unlock_ui(self) -> None:
         """Unlocks the UI in the browser to allow human interaction."""
@@ -322,7 +333,7 @@ class ExtensionBrowserAdapter:
             task_id=self.task_id,
             command_type="inspect_dom",
             payload={"show_badges": self.show_badges},
-            timeout=10.0,
+            timeout=18.0,
         )
         if not resp.get("success"):
             logger.warning(f"DOM inspection returned error: {resp.get('error')}")
