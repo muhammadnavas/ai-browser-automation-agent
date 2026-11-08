@@ -470,6 +470,8 @@ class TaskManager:
                 mask_tier3=not is_explicit_contact,
                 preserve_contact_info=is_explicit_contact,
             )
+            # The inspector fetches detailed events on demand; keep WebSocket updates small.
+            task_data["execution_trace"] = []
             if task_data.get("error"):
                 task_data["error"] = sanitize_user_facing_error(task_data["error"])
             if task_data.get("goal"):
@@ -1096,7 +1098,13 @@ class TaskManager:
                     "agent_state": page_info.get("agent_state"),
                 }
                 self._record_execution_trace(task, "dom_snapshot", step_num, trace_dom)
-                self._record_execution_trace(task, "planner_decision", step_num, {
+                previous_action_failed = any(
+                    event.get("event_type") == "action_result"
+                    and event.get("data", {}).get("success") is False
+                    for event in (getattr(task, "execution_trace", []) or [])[-12:]
+                )
+                decision_event = "replan_decision" if previous_action_failed else "planner_decision"
+                self._record_execution_trace(task, decision_event, step_num, {
                     "provider": getattr(planner, "provider_name", None) or getattr(planner, "provider", None),
                     "model": getattr(planner, "model_name", None) or getattr(planner, "model", None),
                     "goal": req.goal,
