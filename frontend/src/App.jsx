@@ -1066,10 +1066,18 @@ function ExecutionInspector({ task }) {
   useEffect(() => {
     if (!task?.task_id || !expanded) return;
     let alive = true;
+    let timer = null;
+    let controller = null;
+    setEvents([]);
+    setLoadError('');
     const load = async () => {
+      controller = new AbortController();
       setLoading(true);
       try {
-        const response = await fetch(api('/api/tasks/' + encodeURIComponent(task.task_id) + '/trace'));
+        const response = await fetch(
+          api('/api/tasks/' + encodeURIComponent(task.task_id) + '/trace'),
+          { cache: 'no-store', signal: controller.signal }
+        );
         if (!response.ok) throw new Error('Trace request failed (' + response.status + ')');
         const payload = await response.json();
         if (alive) {
@@ -1077,14 +1085,20 @@ function ExecutionInspector({ task }) {
           setLoadError('');
         }
       } catch (err) {
-        if (alive) setLoadError(err.message);
+        if (alive && err.name !== 'AbortError') setLoadError(err.message);
       } finally {
-        if (alive) setLoading(false);
+        if (alive) {
+          setLoading(false);
+          timer = window.setTimeout(load, isActive(task.status) ? 2500 : 10000);
+        }
       }
     };
     load();
-    const timer = window.setInterval(load, isActive(task.status) ? 2500 : 10000);
-    return () => { alive = false; window.clearInterval(timer); };
+    return () => {
+      alive = false;
+      if (timer) window.clearTimeout(timer);
+      if (controller) controller.abort();
+    };
   }, [task?.task_id, task?.status, expanded]);
 
   const ordered = [...events].reverse();
@@ -1098,7 +1112,7 @@ function ExecutionInspector({ task }) {
         style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'transparent', color: 'inherit', border: 0, padding: '4px 0', cursor: 'pointer', textAlign: 'left' }}>
         <span>
           <strong style={{ display: 'block', fontSize: 16 }}>Agent execution inspector</strong>
-          <small style={{ color: 'var(--muted, #94a3b8)' }}>DOM snapshots · planner decisions · action results · replanning history</small>
+          <small style={{ color: 'var(--muted, #94a3b8)' }}>DOM snapshots · planner decisions · action results · recovery context</small>
         </span>
         <span style={{ fontSize: 13, color: 'var(--muted, #94a3b8)' }}>{expanded ? 'Hide details' : 'Inspect execution'} {events.length ? '· ' + events.length + ' events' : ''}</span>
       </button>
