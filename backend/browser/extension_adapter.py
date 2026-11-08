@@ -326,33 +326,85 @@ class ExtensionBrowserAdapter:
         await self.lock_ui()
         return self._current_url
 
-    async def parse_interactive_elements(self) -> Dict[str, Any]:
-        """
-        Requests structured DOM inspection and form discovery from the Chrome content script.
-        """
-        resp = await self.manager.send_command(
-            task_id=self.task_id,
-            command_type="inspect_dom",
-            payload={"show_badges": self.show_badges},
-            timeout=18.0,
-        )
-        if not resp.get("success"):
-            logger.warning(f"DOM inspection returned error: {resp.get('error')}")
-            return {
-                "title": "Page",
-                # Do not return a cached URL as if it were a live observation.
-                # Callers must not infer an active Google challenge from stale state.
-                "url": "",
-                "inspection_error": True,
-                "elements": [],
-                "page_text": "",
-                "headings": [],
-                "form_questions": [],
-                "form_fields": [],
-                "compact_forms": {},
-            }
+    @staticmethod
+    def _is_empty_live_document(data: Dict[str, Any]) -> bool:
+        """Detect a failed snapshot handshake on a real web page.
 
-        data = resp.get("data", {})
+        An empty DOM can be legitimate on about:blank/restricted pages, but an
+        HTTP(S) page with no title, text, headings, controls, or form fields is
+        not usable evidence. Treat it as an inspection failure, not as a page
+        the planner can act on.
+        """
+        url = str(data.get("browser_tab_url") or data.get("url") or "").strip().lower()
+        if not url.startswith(("http://", "https://")):
+            return False
+        return not any((
+            str(data.get("title") or "").strip(),
+            str(data.get("page_text") or "").strip(),
+            bool(data.get("headings")),
+            bool(data.get("elements")),
+            bool(data.get("form_fields")),
+        ))
+
+    @staticmethod
+    def _inspection_failure(reason: str, attempts: int = 1) -> Dict[str, Any]:
+        return {
+            "title": "Inspection unavailable",
+            # Never present stale cached page content/URL as a live observation.
+            "url": "",
+            "inspection_error": True,
+            "inspection_error_reason": reason,
+            "inspection_attempts": attempts,
+            "elements": [],
+            "page_text": "",
+            "headings": [],
+            "form_questions": [],
+            "form_fields": [],
+            "compact_forms": {},
+        }
+
+    async def parse_interactive_elements(self) -> Dict[str, Any]:
+        """Inspect the live task tab and fail closed when its DOM snapshot is empty."""
+        data: Dict[str, Any] = {}
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            resp = await self.manager.send_command(
+                task_id=self.task_id,
+                command_type="inspect_dom",
+                payload={"show_badges": self.show_badges},
+                timeout=18.0,
+            )
+            if not resp.get("success"):
+                reason = str(resp.get("error") or "Chrome content script did not return a DOM snapshot.")
+                logger.warning("DOM inspection failed for task %s (attempt %s/%s): %s",
+                               self.task_id, attempt, max_attempts, reason)
+                return self._inspection_failure(reason, attempt)
+
+            candidate = resp.get("data")
+            if not isinstance(candidate, dict):
+                candidate = {}
+            data = candidate
+            if not self._is_empty_live_document(data):
+                break
+
+            observed_url = data.get("browser_tab_url") or data.get("url") or "unknown URL"
+            logger.warning(
+                "Received an empty DOM snapshot for task %s at %s (attempt %s/%s); "
+                "waiting for the page/content script to become inspectable.",
+                self.task_id, observed_url, attempt, max_attempts,
+            )
+            if attempt < max_attempts:
+                # A short bounded retry handles SPA transitions without allowing
+                # the planner to burn its full action budget on empty snapshots.
+                await asyncio.sleep(0.6 * attempt)
+        else:
+            observed_url = data.get("browser_tab_url") or data.get("url") or "unknown URL"
+            return self._inspection_failure(
+                f"Chrome returned an empty DOM snapshot on {observed_url} after {max_attempts} attempts. "
+                "The content script may be stale or the page may still be transitioning.",
+                max_attempts,
+            )
+
         self._current_url = data.get("url", self._current_url)
 
         # Sanitize extension-returned DOM and form fields at backend boundary
