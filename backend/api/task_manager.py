@@ -470,6 +470,8 @@ class TaskManager:
                 mask_tier3=not is_explicit_contact,
                 preserve_contact_info=is_explicit_contact,
             )
+            # The inspector fetches detailed events on demand; keep WebSocket updates small.
+            task_data["execution_trace"] = []
             if task_data.get("error"):
                 task_data["error"] = sanitize_user_facing_error(task_data["error"])
             if task_data.get("goal"):
@@ -517,6 +519,28 @@ class TaskManager:
                 f"Expected {expected_url}, found {actual_url}. No action was executed."
             )
         return True, "Live browser URL matches the saved checkpoint."
+
+    def _record_execution_trace(self, task: TaskResponse, event_type: str, step_number: int, data: Dict[str, Any]) -> None:
+        """Store bounded, redacted observability events without changing agent decisions."""
+        try:
+            from backend.security import redact_sensitive_data
+            safe_data = redact_sensitive_data(data, mask_tier3=True)
+            events = getattr(task, "execution_trace", None)
+            if events is None:
+                task.execution_trace = []
+                events = task.execution_trace
+            events.append({
+                "event_id": f"{task.task_id}:{step_number}:{event_type}:{int(time.time() * 1000)}",
+                "event_type": event_type,
+                "step_number": step_number,
+                "timestamp": time.time(),
+                "data": safe_data,
+            })
+            # Keep the most recent 300 events per task to bound memory/archive size.
+            if len(events) > 300:
+                del events[:-300]
+        except Exception:
+            logger.exception("Could not record execution inspector event for task %s", getattr(task, "task_id", "unknown"))
 
     async def run_task_execution(self, task_id: str, req: TaskRequest) -> None:
         """Drive a full browser automation task through its step loop."""
@@ -1060,6 +1084,38 @@ class TaskManager:
                     task_context=task.context,
                     screenshot_path=screenshot_path,
                 )
+                # Capture the exact page evidence and structured planner decision for inspection.
+                # Never persist raw input values from form fields; the security redactor masks them.
+                trace_elements = (page_info.get("elements") or [])[:100]
+                trace_dom = {
+                    "url": page_info.get("url") or page_info.get("browser_tab_url"),
+                    "title": page_info.get("title"),
+                    "headings": (page_info.get("headings") or [])[:30],
+                    "page_text": str(page_info.get("page_text") or "")[:5000],
+                    "elements": trace_elements,
+                    "element_count": len(page_info.get("elements") or []),
+                    "form_field_count": len(page_info.get("form_fields") or []),
+                    "agent_state": page_info.get("agent_state"),
+                }
+                self._record_execution_trace(task, "dom_snapshot", step_num, trace_dom)
+                previous_action_failed = any(
+                    event.get("event_type") == "action_result"
+                    and event.get("data", {}).get("success") is False
+                    for event in (getattr(task, "execution_trace", []) or [])[-12:]
+                )
+                decision_event = "replan_decision" if previous_action_failed else "planner_decision"
+                self._record_execution_trace(task, decision_event, step_num, {
+                    "provider": getattr(planner, "provider_name", None) or getattr(planner, "provider", None),
+                    "model": getattr(planner, "model_name", None) or getattr(planner, "model", None),
+                    "goal": req.goal,
+                    "step_number": step_num,
+                    "max_steps": req.max_steps,
+                    "selected_action": action.model_dump() if hasattr(action, "model_dump") else str(action),
+                    "reasoning": action.reasoning,
+                    "dom_element_count": len(page_info.get("elements") or []),
+                    "url": page_info.get("url"),
+                    "screenshot_url": screenshot_url,
+                })
 
                 # Gmail is a dynamic SPA: bind Compose clicks to the fresh DOM
                 # snapshot instead of trusting a brittle nth-of-type CSS selector.
@@ -1996,6 +2052,16 @@ class TaskManager:
                         task._agent_filled_fields = {
                             k: v for k, v in task.context.filled_fields.items()
                         }
+
+                    self._record_execution_trace(task, "action_result", step_num, {
+                        "action": action.model_dump() if hasattr(action, "model_dump") else str(action),
+                        "description": exec_description,
+                        "success": bool(action_success),
+                        "error": None if action_success else exec_description,
+                        "duration_ms": round((time.time() - step_start) * 1000, 1),
+                        "url_after": getattr(controller, "current_url", None),
+                        "screenshot_url": screenshot_url,
+                    })
 
                     # 7. Record step
                     duration_ms = round((time.time() - step_start) * 1000, 1)
