@@ -256,6 +256,26 @@ async def get_task_replay(task_id: str):
     }
 
 
+@router.get("/tasks/{task_id}/trace", tags=["tasks"])
+async def get_task_execution_trace(task_id: str):
+    """Return bounded, redacted planner, DOM, and action events for the inspector."""
+    task = task_manager.tasks.get(task_id) or task_manager.task_history.get(task_id) or task_archive.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    from backend.security import redact_sensitive_data, redact_text
+    events = getattr(task, "execution_trace", []) or []
+    safe_events = redact_sensitive_data(events[-300:], mask_tier3=True)
+    return {
+        "task_id": task_id,
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        "goal": redact_text(task.goal or "", mask_tier3=True),
+        "initial_plan": redact_sensitive_data(task.initial_plan or [], mask_tier3=True),
+        "events": safe_events,
+        "event_count": len(events),
+        "retention_limit": 300,
+    }
+
+
 @router.get("/tasks/{task_id}/recovery", tags=["tasks"])
 async def get_task_recovery(task_id: str):
     """Return the latest self-healing attempts and whether the task needs intervention."""
