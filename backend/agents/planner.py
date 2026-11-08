@@ -19,8 +19,16 @@ import base64
 import mimetypes
 import time
 import httpx
+import warnings
 from typing import Dict, Any, List, Optional, Set, Tuple
 from urllib.parse import urlparse
+
+# Suppress google-genai automatic function calling advisory warning when using models.generate_content
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Direct use of automatic function calling.*",
+    category=UserWarning,
+)
 
 from models.schemas import BrowserAction, ActionType, ApprovalType
 from agents.plan_cache import PlanCache, default_plan_cache
@@ -58,6 +66,7 @@ KNOWN_SERVICES: Dict[str, str] = {
     "google calendar": "https://calendar.google.com",
     "google meet": "https://meet.google.com",
     "google classroom": "https://classroom.google.com",
+    "gcr": "https://classroom.google.com",
     # Generic fallback
     "google": "https://www.google.com",
     "github": "https://github.com",
@@ -358,9 +367,7 @@ complete the user's goal step-by-step by choosing ONE browser action at a time.
 You have access to a dynamic Form Analyzer which detects fields and forms. \
 Use the provided structured form representation to understand the fields and map them to the user's data.
 
-═══════════════════════════════════════════════════════════
 AVAILABLE ACTIONS (use exactly these strings in "action"):
-═══════════════════════════════════════════════════════════
   navigate        → Go to a URL. Set "text" to the full URL.
   fill            → Fill/Type into a field. Prefer "element_id" from the latest DOM snapshot; use a stable "selector" only when no element_id is available. "text" = value to type.
   click           → Click an element (button, link, option, etc.). Prefer "element_id" from the latest DOM snapshot; use a stable "selector" only when no element_id is available. Never reuse element IDs or selectors from earlier page snapshots.
@@ -377,9 +384,7 @@ AVAILABLE ACTIONS (use exactly these strings in "action"):
                      Use this BEFORE submitting any form to confirm field values with the user.
   finish          → End the task. Provide "extracted_data" with a task summary.
 
-═══════════════════════════════════════════════════════════
 FORM-FILLING WORKFLOW (apply this for any form task):
-═══════════════════════════════════════════════════════════
   Phase 1 – INSPECT  : Analyze the FORM QUESTIONS AND COMPACT REPRESENTATION to identify all fields.
   Phase 2 – FILL     : Fill each field one-by-one. Use the right action per field type:
                         • Text/Email/Number/Textarea/Contenteditable → fill
@@ -392,9 +397,7 @@ FORM-FILLING WORKFLOW (apply this for any form task):
   Phase 4 – CONFIRM  : Use "request_approval" with "text" = a summary of every value entered.
   Phase 5 – SUBMIT   : Click the submit button or call finish.
 
-═══════════════════════════════════════════════════════════
 IMPORTANT RULES:
-═══════════════════════════════════════════════════════════
   • Output ONLY ONE action per response.
   • APPROVAL RULES:
     1. NEVER request approval in the middle of filling a form. Fill EVERY required text input, dropdown, and file upload first before requesting approval.
@@ -852,10 +855,13 @@ class AIAgentPlanner:
             ]
             for model in models_to_try:
                 try:
+                    gen_config = {"response_mime_type": response_mime_type}
+                    # Disable automatic function calling (AFC) to suppress SDK advisory warnings
+                    gen_config["automatic_function_calling"] = {"disable": True}
                     response = self.client.models.generate_content(
                         model=model,
                         contents=prompt,
-                        config={"response_mime_type": response_mime_type},
+                        config=gen_config,
                     )
                     if model != self.model_name:
                         logger.info(f"LLM fallback succeeded with Gemini model '{model}'")
@@ -1131,7 +1137,7 @@ class AIAgentPlanner:
                             "reused": True,
                             "key": redis_key,
                             "version": redis_cached.get("agent_version", self.agent_version),
-                            "message": f"⚡ Plan Cache HIT (Redis): Reused {len(plan_steps)}-step plan from Redis cache",
+                            "message": f"Plan Cache HIT (Redis): Reused {len(plan_steps)}-step plan from Redis cache",
                             "details": f"Redis Key: {redis_key} • State validated • Instant reuse without AI latency",
                         }
                         return self._filter_unrequested_report_steps(goal, plan_steps)
