@@ -488,6 +488,7 @@ class TaskResponse(BaseModel):
     current_plan_step: int = 0            # active milestone index (0-indexed) in initial_plan
     plan_metadata: Optional[Dict[str, Any]] = None  # task understanding (intent, tools, parameters)
     context: TaskContext = Field(default_factory=TaskContext)  # in-flight task memory
+    execution_trace: List[Dict[str, Any]] = Field(default_factory=list)  # bounded, redacted execution inspector events
 
 
 
