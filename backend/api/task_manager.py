@@ -536,9 +536,9 @@ class TaskManager:
                 "timestamp": time.time(),
                 "data": safe_data,
             })
-            # Keep the most recent 300 events per task to bound memory/archive size.
-            if len(events) > 300:
-                del events[:-300]
+            # Keep a bounded trace; DOM snapshots are relatively expensive to retain.
+            if len(events) > 150:
+                del events[:-150]
         except Exception:
             logger.exception("Could not record execution inspector event for task %s", getattr(task, "task_id", "unknown"))
 
@@ -1086,12 +1086,25 @@ class TaskManager:
                 )
                 # Capture the exact page evidence and structured planner decision for inspection.
                 # Never persist raw input values from form fields; the security redactor masks them.
-                trace_elements = (page_info.get("elements") or [])[:100]
+                # Whitelist DOM metadata. Never persist input values, raw attributes,
+                # or arbitrary extension payload fields in the inspector trace.
+                safe_element_fields = (
+                    "index", "tag", "role", "text", "aria_label", "label",
+                    "placeholder", "title", "selector", "disabled", "visible",
+                )
+                trace_elements = []
+                for element in (page_info.get("elements") or [])[:50]:
+                    if isinstance(element, dict):
+                        trace_elements.append({
+                            key: (str(element[key])[:240] if isinstance(element[key], str) else element[key])
+                            for key in safe_element_fields
+                            if key in element
+                        })
                 trace_dom = {
                     "url": page_info.get("url") or page_info.get("browser_tab_url"),
-                    "title": page_info.get("title"),
-                    "headings": (page_info.get("headings") or [])[:30],
-                    "page_text": str(page_info.get("page_text") or "")[:5000],
+                    "title": str(page_info.get("title") or "")[:240],
+                    "headings": [str(item)[:200] for item in (page_info.get("headings") or [])[:20]],
+                    "page_text": str(page_info.get("page_text") or "")[:3000],
                     "elements": trace_elements,
                     "element_count": len(page_info.get("elements") or []),
                     "form_field_count": len(page_info.get("form_fields") or []),
@@ -1101,17 +1114,24 @@ class TaskManager:
                 previous_action_failed = any(
                     event.get("event_type") == "action_result"
                     and event.get("data", {}).get("success") is False
-                    for event in (getattr(task, "execution_trace", []) or [])[-12:]
+                    for event in (getattr(task, "execution_trace", []) or [])[-3:]
                 )
-                decision_event = "replan_decision" if previous_action_failed else "planner_decision"
-                self._record_execution_trace(task, decision_event, step_num, {
+                # This is a planner decision informed by recent execution state,
+                # not proof that the planner performed a separate replan operation.
+                raw_action = action.model_dump() if hasattr(action, "model_dump") else {}
+                safe_action = {
+                    key: value for key, value in raw_action.items()
+                    if key not in {"value", "text", "upload_paths", "file_path", "file_paths"}
+                } if isinstance(raw_action, dict) else str(action)
+                self._record_execution_trace(task, "planner_decision", step_num, {
                     "provider": getattr(planner, "provider_name", None) or getattr(planner, "provider", None),
                     "model": getattr(planner, "model_name", None) or getattr(planner, "model", None),
                     "goal": req.goal,
                     "step_number": step_num,
                     "max_steps": req.max_steps,
-                    "selected_action": action.model_dump() if hasattr(action, "model_dump") else str(action),
+                    "selected_action": safe_action,
                     "reasoning": action.reasoning,
+                    "previous_action_failed": previous_action_failed,
                     "dom_element_count": len(page_info.get("elements") or []),
                     "url": page_info.get("url"),
                     "screenshot_url": screenshot_url,
@@ -2053,9 +2073,14 @@ class TaskManager:
                             k: v for k, v in task.context.filled_fields.items()
                         }
 
+                    raw_result_action = action.model_dump() if hasattr(action, "model_dump") else {}
+                    safe_result_action = {
+                        key: value for key, value in raw_result_action.items()
+                        if key not in {"value", "text", "upload_paths", "file_path", "file_paths"}
+                    } if isinstance(raw_result_action, dict) else str(action)
                     self._record_execution_trace(task, "action_result", step_num, {
-                        "action": action.model_dump() if hasattr(action, "model_dump") else str(action),
-                        "description": exec_description,
+                        "action": safe_result_action,
+                        "description": str(exec_description or "")[:1000],
                         "success": bool(action_success),
                         "error": None if action_success else exec_description,
                         "duration_ms": round((time.time() - step_start) * 1000, 1),
