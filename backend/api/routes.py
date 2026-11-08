@@ -266,7 +266,7 @@ async def get_task_execution_trace(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     from backend.security import redact_sensitive_data, redact_text
     events = getattr(task, "execution_trace", []) or []
-    safe_events = redact_sensitive_data(events[-300:], mask_tier3=True)
+    safe_events = redact_sensitive_data(events[-150:], mask_tier3=True)
     return {
         "task_id": task_id,
         "status": task.status.value if hasattr(task.status, "value") else str(task.status),
@@ -274,7 +274,7 @@ async def get_task_execution_trace(task_id: str):
         "initial_plan": redact_sensitive_data(task.initial_plan or [], mask_tier3=True),
         "events": safe_events,
         "event_count": len(events),
-        "retention_limit": 300,
+        "retention_limit": 150,
     }
 
 
