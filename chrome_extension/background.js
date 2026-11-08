@@ -312,6 +312,8 @@ async function focusTaskTab(tabId) {
 }
 
 async function waitForTabLoaded(tabId, timeoutMs = 12000) {
+  // Give Chrome a short slice (50ms) to transition tab.status to 'loading' if navigation just initiated
+  await new Promise((r) => setTimeout(r, 50));
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab && tab.status === "complete") {
@@ -740,6 +742,9 @@ async function handleBackendMessage(msg) {
           await waitForTabLoaded(tabId);
           if (!isRestrictedUrl(navUrl)) {
             await ensureContentScriptInjected(tabId);
+          }
+          if (/drive\.google\.com|mail\.google\.com|docs\.google\.com/i.test(navUrl)) {
+            await new Promise((r) => setTimeout(r, 1500));
           }
           const tab = await chrome.tabs.get(tabId);
           sendWsMessage({

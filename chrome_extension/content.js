@@ -998,7 +998,7 @@
       if (!selectedInput && !window.__browseBtnClickedForUpload) {
         try {
           const browseBtns = Array.from(doc.querySelectorAll('button, [role="button"], div[role="button"]'));
-          const browseBtn = browseBtns.find((b) => /^(browse|select files|choose file)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
+          const browseBtn = browseBtns.find((b) => /browse|select files|choose file/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
           if (browseBtn) {
             window.__browseBtnClickedForUpload = true;
             browseBtn.click();
@@ -1067,7 +1067,18 @@
     window.addEventListener("message", msgListener);
 
     try {
-      const initialDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+      function isAnyDialogOpen() {
+        const dialogs = Array.from(document.querySelectorAll('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+        return dialogs.some((d) => {
+          if (!d.isConnected) return false;
+          const rect = d.getBoundingClientRect();
+          const st = window.getComputedStyle(d);
+          const isAriaHidden = d.getAttribute("aria-hidden") === "true";
+          const isHiddenClass = d.classList.contains("picker-dialog-hidden");
+          return !isAriaHidden && !isHiddenClass && st.display !== "none" && st.visibility !== "hidden" && rect.width > 20 && rect.height > 20;
+        });
+      }
+      const initialDialogOpen = isAnyDialogOpen();
       let lastBroadcastAt = 0;
 
       while (Date.now() - startedAt < timeoutMs) {
@@ -1147,10 +1158,10 @@
           return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
         });
 
-        const currentDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+        const currentDialogOpen = isAnyDialogOpen();
         const cardHasFileEvidence = Boolean(
           question && (
-            question.querySelector('[aria-label*="Remove" i], [aria-label*="Delete" i], [aria-label*="Clear" i], .doc-icon, [data-chip]') ||
+            question.querySelector('[aria-label*="Remove" i], [aria-label*="Delete" i], [aria-label*="Clear" i], .doc-icon, [data-chip], [data-item-id], .exportItemFileWrapper, .freebirdFormviewerViewItemsEmbeddedFileRow') ||
             (targetBaseName && targetBaseName.length >= 3 && normalize(question.innerText).includes(targetBaseName))
           )
         );
@@ -1244,7 +1255,7 @@
       const selectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
 
       // 4. Wait for upload completion evidence with continuous re-broadcast
-      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 25000, action);
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 45000, action);
       if (!uploadStatus.success) {
         if (!selectedInput && !hasOpenDialog) {
           return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
@@ -2255,11 +2266,15 @@
 
       const injectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
       try {
-        window.parent?.postMessage({
+        const injectedMsg = {
           __aiAgentUploadInjected: true,
           fileName: fileName,
           inputFound: Boolean(injectedInput),
-        }, "*");
+        };
+        window.parent?.postMessage(injectedMsg, "*");
+        if (window.top && window.top !== window.parent) {
+          window.top.postMessage(injectedMsg, "*");
+        }
       } catch (e) {}
 
       // Monitor for completion inside the child iframe
@@ -2275,13 +2290,17 @@
             pageText.includes(fileName.toLowerCase()) ||
             /upload complete|uploaded successfully|file uploaded|upload finished|done/i.test(pageText)
           );
-          if (done || Date.now() - started > 25000) {
+          if (done || Date.now() - started > 35000) {
             clearInterval(checkInterval);
             if (done) {
-              window.parent?.postMessage({
+              const completeMsg = {
                 __aiAgentUploadComplete: true,
                 fileName: fileName,
-              }, "*");
+              };
+              window.parent?.postMessage(completeMsg, "*");
+              if (window.top && window.top !== window.parent) {
+                window.top.postMessage(completeMsg, "*");
+              }
             }
           }
         } catch (e) {

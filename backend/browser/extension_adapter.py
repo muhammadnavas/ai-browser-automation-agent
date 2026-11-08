@@ -394,9 +394,9 @@ class ExtensionBrowserAdapter:
                 self.task_id, observed_url, attempt, max_attempts,
             )
             if attempt < max_attempts:
-                # A short bounded retry handles SPA transitions without allowing
+                # A bounded retry handles SPA transitions without allowing
                 # the planner to burn its full action budget on empty snapshots.
-                await asyncio.sleep(0.6 * attempt)
+                await asyncio.sleep(0.8 * attempt)
         else:
             observed_url = data.get("browser_tab_url") or data.get("url") or "unknown URL"
             return self._inspection_failure(
