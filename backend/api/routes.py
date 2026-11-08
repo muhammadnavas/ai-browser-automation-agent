@@ -74,6 +74,8 @@ def _sanitize_task_response(task: TaskResponse) -> TaskResponse:
                 sanitized_dict["error"] = None
             else:
                 sanitized_dict["error"] = sanitize_user_facing_error(err_text)
+        # Trace payloads are fetched lazily from /trace to keep task polling compact.
+        sanitized_dict["execution_trace"] = []
         if sanitized_dict.get("goal"):
             sanitized_dict["goal"] = strip_internal_placeholders(sanitized_dict["goal"])
         if sanitized_dict.get("steps"):
