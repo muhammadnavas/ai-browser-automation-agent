@@ -8,6 +8,7 @@ user's active Google Chrome session via the Chrome Extension Bridge.
 """
 
 import os
+import sys
 import uuid
 import base64
 import asyncio
