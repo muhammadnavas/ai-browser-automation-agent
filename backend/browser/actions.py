@@ -443,9 +443,13 @@ async def scroll_page(
     Returns:
         True on success, False on failure.
     """
-    delta = amount if direction == "down" else -amount
     try:
-        await page.evaluate(f"window.scrollBy(0, {delta});")
+        numeric_amount = int(amount)
+    except (ValueError, TypeError):
+        numeric_amount = 500
+    delta = numeric_amount if str(direction).lower() == "down" else -numeric_amount
+    try:
+        await page.evaluate("(d) => window.scrollBy(0, d)", delta)
         await asyncio.sleep(0.4)
         logger.debug(f"Scrolled {direction} {amount}px")
         return True

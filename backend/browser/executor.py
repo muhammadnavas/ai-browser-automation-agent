@@ -250,9 +250,13 @@ class ActionExecutor:
         elif act_type == ActionType.SCROLL:
             direction = action.scroll_direction or "down"
             amount = action.scroll_amount or 500
-            delta = amount if direction == "down" else -amount
             try:
-                await self.page.evaluate(f"window.scrollBy(0, {delta});")
+                numeric_amount = int(amount)
+            except (ValueError, TypeError):
+                numeric_amount = 500
+            delta = numeric_amount if str(direction).lower() == "down" else -numeric_amount
+            try:
+                await self.page.evaluate("(d) => window.scrollBy(0, d)", delta)
                 await asyncio.sleep(0.5)
                 return True
             except Exception as exc:

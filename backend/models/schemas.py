@@ -430,6 +430,26 @@ class TaskContext(BaseModel):
 # Human approval
 # ---------------------------------------------------------------------------
 
+def compute_action_fingerprint(
+    task_id: str,
+    action_type: str,
+    target_url: str = "",
+    selector: Optional[str] = None,
+    text: Optional[str] = None,
+    value: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> str:
+    import hashlib
+    import hmac
+    try:
+        from backend.security.auth import SERVER_SECRET
+        key = (secret_key or SERVER_SECRET).encode("utf-8")
+    except Exception:
+        key = (secret_key or "default_secret_fingerprint_key_2026").encode("utf-8")
+    payload = f"{task_id}:{action_type}:{target_url}:{selector or ''}:{text or ''}:{value or ''}"
+    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 class HumanApprovalRequest(BaseModel):
     approval_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     task_id: str
@@ -439,6 +459,13 @@ class HumanApprovalRequest(BaseModel):
     status: str = "pending"   # pending | approved | rejected
     user_input: Optional[str] = None
     created_at: float = Field(default_factory=time.time)
+    expires_at: float = Field(default_factory=lambda: time.time() + 300.0)
+    session_id: Optional[str] = None
+    action_fingerprint: Optional[str] = None
+    consumed: bool = False
+
+    def is_expired(self) -> bool:
+        return time.time() > self.expires_at
 
 
 # ---------------------------------------------------------------------------

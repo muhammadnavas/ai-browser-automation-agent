@@ -35,7 +35,7 @@ let tabTaskMap = new Map();
 // ---------------------------------------------------------------------------
 
 async function loadSettings() {
-  const data = await chrome.storage.local.get(["serverUrl", "taskMappings"]);
+  const data = await chrome.storage.local.get(["serverUrl", "taskMappings", "extensionToken"]);
   // Migrate the old localhost default. Keep any explicitly configured remote
   // server URL untouched.
   const storedUrl = String(data.serverUrl || "").trim();
@@ -52,7 +52,7 @@ async function loadSettings() {
       tabTaskMap.set(Number(tabId), taskId);
     }
   }
-  return { serverUrl };
+  return { serverUrl, extensionToken: data.extensionToken || null };
 }
 
 async function saveMappings() {
@@ -102,10 +102,13 @@ async function connectWebSocket() {
       await chrome.storage.local.set({ isConnected: true, lastConnectionError: null, lastConnectedAt });
 
       // Send initial registration handshake
+      const { extensionToken } = await loadSettings();
       sendWsMessage({
         type: "register",
         client: "chrome-extension",
         version: "1.0.0",
+        token: extensionToken || null,
+        extension_id: (typeof chrome !== "undefined" && chrome.runtime?.id) ? chrome.runtime.id : "chrome-extension",
         active_tasks: Array.from(taskTabMap.keys()),
       });
 
@@ -206,6 +209,11 @@ function isRestrictedUrl(url) {
     lower.startsWith('view-source:') ||
     lower.startsWith('data:') ||
     lower.startsWith('javascript:') ||
+    lower.startsWith('file:') ||
+    lower.startsWith('http://127.0.0.1:8000') ||
+    lower.startsWith('http://localhost:8000') ||
+    lower.startsWith('http://127.0.0.1:5173') ||
+    lower.startsWith('http://localhost:5173') ||
     lower.startsWith('https://chrome.google.com/webstore') ||
     lower.startsWith('https://chromewebstore.google.com')
   );
@@ -355,6 +363,26 @@ async function handleBackendMessage(msg) {
 
   if (type === "pong") {
     return; // Heartbeat response
+  }
+
+  if (type === "registered") {
+    if (msg.token) {
+      await chrome.storage.local.set({ extensionToken: msg.token });
+    }
+    return;
+  }
+
+  if (type === "auth_failed") {
+    console.warn("[AI Extension] Authentication failed:", msg.reason);
+    await chrome.storage.local.remove(["extensionToken"]);
+    lastConnectionError = msg.reason || "Extension authentication failed";
+    await chrome.storage.local.set({ lastConnectionError });
+    if (socket) {
+      try {
+        socket.close(4003, msg.reason || "Authentication failed");
+      } catch (e) {}
+    }
+    return;
   }
 
   // ── 1. Create Task Tab ──
