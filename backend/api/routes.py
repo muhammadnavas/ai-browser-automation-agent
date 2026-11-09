@@ -530,10 +530,11 @@ async def download_report(task_id: str):
             raise HTTPException(status_code=500, detail="Failed to generate report.")
     if not pdf_bytes:
         raise HTTPException(status_code=404, detail="Report not found or task not yet complete")
+    safe_task_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", task_id)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="report_{task_id}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="report_{safe_task_id}.pdf"'},
     )
 
 
@@ -953,8 +954,9 @@ async def export_research_report(task_id: str, format: str = "pdf"):
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pdf": "application/pdf",
     }
+    safe_task_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", task_id)
     return Response(
         content=report_bytes,
         media_type=media_types[fmt],
-        headers={"Content-Disposition": f'attachment; filename="research_{task_id}.{fmt}"'},
+        headers={"Content-Disposition": f'attachment; filename="research_{safe_task_id}.{fmt}"'},
     )

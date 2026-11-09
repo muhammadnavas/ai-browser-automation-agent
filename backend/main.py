@@ -82,6 +82,27 @@ class SecurityAuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         method = request.method
 
+        def _add_security_headers(resp, allow_inline_scripts=False):
+            resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+            resp.headers.setdefault("X-Frame-Options", "DENY")
+            resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+            script_src = "'self' 'unsafe-inline' https://cdn.jsdelivr.net" if allow_inline_scripts else "'self'"
+            resp.headers.setdefault(
+                "Content-Security-Policy",
+                (
+                    "default-src 'self'; "
+                    f"script-src {script_src}; "
+                    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                    "img-src 'self' data: blob: https:; "
+                    "font-src 'self' data: https://cdn.jsdelivr.net; "
+                    "connect-src 'self' ws: wss: http://localhost:5173 http://127.0.0.1:5173 http://localhost:8000 http://127.0.0.1:8000; "
+                    "frame-ancestors 'none'; "
+                    "object-src 'none'; "
+                    "base-uri 'self';"
+                ),
+            )
+            return resp
+
         # 1. Exempt CORS preflights, public static files, test forms, docs, and favicon
         if (
             method == "OPTIONS"
@@ -91,7 +112,8 @@ class SecurityAuthMiddleware(BaseHTTPMiddleware):
             or path == "/api/docs"
             or path == "/api/openapi.json"
         ):
-            return await call_next(request)
+            needs_inline_scripts = path in ("/test-form", "/api/docs", "/api/openapi.json")
+            return _add_security_headers(await call_next(request), allow_inline_scripts=needs_inline_scripts)
 
         # 2. Transparent session auto-issue on root dashboard load (GET /)
         if path == "/":
@@ -117,7 +139,7 @@ class SecurityAuthMiddleware(BaseHTTPMiddleware):
                     secure=False,
                     max_age=SESSION_LIFETIME_SECONDS,
                 )
-            return response
+            return _add_security_headers(response, allow_inline_scripts=False)
 
         # 3. Exempt session handshake and websocket paths
         if (
@@ -127,7 +149,7 @@ class SecurityAuthMiddleware(BaseHTTPMiddleware):
             or path.startswith("/api/ws/tasks")
             or path.startswith("/ws/tasks")
         ):
-            return await call_next(request)
+            return _add_security_headers(await call_next(request))
 
         # 4. Protect all API endpoints, screenshots, and reports
         if path.startswith("/api") or path.startswith("/screenshots") or path.startswith("/reports"):
@@ -135,21 +157,21 @@ class SecurityAuthMiddleware(BaseHTTPMiddleware):
             session = session_manager.get_session(session_id)
 
             if not session:
-                return JSONResponse(
+                return _add_security_headers(JSONResponse(
                     status_code=401,
                     content={"detail": "Authentication required. Active session required."},
-                )
+                ))
 
             # 5. Verify CSRF on state-changing operations (POST, PUT, DELETE, PATCH)
             if method in ("POST", "PUT", "DELETE", "PATCH") and path.startswith("/api"):
                 csrf_token = request.headers.get(CSRF_HEADER_NAME)
                 if not session_manager.verify_csrf(session, csrf_token):
-                    return JSONResponse(
+                    return _add_security_headers(JSONResponse(
                         status_code=403,
                         content={"detail": "CSRF validation failed. Missing or invalid X-CSRF-Token."},
-                    )
+                    ))
 
-        return await call_next(request)
+        return _add_security_headers(await call_next(request))
 
 # SecurityAuthMiddleware added first
 app.add_middleware(SecurityAuthMiddleware)

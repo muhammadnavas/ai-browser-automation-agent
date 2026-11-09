@@ -144,14 +144,19 @@ def validate_url_security(url: str, resolve_dns: bool = True) -> Tuple[bool, str
     if hostname in PROHIBITED_HOST_PATTERNS or hostname.endswith((".localhost", ".local", ".internal", ".lan")):
         return False, f"Prohibited host target '{hostname}'", None
 
-    # Check port if specified
-    if parsed.port and parsed.port in PROHIBITED_PORTS:
-        return False, f"Prohibited port {parsed.port}", None
+    # Safely evaluate and validate port if specified
+    try:
+        port = parsed.port
+    except (ValueError, TypeError):
+        return False, "Malformed or out-of-range port in URL", None
+
+    if port and port in PROHIBITED_PORTS:
+        return False, f"Prohibited port {port}", None
 
     # Check for targeting local agent endpoints
     path_lower = (parsed.path or "").lower()
     if path_lower.startswith(("/api", "/screenshots", "/reports", "/ws")):
-        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or parsed.port in (AGENT_PORT, FRONTEND_PORT, 8000, 5173):
+        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or (port and port in (AGENT_PORT, FRONTEND_PORT, 8000, 5173)):
             return False, f"Direct access to agent internal endpoint '{parsed.path}' is prohibited", None
 
     # Check IP literal or resolve domain

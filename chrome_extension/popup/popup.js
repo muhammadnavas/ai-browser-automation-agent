@@ -41,19 +41,29 @@ document.addEventListener("DOMContentLoaded", async () => {
         const tasks = response.active_tasks || [];
         taskCountBadge.textContent = tasks.length.toString();
 
+        activeTasksList.textContent = "";
         if (tasks.length === 0) {
-          activeTasksList.innerHTML = `<div class="empty-state">No active automation tabs</div>`;
+          const emptyDiv = document.createElement("div");
+          emptyDiv.className = "empty-state";
+          emptyDiv.textContent = "No active automation tabs";
+          activeTasksList.appendChild(emptyDiv);
         } else {
-          activeTasksList.innerHTML = tasks
-            .map(
-              (t) => `
-              <div class="task-item">
-                <span class="task-id">${t.task_id}</span>
-                <span class="tab-badge">Tab #${t.tab_id}</span>
-              </div>
-            `
-            )
-            .join("");
+          for (const t of tasks) {
+            const itemDiv = document.createElement("div");
+            itemDiv.className = "task-item";
+
+            const idSpan = document.createElement("span");
+            idSpan.className = "task-id";
+            idSpan.textContent = String(t.task_id || "");
+
+            const tabSpan = document.createElement("span");
+            tabSpan.className = "tab-badge";
+            tabSpan.textContent = `Tab #${t.tab_id != null ? t.tab_id : "?"}`;
+
+            itemDiv.appendChild(idSpan);
+            itemDiv.appendChild(tabSpan);
+            activeTasksList.appendChild(itemDiv);
+          }
         }
       }
     } catch (e) {

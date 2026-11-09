@@ -24,6 +24,19 @@ const wsUrl = (path) => {
     path;
 };
 
+export function isSafeWebUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  // Strip control characters (including tabs and newlines that some browsers ignore in protocol parsing)
+  const clean = trimmed.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+  // Explicitly disallow dangerous executable schemes
+  if (/^(javascript|data|vbscript|blob|file):/i.test(clean)) return false;
+  // Strictly allow only http://, https://, or single-slash relative / URLs (disallow protocol-relative // or /\)
+  if (/^https?:\/\//i.test(clean)) return true;
+  if (/^\/(?!\/|\\)/.test(clean)) return true;
+  return false;
+}
+
 let currentSessionId = null;
 let currentCsrfToken = null;
 let sessionPromise = null;
@@ -529,10 +542,17 @@ function ActionCard({ step }) {
       )}
 
       {step.url && (
-        <a className="inline-link" href={step.url} target="_blank" rel="noreferrer">
-          <ExternalLink size={13} />
-          {step.url}
-        </a>
+        isSafeWebUrl(step.url) ? (
+          <a className="inline-link" href={step.url} target="_blank" rel="noopener noreferrer">
+            <ExternalLink size={13} />
+            {step.url}
+          </a>
+        ) : (
+          <span className="inline-link" title="Untrusted or non-navigable URL scheme">
+            <ExternalLink size={13} />
+            {step.url}
+          </span>
+        )
       )}
 
       {step.extracted_data != null && (
@@ -561,9 +581,10 @@ function ReportDownloadButton({ task }) {
   const isFinished = isTerminal(task.status);
   if (!isFinished) return null;
 
-  const pdfHref =
+  const rawHref =
     task.reports?.pdf ||
     api(`/api/reports/${encodeURIComponent(task.task_id)}/download`);
+  const pdfHref = isSafeWebUrl(rawHref) ? rawHref : '#';
 
   return (
     <a
@@ -573,7 +594,7 @@ function ReportDownloadButton({ task }) {
       title="Download complete PDF task report"
       aria-label="Download complete PDF task report"
       target="_blank"
-      rel="noreferrer"
+      rel="noopener noreferrer"
     >
       <FileText size={15} />
       <span>Download Report</span>
@@ -593,7 +614,13 @@ function downloadCSV(rows, filename = 'extracted-data.csv') {
           let val = row[k];
           if (val === null || val === undefined) val = '';
           else if (typeof val === 'object') val = JSON.stringify(val);
-          val = String(val).replace(/"/g, '""');
+          val = String(val);
+          // CSV Formula Injection mitigation: prefix formula-initiating characters with a single quote
+          const trimmed = val.trim();
+          if (/^[=+\-@\t\r]/.test(trimmed)) {
+            val = "'" + val;
+          }
+          val = val.replace(/"/g, '""');
           return `"${val}"`;
         })
         .join(',')
@@ -2156,9 +2183,13 @@ export default function App() {
                     <ul className="context-list">
                       {visitedUrls.slice(-12).map((url) => (
                         <li key={url}>
-                          <a href={url} target="_blank" rel="noreferrer">
-                            {url}
-                          </a>
+                          {isSafeWebUrl(url) ? (
+                            <a href={url} target="_blank" rel="noopener noreferrer">
+                              {url}
+                            </a>
+                          ) : (
+                            <span className="muted-text" title="Untrusted or non-navigable URL scheme">{url}</span>
+                          )}
                         </li>
                       ))}
                     </ul>
