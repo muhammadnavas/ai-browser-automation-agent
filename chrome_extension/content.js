@@ -170,6 +170,9 @@
   // ---------------------------------------------------------------------------
 
   function inspectPageDOM(showBadges) {
+    // Keep this function synchronous so the chrome.runtime.onMessage port
+    // does not need to stay open across microtask boundaries.
+    // SPA stabilisation is handled by background.js post-navigate delay instead.
     const borderEl = document.getElementById("ai-agent-running-border");
     const lockEl = document.getElementById("ai-agent-ui-lock");
     const prevBorderPointerEvents = borderEl ? borderEl.style.pointerEvents : null;
@@ -862,6 +865,18 @@
         });
       } catch (e) {}
 
+      // Scan accessible iframes for nested file inputs (e.g. Google Picker nested upload frames)
+      try {
+        doc.querySelectorAll("iframe").forEach((ifr) => {
+          try {
+            const ifrDoc = ifr.contentDocument;
+            if (ifrDoc) {
+              ifrDoc.querySelectorAll('input[type="file"]').forEach((i) => fileInputs.push(i));
+            }
+          } catch (_) {}
+        });
+      } catch (_) {}
+
       const uniqueInputs = Array.from(new Set(fileInputs));
       let compatibleInputs = uniqueInputs;
       if (uniqueInputs.length > 1) {
@@ -904,6 +919,8 @@
       const dropTargets = [
         doc.querySelector('.picker-dialog'),
         doc.querySelector('[role="dialog"]'),
+        doc.querySelector('[role="region"]'),
+        doc.querySelector('.picker-content'),
         doc.querySelector('[role="main"]'),
         doc.querySelector("#drive-main-page"),
         doc.querySelector(".a-ec-Gd-V-s"),
@@ -913,17 +930,31 @@
         doc.querySelector('[aria-label*="drag" i]'),
         doc.querySelector('[aria-label*="drop" i]'),
         doc.querySelector('[aria-label*="upload" i]'),
-        doc.body,
-        doc.documentElement,
-        win,
-      ].filter(Boolean);
+      ];
 
-      for (const target of dropTargets) {
+      // Also target any element inside the dialog containing "drag a file" or "browse"
+      try {
+        const candidateContainers = Array.from(doc.querySelectorAll('div, section, main'));
+        const dragZone = candidateContainers.find((c) => /drag a file|or drag/i.test(c.innerText || ""));
+        if (dragZone) {
+          dropTargets.push(dragZone);
+          if (dragZone.parentElement) dropTargets.push(dragZone.parentElement);
+        }
+      } catch (_) {}
+
+      dropTargets.push(doc.body, doc.documentElement, win);
+      const filteredDropTargets = Array.from(new Set(dropTargets.filter(Boolean)));
+
+      for (const target of filteredDropTargets) {
         try {
           const targetDT = new winDT();
           const targetBlob = new winBlob([bytes], { type: fileType });
           const targetFile = new winFile([targetBlob], fileName, { type: fileType, lastModified: Date.now() });
           targetDT.items.add(targetFile);
+          try {
+            targetDT.dropEffect = "copy";
+            targetDT.effectAllowed = "all";
+          } catch (_) {}
 
           const rect = target.getBoundingClientRect ? target.getBoundingClientRect() : { left: 100, top: 100, width: 300, height: 200 };
           const cx = rect.left + rect.width / 2;
@@ -938,18 +969,19 @@
             clientY: cy,
             screenX: cx,
             screenY: cy,
+            dataTransfer: targetDT,
           };
 
           ["dragenter", "dragover", "drop"].forEach((type) => {
             const ev = new win.DragEvent(type, dragOpts);
-            try {
-              Object.defineProperty(ev, "dataTransfer", {
-                value: targetDT,
-                writable: false,
-                enumerable: true,
-                configurable: true,
-              });
-            } catch (_) {}
+            if (!ev.dataTransfer || ev.dataTransfer !== targetDT) {
+              try {
+                Object.defineProperty(ev, "dataTransfer", {
+                  get: () => targetDT,
+                  configurable: true,
+                });
+              } catch (_) {}
+            }
             target.dispatchEvent(ev);
           });
         } catch (e) {}
@@ -962,12 +994,13 @@
         if (submitBtn) submitBtn.click();
       } catch (e) {}
 
-      // If no file input accepted the file directly, click the UI dialog's "Browse" button so the native OS file dialog appears
-      if (!selectedInput) {
+      // If no file input accepted the file directly, click the UI dialog's "Browse" button once so the native OS file dialog can appear
+      if (!selectedInput && !window.__browseBtnClickedForUpload) {
         try {
           const browseBtns = Array.from(doc.querySelectorAll('button, [role="button"], div[role="button"]'));
-          const browseBtn = browseBtns.find((b) => /^(browse|select files|choose file)$/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
+          const browseBtn = browseBtns.find((b) => /browse|select files|choose file/i.test((b.innerText || b.getAttribute("aria-label") || "").trim()));
           if (browseBtn) {
+            window.__browseBtnClickedForUpload = true;
             browseBtn.click();
           }
         } catch (e) {}
@@ -1034,7 +1067,18 @@
     window.addEventListener("message", msgListener);
 
     try {
-      const initialDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+      function isAnyDialogOpen() {
+        const dialogs = Array.from(document.querySelectorAll('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
+        return dialogs.some((d) => {
+          if (!d.isConnected) return false;
+          const rect = d.getBoundingClientRect();
+          const st = window.getComputedStyle(d);
+          const isAriaHidden = d.getAttribute("aria-hidden") === "true";
+          const isHiddenClass = d.classList.contains("picker-dialog-hidden");
+          return !isAriaHidden && !isHiddenClass && st.display !== "none" && st.visibility !== "hidden" && rect.width > 20 && rect.height > 20;
+        });
+      }
+      const initialDialogOpen = isAnyDialogOpen();
       let lastBroadcastAt = 0;
 
       while (Date.now() - startedAt < timeoutMs) {
@@ -1114,11 +1158,17 @@
           return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
         });
 
-        const currentDialogOpen = Boolean(document.querySelector('.picker-dialog, [role="dialog"], iframe[src*="picker"]'));
-        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (childInjected || filenameVisible || inputRetained || childComplete);
+        const currentDialogOpen = isAnyDialogOpen();
+        const cardHasFileEvidence = Boolean(
+          question && (
+            question.querySelector('[aria-label*="Remove" i], [aria-label*="Delete" i], [aria-label*="Clear" i], .doc-icon, [data-chip], [data-item-id], .exportItemFileWrapper, .freebirdFormviewerViewItemsEmbeddedFileRow') ||
+            (targetBaseName && targetBaseName.length >= 3 && normalize(question.innerText).includes(targetBaseName))
+          )
+        );
+        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (childInjected || filenameVisible || inputRetained || childComplete || cardHasFileEvidence);
         const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText + " " + pageText);
 
-        if ((filenameVisible || explicitDone || dialogClosedAfterAction || childComplete) && progressIndicators.length === 0) {
+        if ((filenameVisible || explicitDone || dialogClosedAfterAction || childComplete || cardHasFileEvidence) && progressIndicators.length === 0) {
           return {
             success: true,
             elapsed_ms: Date.now() - startedAt,
@@ -1126,7 +1176,7 @@
               ? "upload-complete-message"
               : (filenameVisible
                 ? "filename-visible"
-                : (dialogClosedAfterAction ? "dialog-closed-with-upload-evidence" : "child-complete"))
+                : (cardHasFileEvidence ? "card-file-chip-evidence" : (dialogClosedAfterAction ? "dialog-closed-with-upload-evidence" : "child-complete")))
           };
         }
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1144,6 +1194,7 @@
 
   async function triggerFileUploadInjection(action) {
     try {
+      window.__browseBtnClickedForUpload = false;
       const fileName = action.file_name;
       if (!fileName) {
         return { success: false, error: "No file provided for upload." };
@@ -1204,7 +1255,7 @@
       const selectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
 
       // 4. Wait for upload completion evidence with continuous re-broadcast
-      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 25000, action);
+      const uploadStatus = await waitForUploadCompletion(selectedInput, fileName, 45000, action);
       if (!uploadStatus.success) {
         if (!selectedInput && !hasOpenDialog) {
           return { success: false, error: "The browser did not retain the selected file in a compatible file input." };
@@ -2215,11 +2266,15 @@
 
       const injectedInput = attemptFileInjectionOnDocument(document, bytes, fileName, fileType);
       try {
-        window.parent?.postMessage({
+        const injectedMsg = {
           __aiAgentUploadInjected: true,
           fileName: fileName,
           inputFound: Boolean(injectedInput),
-        }, "*");
+        };
+        window.parent?.postMessage(injectedMsg, "*");
+        if (window.top && window.top !== window.parent) {
+          window.top.postMessage(injectedMsg, "*");
+        }
       } catch (e) {}
 
       // Monitor for completion inside the child iframe
@@ -2235,13 +2290,17 @@
             pageText.includes(fileName.toLowerCase()) ||
             /upload complete|uploaded successfully|file uploaded|upload finished|done/i.test(pageText)
           );
-          if (done || Date.now() - started > 25000) {
+          if (done || Date.now() - started > 35000) {
             clearInterval(checkInterval);
             if (done) {
-              window.parent?.postMessage({
+              const completeMsg = {
                 __aiAgentUploadComplete: true,
                 fileName: fileName,
-              }, "*");
+              };
+              window.parent?.postMessage(completeMsg, "*");
+              if (window.top && window.top !== window.parent) {
+                window.top.postMessage(completeMsg, "*");
+              }
             }
           }
         } catch (e) {
@@ -2329,7 +2388,7 @@
     (async () => {
       try {
         if (message.type === "inspect_dom") {
-          const domData = inspectPageDOM(Boolean(message.show_badges));
+          const domData = await inspectPageDOM(Boolean(message.show_badges));
           domData.diagnostics = collectPageDiagnostics();
           sendResponse({ success: true, data: domData });
         } else if (message.type === "clear_badges") {

@@ -1160,6 +1160,117 @@ function ApprovalModal({ task, busy, onApprove, onScreenshotClick }) {
   );
 }
 
+function ExecutionInspector({ task }) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!task?.task_id || !expanded) return;
+    let alive = true;
+    let timer = null;
+    let controller = null;
+    setEvents([]);
+    setLoadError('');
+    const load = async () => {
+      controller = new AbortController();
+      setLoading(true);
+      try {
+        const response = await fetch(
+          api('/api/tasks/' + encodeURIComponent(task.task_id) + '/trace'),
+          { cache: 'no-store', signal: controller.signal }
+        );
+        if (!response.ok) throw new Error('Trace request failed (' + response.status + ')');
+        const payload = await response.json();
+        if (alive) {
+          setEvents(Array.isArray(payload.events) ? payload.events : []);
+          setLoadError('');
+        }
+      } catch (err) {
+        if (alive && err.name !== 'AbortError') setLoadError(err.message);
+      } finally {
+        if (alive) {
+          setLoading(false);
+          timer = window.setTimeout(load, isActive(task.status) ? 2500 : 10000);
+        }
+      }
+    };
+    load();
+    return () => {
+      alive = false;
+      if (timer) window.clearTimeout(timer);
+      if (controller) controller.abort();
+    };
+  }, [task?.task_id, task?.status, expanded]);
+
+  const ordered = [...events].reverse();
+  const label = (value) => String(value || '').replaceAll('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const pretty = (value) => JSON.stringify(value ?? {}, null, 2);
+
+  return (
+    <section className="section-card" style={{ marginTop: 18, overflow: 'hidden' }}>
+      <button type="button" onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'transparent', color: 'inherit', border: 0, padding: '4px 0', cursor: 'pointer', textAlign: 'left' }}>
+        <span>
+          <strong style={{ display: 'block', fontSize: 16 }}>Agent execution inspector</strong>
+          <small style={{ color: 'var(--muted, #94a3b8)' }}>DOM snapshots · planner decisions · action results · recovery context</small>
+        </span>
+        <span style={{ fontSize: 13, color: 'var(--muted, #94a3b8)' }}>{expanded ? 'Hide details' : 'Inspect execution'} {events.length ? '· ' + events.length + ' events' : ''}</span>
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: 'var(--muted, #94a3b8)' }}>Live trace · latest events first · sensitive values redacted</span>
+            {loading && <span style={{ fontSize: 12 }}>Refreshing…</span>}
+          </div>
+          {loadError && <p role="alert" style={{ color: '#ef4444' }}>{loadError}</p>}
+          {!events.length && !loading ? <p style={{ color: 'var(--muted, #94a3b8)' }}>No trace events yet. Events appear as the agent inspects the page and chooses actions.</p> : (
+            <div style={{ display: 'grid', gap: 10 }}>
+              {ordered.map((event, index) => {
+                const data = event.data || {};
+                const action = data.selected_action || data.action || {};
+                const target = action.element_id != null ? 'Element #' + action.element_id : (action.selector || action.url || action.text || 'No explicit target');
+                return (
+                  <details key={event.event_id || index} style={{ border: '1px solid var(--border, #334155)', borderRadius: 10, padding: 12, minWidth: 0 }}>
+                    <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <strong>{label(event.event_type)}</strong>
+                      <span style={{ fontSize: 12, opacity: .7 }}>Step {event.step_number}</span>
+                      <span style={{ fontSize: 12, opacity: .7 }}>{event.timestamp ? new Date(event.timestamp * 1000).toLocaleTimeString() : ''}</span>
+                      {event.event_type === 'action_result' && <span style={{ marginLeft: 'auto', color: data.success ? '#16a34a' : '#ef4444', fontSize: 12 }}>{data.success ? 'Succeeded' : 'Failed'}</span>}
+                    </summary>
+                    {event.event_type === 'dom_snapshot' ? (
+                      <div style={{ marginTop: 12 }}>
+                        <p style={{ margin: '0 0 8px', fontSize: 13 }}>{data.title || 'Untitled page'} · {data.url || 'URL unavailable'}</p>
+                        <p style={{ margin: '0 0 8px', fontSize: 12, opacity: .7 }}>{data.element_count || 0} interactive elements · {data.form_field_count || 0} form fields</p>
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          {(data.elements || []).map((el, i) => (
+                            <div key={el.index ?? i} style={{ display: 'grid', gridTemplateColumns: '64px minmax(0,1fr)', gap: 8, fontSize: 12, padding: 7, borderRadius: 6, background: 'var(--surface-muted, rgba(148,163,184,.08))' }}>
+                              <strong>#{el.index ?? i} · {el.tag || el.role || 'node'}</strong>
+                              <span style={{ overflowWrap: 'anywhere' }}>{el.text || el.aria_label || el.label || el.placeholder || el.title || '(unlabelled)'} {el.selector ? '· ' + el.selector : ''}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {data.page_text && <details style={{ marginTop: 10 }}><summary>Captured visible page text</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 }}>{data.page_text}</pre></details>}
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 12 }}>
+                        {event.event_type === 'planner_decision' && <p style={{ fontSize: 13 }}>Selected target: {target}</p>}
+                        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 360, overflow: 'auto', fontSize: 12, background: 'var(--surface-muted, rgba(148,163,184,.08))', padding: 10, borderRadius: 8 }}>{pretty(data)}</pre>
+                      </div>
+                    )}
+                  </details>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [goal, setGoal] = useState('');
   const [tasks, setTasks] = useState({});
@@ -1946,6 +2057,7 @@ export default function App() {
           </section>
         ) : (
           <>
+            <ExecutionInspector task={currentTask} />
             <section className="section-card plan-section">
               <div className="section-heading">
                 <div className="section-icon plan-icon">

@@ -74,6 +74,8 @@ def _sanitize_task_response(task: TaskResponse) -> TaskResponse:
                 sanitized_dict["error"] = None
             else:
                 sanitized_dict["error"] = sanitize_user_facing_error(err_text)
+        # Trace payloads are fetched lazily from /trace to keep task polling compact.
+        sanitized_dict["execution_trace"] = []
         if sanitized_dict.get("goal"):
             sanitized_dict["goal"] = strip_internal_placeholders(sanitized_dict["goal"])
         if sanitized_dict.get("steps"):
@@ -253,6 +255,26 @@ async def get_task_replay(task_id: str):
         "action_history": sanitized_history,
         "screenshots_available": sum(1 for item in timeline if item["screenshot_url"]),
         "replay_mode": "read_only",
+    }
+
+
+@router.get("/tasks/{task_id}/trace", tags=["tasks"])
+async def get_task_execution_trace(task_id: str):
+    """Return bounded, redacted planner, DOM, and action events for the inspector."""
+    task = task_manager.tasks.get(task_id) or task_manager.task_history.get(task_id) or task_archive.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    from backend.security import redact_sensitive_data, redact_text
+    events = getattr(task, "execution_trace", []) or []
+    safe_events = redact_sensitive_data(events[-150:], mask_tier3=True)
+    return {
+        "task_id": task_id,
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+        "goal": redact_text(task.goal or "", mask_tier3=True),
+        "initial_plan": redact_sensitive_data(task.initial_plan or [], mask_tier3=True),
+        "events": safe_events,
+        "event_count": len(events),
+        "retention_limit": 150,
     }
 
 

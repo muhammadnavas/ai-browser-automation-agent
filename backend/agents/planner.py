@@ -19,8 +19,16 @@ import base64
 import mimetypes
 import time
 import httpx
+import warnings
 from typing import Dict, Any, List, Optional, Set, Tuple
 from urllib.parse import urlparse
+
+# Suppress google-genai automatic function calling advisory warning when using models.generate_content
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Direct use of automatic function calling.*",
+    category=UserWarning,
+)
 
 from models.schemas import BrowserAction, ActionType, ApprovalType
 from agents.plan_cache import PlanCache, default_plan_cache
@@ -58,6 +66,7 @@ KNOWN_SERVICES: Dict[str, str] = {
     "google calendar": "https://calendar.google.com",
     "google meet": "https://meet.google.com",
     "google classroom": "https://classroom.google.com",
+    "gcr": "https://classroom.google.com",
     # Generic fallback
     "google": "https://www.google.com",
     "github": "https://github.com",
@@ -358,9 +367,7 @@ complete the user's goal step-by-step by choosing ONE browser action at a time.
 You have access to a dynamic Form Analyzer which detects fields and forms. \
 Use the provided structured form representation to understand the fields and map them to the user's data.
 
-═══════════════════════════════════════════════════════════
 AVAILABLE ACTIONS (use exactly these strings in "action"):
-═══════════════════════════════════════════════════════════
   navigate        → Go to a URL. Set "text" to the full URL.
   fill            → Fill/Type into a field. Prefer "element_id" from the latest DOM snapshot; use a stable "selector" only when no element_id is available. "text" = value to type.
   click           → Click an element (button, link, option, etc.). Prefer "element_id" from the latest DOM snapshot; use a stable "selector" only when no element_id is available. Never reuse element IDs or selectors from earlier page snapshots.
@@ -377,9 +384,7 @@ AVAILABLE ACTIONS (use exactly these strings in "action"):
                      Use this BEFORE submitting any form to confirm field values with the user.
   finish          → End the task. Provide "extracted_data" with a task summary.
 
-═══════════════════════════════════════════════════════════
 FORM-FILLING WORKFLOW (apply this for any form task):
-═══════════════════════════════════════════════════════════
   Phase 1 – INSPECT  : Analyze the FORM QUESTIONS AND COMPACT REPRESENTATION to identify all fields.
   Phase 2 – FILL     : Fill each field one-by-one. Use the right action per field type:
                         • Text/Email/Number/Textarea/Contenteditable → fill
@@ -392,9 +397,7 @@ FORM-FILLING WORKFLOW (apply this for any form task):
   Phase 4 – CONFIRM  : Use "request_approval" with "text" = a summary of every value entered.
   Phase 5 – SUBMIT   : Click the submit button or call finish.
 
-═══════════════════════════════════════════════════════════
 IMPORTANT RULES:
-═══════════════════════════════════════════════════════════
   • Output ONLY ONE action per response.
   • APPROVAL RULES:
     1. NEVER request approval in the middle of filling a form. Fill EVERY required text input, dropdown, and file upload first before requesting approval.
@@ -857,10 +860,13 @@ class AIAgentPlanner:
             ]
             for model in models_to_try:
                 try:
+                    gen_config = {"response_mime_type": response_mime_type}
+                    # Disable automatic function calling (AFC) to suppress SDK advisory warnings
+                    gen_config["automatic_function_calling"] = {"disable": True}
                     response = self.client.models.generate_content(
                         model=model,
                         contents=prompt,
-                        config={"response_mime_type": response_mime_type},
+                        config=gen_config,
                     )
                     if model != self.model_name:
                         logger.info(f"LLM fallback succeeded with Gemini model '{model}'")
@@ -1136,7 +1142,7 @@ class AIAgentPlanner:
                             "reused": True,
                             "key": redis_key,
                             "version": redis_cached.get("agent_version", self.agent_version),
-                            "message": f"⚡ Plan Cache HIT (Redis): Reused {len(plan_steps)}-step plan from Redis cache",
+                            "message": f"Plan Cache HIT (Redis): Reused {len(plan_steps)}-step plan from Redis cache",
                             "details": f"Redis Key: {redis_key} • State validated • Instant reuse without AI latency",
                         }
                         return self._filter_unrequested_report_steps(goal, plan_steps)
@@ -2039,7 +2045,7 @@ If the task is already complete, return ["Verify the requested outcome and finis
         # The LLM tends to hallucinate wrong CSS selectors for these structured workflows.
         goal_lower_check = goal.lower()
         _is_drive_task = any(k in goal_lower_check for k in [
-            "upload", "file upload", "new folder", "create folder", "gdrive", "google drive", "drive"
+            "upload", "file upload", "new folder", "create folder", "gdrive", "google drive", "drive", "folder"
         ])
         _current_url = page_info.get("url", "").lower()
         _on_drive = "drive.google.com" in _current_url
@@ -2548,12 +2554,15 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 )
 
         # ── Step 2b: Autonomous Form Filling (Google Forms, Portals, Inputs) ─
+        is_drive_context = any(k in goal_lower for k in ["drive", "gdrive", "folder"]) or "drive.google.com" in url
         is_form_task = (
-            intent.get("category_key") in ("form_filling", "job_application")
-            or _has_keyword(goal_lower, ["form", "fill", "register", "registration", "apply", "submit", "student", "survey", "details", "applicant"])
-            or "docs.google.com/forms" in url
-            or "forms.gle" in url
-            or len(page_info.get("form_questions", [])) > 0
+            not is_drive_context
+            and (
+                intent.get("category_key") in ("form_filling", "job_application")
+                or _has_keyword(goal_lower, ["form", "fill", "register", "registration", "apply", "submit", "student", "survey", "details", "applicant"])
+                or "docs.google.com/forms" in url
+                or "forms.gle" in url
+            )
         )
         if is_form_task:
             filled_indices = {
@@ -2701,18 +2710,30 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
             # Priority 1: Look for "+ New" button if we haven't clicked it yet
             if not has_clicked_new and not has_clicked_file_upload and not has_clicked_new_folder:
                 upload_btn = None
-                upload_keywords = ["new", "+ new", "upload", "add", "import", "attach"]
+                # First pass: check for exact "New" / "+ New" button (Google Drive, Cloud storage)
                 for el in elements:
                     el_text = (el.get("text") or "").lower().strip()
+                    el_aria = (el.get("aria_label") or "").lower().strip()
                     el_tag = el.get("tag", "").lower()
-                    el_aria = (el.get("aria_label") or "").lower()
-                    el_title = (el.get("title") or "").lower()
-                    combined = f"{el_text} {el_aria} {el_title}"
-                    if el_tag in ("button", "a", "div", "span", "li") and any(
-                        kw in combined for kw in upload_keywords
+                    if el_tag in ("button", "div", "a", "span") and (
+                        el_text in ("new", "+ new", "+new") or el_aria in ("new", "new item", "create new") or el_aria.startswith("new ")
                     ):
                         upload_btn = el
                         break
+
+                if not upload_btn:
+                    upload_keywords = ["new", "+ new", "upload", "add", "import", "attach"]
+                    for el in elements:
+                        el_text = (el.get("text") or "").lower().strip()
+                        el_tag = el.get("tag", "").lower()
+                        el_aria = (el.get("aria_label") or "").lower()
+                        el_title = (el.get("title") or "").lower()
+                        combined = f"{el_text} {el_aria} {el_title}"
+                        if el_tag in ("button", "a", "div", "span", "li") and any(
+                            kw in combined for kw in upload_keywords
+                        ):
+                            upload_btn = el
+                            break
 
                 if upload_btn:
                     return BrowserAction(
@@ -2721,6 +2742,12 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                         selector=upload_btn.get("selector"),
                         text=upload_btn.get("text"),
                         reasoning=f"Clicking '{upload_btn.get('text') or 'New/Upload'}' button to start the upload/create flow.",
+                    )
+                elif "drive.google.com" in url or is_drive_context:
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=2000,
+                        reasoning="Waiting for Google Drive navigation and '+ New' button to render.",
                     )
 
             # Priority 2: After clicking New, look for "File upload" or "New folder" option in the menu
@@ -2731,10 +2758,11 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 for el in elements:
                     el_text = (el.get("text") or "").lower()
                     el_aria = (el.get("aria_label") or "").lower()
-                    if is_folder_task and ("new folder" in el_text or "new folder" in el_aria):
+                    combined_item = f"{el_text} {el_aria}"
+                    if is_folder_task and "new folder" in combined_item:
                         target_el = el
                         break
-                    elif not is_folder_task and ("file upload" in el_text or "file upload" in el_aria or "upload file" in el_text):
+                    elif not is_folder_task and any(k in combined_item for k in ["file upload", "upload file"]):
                         target_el = el
                         break
                 

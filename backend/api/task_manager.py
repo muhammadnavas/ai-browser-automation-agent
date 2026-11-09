@@ -472,6 +472,8 @@ class TaskManager:
                 mask_tier3=not is_explicit_contact,
                 preserve_contact_info=is_explicit_contact,
             )
+            # The inspector fetches detailed events on demand; keep WebSocket updates small.
+            task_data["execution_trace"] = []
             if task_data.get("error"):
                 task_data["error"] = sanitize_user_facing_error(task_data["error"])
             if task_data.get("goal"):
@@ -519,6 +521,28 @@ class TaskManager:
                 f"Expected {expected_url}, found {actual_url}. No action was executed."
             )
         return True, "Live browser URL matches the saved checkpoint."
+
+    def _record_execution_trace(self, task: TaskResponse, event_type: str, step_number: int, data: Dict[str, Any]) -> None:
+        """Store bounded, redacted observability events without changing agent decisions."""
+        try:
+            from backend.security import redact_sensitive_data
+            safe_data = redact_sensitive_data(data, mask_tier3=True)
+            events = getattr(task, "execution_trace", None)
+            if events is None:
+                task.execution_trace = []
+                events = task.execution_trace
+            events.append({
+                "event_id": f"{task.task_id}:{step_number}:{event_type}:{int(time.time() * 1000)}",
+                "event_type": event_type,
+                "step_number": step_number,
+                "timestamp": time.time(),
+                "data": safe_data,
+            })
+            # Keep a bounded trace; DOM snapshots are relatively expensive to retain.
+            if len(events) > 150:
+                del events[:-150]
+        except Exception:
+            logger.exception("Could not record execution inspector event for task %s", getattr(task, "task_id", "unknown"))
 
     async def run_task_execution(self, task_id: str, req: TaskRequest) -> None:
         """Drive a full browser automation task through its step loop."""
@@ -1062,6 +1086,58 @@ class TaskManager:
                     task_context=task.context,
                     screenshot_path=screenshot_path,
                 )
+                # Capture the exact page evidence and structured planner decision for inspection.
+                # Never persist raw input values from form fields; the security redactor masks them.
+                # Whitelist DOM metadata. Never persist input values, raw attributes,
+                # or arbitrary extension payload fields in the inspector trace.
+                safe_element_fields = (
+                    "index", "tag", "role", "text", "aria_label", "label",
+                    "placeholder", "title", "selector", "disabled", "visible",
+                )
+                trace_elements = []
+                for element in (page_info.get("elements") or [])[:50]:
+                    if isinstance(element, dict):
+                        trace_elements.append({
+                            key: (str(element[key])[:240] if isinstance(element[key], str) else element[key])
+                            for key in safe_element_fields
+                            if key in element
+                        })
+                trace_dom = {
+                    "url": page_info.get("url") or page_info.get("browser_tab_url"),
+                    "title": str(page_info.get("title") or "")[:240],
+                    "headings": [str(item)[:200] for item in (page_info.get("headings") or [])[:20]],
+                    "page_text": str(page_info.get("page_text") or "")[:3000],
+                    "elements": trace_elements,
+                    "element_count": len(page_info.get("elements") or []),
+                    "form_field_count": len(page_info.get("form_fields") or []),
+                    "agent_state": page_info.get("agent_state"),
+                }
+                self._record_execution_trace(task, "dom_snapshot", step_num, trace_dom)
+                previous_action_failed = any(
+                    event.get("event_type") == "action_result"
+                    and event.get("data", {}).get("success") is False
+                    for event in (getattr(task, "execution_trace", []) or [])[-3:]
+                )
+                # This is a planner decision informed by recent execution state,
+                # not proof that the planner performed a separate replan operation.
+                raw_action = action.model_dump() if hasattr(action, "model_dump") else {}
+                safe_action = {
+                    key: value for key, value in raw_action.items()
+                    if key not in {"value", "text", "upload_paths", "file_path", "file_paths"}
+                } if isinstance(raw_action, dict) else str(action)
+                self._record_execution_trace(task, "planner_decision", step_num, {
+                    "provider": getattr(planner, "provider_name", None) or getattr(planner, "provider", None),
+                    "model": getattr(planner, "model_name", None) or getattr(planner, "model", None),
+                    "goal": req.goal,
+                    "step_number": step_num,
+                    "max_steps": req.max_steps,
+                    "selected_action": safe_action,
+                    "reasoning": action.reasoning,
+                    "previous_action_failed": previous_action_failed,
+                    "dom_element_count": len(page_info.get("elements") or []),
+                    "url": page_info.get("url"),
+                    "screenshot_url": screenshot_url,
+                })
 
                 # Gmail is a dynamic SPA: bind Compose clicks to the fresh DOM
                 # snapshot instead of trusting a brittle nth-of-type CSS selector.
@@ -1998,6 +2074,21 @@ class TaskManager:
                         task._agent_filled_fields = {
                             k: v for k, v in task.context.filled_fields.items()
                         }
+
+                    raw_result_action = action.model_dump() if hasattr(action, "model_dump") else {}
+                    safe_result_action = {
+                        key: value for key, value in raw_result_action.items()
+                        if key not in {"value", "text", "upload_paths", "file_path", "file_paths"}
+                    } if isinstance(raw_result_action, dict) else str(action)
+                    self._record_execution_trace(task, "action_result", step_num, {
+                        "action": safe_result_action,
+                        "description": str(exec_description or "")[:1000],
+                        "success": bool(action_success),
+                        "error": None if action_success else exec_description,
+                        "duration_ms": round((time.time() - step_start) * 1000, 1),
+                        "url_after": getattr(controller, "current_url", None),
+                        "screenshot_url": screenshot_url,
+                    })
 
                     # 7. Record step
                     duration_ms = round((time.time() - step_start) * 1000, 1)

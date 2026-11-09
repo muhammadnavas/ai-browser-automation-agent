@@ -178,13 +178,13 @@ class CacheService:
         except ValueError:
             self.max_connections = max_connections
         try:
-            self.socket_timeout = float(os.getenv("REDIS_SOCKET_TIMEOUT", str(socket_timeout if socket_timeout != 2.0 else 5.0)))
+            self.socket_timeout = float(os.getenv("REDIS_SOCKET_TIMEOUT", str(socket_timeout if socket_timeout <= 2.5 else 2.5)))
         except ValueError:
-            self.socket_timeout = 5.0
+            self.socket_timeout = 2.5
         try:
-            self.socket_connect_timeout = float(os.getenv("REDIS_CONNECT_TIMEOUT", str(socket_connect_timeout if socket_connect_timeout != 2.0 else 5.0)))
+            self.socket_connect_timeout = float(os.getenv("REDIS_CONNECT_TIMEOUT", str(socket_connect_timeout if socket_connect_timeout <= 2.5 else 2.5)))
         except ValueError:
-            self.socket_connect_timeout = 5.0
+            self.socket_connect_timeout = 2.5
         try:
             self.connect_cooldown_seconds = float(os.getenv("REDIS_CONNECT_COOLDOWN", str(connect_cooldown_seconds)))
         except ValueError:
@@ -275,7 +275,7 @@ class CacheService:
                         max_connections=self.max_connections,
                         socket_timeout=self.socket_timeout,
                         socket_connect_timeout=self.socket_connect_timeout,
-                        retry_on_timeout=True,
+                        retry_on_timeout=False,
                         health_check_interval=30,
                         socket_keepalive=True,
                         decode_responses=True,
@@ -337,11 +337,41 @@ class CacheService:
         if self._client is not None and self._is_available:
             return self._client
 
+        # Fast-fail bypass during connection failure cooldown (0ms)
+        now = time.time()
+        if (
+            not self._is_available
+            and (now - self._last_connect_attempt < self.connect_cooldown_seconds)
+        ):
+            return None
+
         # Attempt auto-connect
         connected = await self.connect()
         if connected and self._client is not None:
             return self._client
         return None
+
+    async def _handle_connection_failure(self, exc: Exception, op_name: str, key: str = "") -> None:
+        """Handle a connection drop or timeout during cache operations.
+
+        Enters cooldown immediately and cleans up the client pool so subsequent
+        operations bypass Redis cleanly without hanging.
+        """
+        self._is_available = False
+        self._last_connect_attempt = time.time()
+        logger.warning(
+            "Redis %s failed for key='%s': %s (%s). Bypassing Redis cache for %.0fs cooldown.",
+            op_name, key, exc, type(exc).__name__, self.connect_cooldown_seconds
+        )
+        if self._client is not None:
+            try:
+                if hasattr(self._client, "aclose"):
+                    await self._client.aclose()
+                elif hasattr(self._client, "close"):
+                    await self._client.close()
+            except Exception:
+                pass
+            self._client = None
 
     # -----------------------------------------------------------------------
     # Cache Key Generation & Normalization
@@ -589,8 +619,7 @@ class CacheService:
                 return None
 
         except (RedisError, ConnectionError, TimeoutError, OSError, Exception) as exc:
-            logger.warning(f"Redis get operation failed for key='{key}': {exc}")
-            self._is_available = False
+            await self._handle_connection_failure(exc, op_name="get", key=key)
             return None
 
     async def set(
@@ -631,8 +660,7 @@ class CacheService:
             logger.info(f"Cache SET: key='{key}', ttl={effective_ttl}s")
             return True
         except (RedisError, ConnectionError, TimeoutError, OSError, Exception) as exc:
-            logger.warning(f"Redis set operation failed for key='{key}': {exc}")
-            self._is_available = False
+            await self._handle_connection_failure(exc, op_name="set", key=key)
             return False
 
     async def delete(self, key: str) -> bool:
@@ -658,8 +686,7 @@ class CacheService:
             )
             return True
         except (RedisError, ConnectionError, TimeoutError, OSError, Exception) as exc:
-            logger.warning(f"Redis delete operation failed for key='{key}': {exc}")
-            self._is_available = False
+            await self._handle_connection_failure(exc, op_name="delete", key=key)
             return False
 
     async def get_validated(
