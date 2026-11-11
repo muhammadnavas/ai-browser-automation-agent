@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Browser Agent</title>
+  <title>Automata</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="popup-container">
     <header class="popup-header">
       <div class="brand">
-        <span class="brand-icon">🤖</span>
+        <span class="brand-icon"><img src="../icons/automata-mark.svg" alt=""></span>
         <div class="brand-info">
-          <h2>AI Browser Agent</h2>
-          <span class="version">Extension Bridge v1.0</span>
+          <h2>Automata</h2>
+          <span class="version">BROWSER ASSISTANT</span>
         </div>
       </div>
       <div id="status-indicator" class="status-pill status-disconnected">
@@ -23,7 +23,7 @@
     </header>
 
     <div class="section">
-      <label for="server-url-input">Backend WebSocket URL</label>
+      <label for="server-url-input">Connection address</label>
       <div class="input-row">
         <input type="text" id="server-url-input" placeholder="ws://localhost:8000/api/extension/ws" />
         <button id="save-url-btn" class="btn-secondary" title="Save URL">Save</button>
@@ -31,8 +31,8 @@
     </div>
 
     <div class="action-buttons">
-      <button id="reconnect-btn" class="btn-primary">🔄 Reconnect Backend</button>
-      <button id="open-dashboard-btn" class="btn-outline">🌐 Open Dashboard</button>
+      <button id="reconnect-btn" class="btn-primary">Reconnect</button>
+      <button id="open-dashboard-btn" class="btn-outline">Open Automata</button>
     </div>
 
     <div class="section">
@@ -47,7 +47,7 @@
 
     <footer class="popup-footer">
       <span>Operates in your current Chrome session</span>
-      <span class="secure-badge">🔒 Zero-token extraction</span>
+      <span class="secure-badge">Private session connection</span>
     </footer>
   </div>
 
