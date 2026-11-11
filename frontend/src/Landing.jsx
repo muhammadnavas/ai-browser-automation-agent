@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  ArrowDownRight, ArrowRight, Braces, Check, ChevronRight,
-  CircleDot, Command, FileSearch, Fingerprint, Globe2,
-  MousePointer2, ScanSearch, ShieldCheck, Sparkles, Zap,
+  ArrowDownRight, ArrowRight, Check, ChevronRight,
+  CircleDot, Command, FileSearch, Fingerprint, FolderOpen, Globe2,
+  MousePointer2, ScanSearch, ShieldCheck, Sparkles, ClipboardList, Search,
 } from 'lucide-react';
 import './landing.css';
 
@@ -14,56 +14,28 @@ const capabilities = [
   { icon: ShieldCheck,   number: '04', title: 'Keep humans in control', copy: 'Review sensitive actions, approve important steps, and follow the execution as it happens.' },
 ];
 
-const endpointGroups = [
-  {
-    title: 'Task automation',
-    copy: 'Create, monitor, approve, and manage browser workflows.',
-    endpoints: [
-      ['POST', '/api/tasks', 'Create and launch an automation task'],
-      ['GET', '/api/tasks', 'List active tasks'],
-      ['GET', '/api/tasks/history', 'Retrieve task history'],
-      ['GET', '/api/tasks/{task_id}', 'Get task status and execution details'],
-      ['POST', '/api/tasks/{task_id}/approve', 'Approve a pending action'],
-      ['POST', '/api/tasks/{task_id}/cancel', 'Cancel a running task'],
-    ],
-  },
-  {
-    title: 'Browser & extraction',
-    copy: 'Check browser connectivity and collect structured page data.',
-    endpoints: [
-      ['GET', '/api/pool/status', 'Get browser pool status'],
-      ['GET', '/api/extension/status', 'Check Chrome extension connection'],
-      ['POST', '/api/extract', 'Extract structured information'],
-      ['POST', '/api/forms/discover', 'Discover forms and input fields'],
-    ],
-  },
-  {
-    title: 'Research',
-    copy: 'Run multi-page research and retrieve its results.',
-    endpoints: [
-      ['POST', '/api/research', 'Start a research task'],
-      ['GET', '/api/research/{task_id}', 'Get research task status'],
-      ['GET', '/api/research/{task_id}/results', 'Fetch comparison results'],
-      ['GET', '/api/research/{task_id}/export', 'Export research results'],
-    ],
-  },
+const useCases = [
+  { icon: Search, title: 'Research without the tab overload', copy: 'Ask it to find useful information across websites and bring the results together.', example: 'Compare three options and summarize the key differences.' },
+  { icon: FolderOpen, title: 'Keep information organized', copy: 'Navigate websites and organize information into folders or structured results.', example: 'Find these resources and organize them by topic.' },
+  { icon: ClipboardList, title: 'Handle repetitive steps', copy: 'Move through forms and routine browser workflows without repeating every click yourself.', example: 'Open this form and fill in the details I provide.' },
+  { icon: FileSearch, title: 'Get answers from a page', copy: 'Collect the details that matter and turn them into information you can review and use.', example: 'Find the price, features, and contact details on this page.' },
 ];
 
 const sampleSteps = [
   { icon: Globe2,      label: 'Open target website',    status: 'done'    },
-  { icon: ScanSearch,  label: 'Inspect page structure', status: 'done'    },
-  { icon: Braces,      label: 'Build an action plan',   status: 'active'  },
-  { icon: ShieldCheck, label: 'Wait for your approval', status: 'pending' },
+  { icon: ScanSearch,  label: 'Understand the page', status: 'done'    },
+  { icon: Braces,      label: 'Plan the next steps',   status: 'active'  },
+  { icon: ShieldCheck, label: 'Ask before important actions', status: 'pending' },
 ];
 
 /* ─────────────────── canvas node graph ──────────────── */
 const NODES = [
-  { id: 'browser',   label: 'Browser Control',  sub: 'Playwright engine', angle: -0.35, baseDist: 170, r: 16, ringColor: '#65e6a4', main: false },
-  { id: 'planner',   label: 'Action Planner',   sub: 'LLM reasoning',     angle:  0.80, baseDist: 195, r: 15, ringColor: '#65e6a4', main: false },
-  { id: 'extractor', label: 'DOM Extraction',   sub: 'Structured data',   angle:  2.05, baseDist: 165, r: 14, ringColor: '#58dca1', main: false },
-  { id: 'approval',  label: 'Human Approval',   sub: 'Safety checkpoint', angle:  3.25, baseDist: 205, r: 17, ringColor: '#7cf0b5', main: false },
-  { id: 'recovery',  label: 'Self Healing',     sub: 'Error recovery',    angle:  4.35, baseDist: 155, r: 13, ringColor: '#54d89b', main: false },
-  { id: 'tabs',      label: 'Tab Manager',      sub: 'Multi-session',     angle:  5.40, baseDist: 185, r: 14, ringColor: '#65e6a4', main: false },
+  { id: 'browser',   label: 'Your browser',  sub: 'Web pages', angle: -0.35, baseDist: 170, r: 16, ringColor: '#65e6a4', main: false },
+  { id: 'planner',   label: 'Understands your request',   sub: 'Your instructions',     angle:  0.80, baseDist: 195, r: 15, ringColor: '#65e6a4', main: false },
+  { id: 'extractor', label: 'Finds page details',   sub: 'Useful information',   angle:  2.05, baseDist: 165, r: 14, ringColor: '#58dca1', main: false },
+  { id: 'approval',  label: 'Your approval',   sub: 'You stay in control', angle:  3.25, baseDist: 205, r: 17, ringColor: '#7cf0b5', main: false },
+  { id: 'recovery',  label: 'Handles hiccups',     sub: 'Tries another way',    angle:  4.35, baseDist: 155, r: 13, ringColor: '#54d89b', main: false },
+  { id: 'tabs',      label: 'Keeps things organized',      sub: 'Across tabs',     angle:  5.40, baseDist: 185, r: 14, ringColor: '#65e6a4', main: false },
 ];
 
 const CONNECTORS = [
@@ -450,12 +422,12 @@ export default function Landing({ onOpen }) {
       <nav className="landing-nav">
         <a className="landing-brand" href="#top" aria-label="AI Browser Agent home">
           <span className="landing-brand-mark"><Command size={19} /></span>
-          <span>browser<span className="brand-accent">agent</span><small>AI AUTOMATION WORKSPACE</small></span>
+          <span>browser<span className="brand-accent">agent</span><small>YOUR BROWSER ASSISTANT</small></span>
         </a>
         <div className="landing-nav-links">
           <a href="#capabilities">Capabilities</a>
           <a href="#workflow">How it works</a>
-          <a href="#api">API endpoints</a>
+          <a href="#use-cases">What you can do</a>
         </div>
         <button className="landing-open" onClick={onOpen}>Open workspace <ArrowRight size={16} /></button>
       </nav>
@@ -504,7 +476,7 @@ export default function Landing({ onOpen }) {
           <div className="workflow-preview reveal-fade-left">
             <div className="preview-topbar">
               <div className="window-dots"><i /><i /><i /></div>
-              <span><CircleDot size={12} /> execution / live session</span>
+              <span><CircleDot size={12} /> YOUR TASK</span>
               <span className="preview-live"><i /> LIVE PREVIEW</span>
             </div>
             <div className="preview-content">
@@ -517,8 +489,8 @@ export default function Landing({ onOpen }) {
                 <span className="prompt-arrow"><ArrowRight size={16} /></span>
               </div>
               <div className="preview-status">
-                <div><span className="status-pulse" /> <strong>Agent execution plan</strong></div>
-                <span>STEP 03 OF 04</span>
+                <div><span className="status-pulse" /> <strong>Working through your task</strong></div>
+                <span>3 OF 4 STEPS</span>
               </div>
               <div className="preview-steps">
                 {sampleSteps.map((step, si) => {
@@ -541,8 +513,8 @@ export default function Landing({ onOpen }) {
                 })}
               </div>
               <div className="preview-foot">
-                <span><Fingerprint size={14} /> Transparent by design</span>
-                <span><ShieldCheck size={14} /> Approval when it matters</span>
+                <span><Fingerprint size={14} /> See what’s happening</span>
+                <span><ShieldCheck size={14} /> You stay in control</span>
               </div>
             </div>
           </div>
@@ -586,46 +558,35 @@ export default function Landing({ onOpen }) {
           </div>
         </section>
 
-        {/* ── API endpoints ──────────────────────────── */}
-        <section className="landing-api" id="api">
-          <div className="api-heading">
+        {/* ── Everyday use cases ─────────────────────── */}
+        <section className="landing-use-cases" id="use-cases">
+          <div className="use-cases-heading">
             <div>
-              <span className="landing-kicker"><Braces size={13} /> DEVELOPER REFERENCE</span>
-              <h2>Connect to the<br /><em>automation API.</em></h2>
+              <span className="landing-kicker">LESS BUSYWORK, MORE MOMENTUM</span>
+              <h2>What would you like<br />to <em>get done?</em></h2>
             </div>
-            <p>
-              Explore the core REST endpoints powering task execution, browser
-              connectivity, extraction, and research. All routes use the <code>/api</code> prefix.
-            </p>
+            <p>Start with the result you want. Give a simple instruction, then follow along as your browser takes care of the steps.</p>
           </div>
-
-          <div className="api-groups">
-            {endpointGroups.map((group) => (
-              <article className="api-group" key={group.title}>
-                <div className="api-group-heading">
-                  <div>
-                    <h3>{group.title}</h3>
-                    <p>{group.copy}</p>
+          <div className="use-case-grid">
+            {useCases.map((item, index) => {
+              const Icon = item.icon;
+              return (
+                <article className="use-case-card" key={item.title}>
+                  <div className="use-case-icon"><Icon size={20} strokeWidth={1.7} /></div>
+                  <span className="use-case-number">0{index + 1}</span>
+                  <h3>{item.title}</h3>
+                  <p>{item.copy}</p>
+                  <div className="use-case-example">
+                    <span>TRY</span>
+                    <q>{item.example}</q>
                   </div>
-                  <span>{String(group.endpoints.length).padStart(2, '0')} ROUTES</span>
-                </div>
-                <div className="api-endpoint-list">
-                  {group.endpoints.map(([method, path, description]) => (
-                    <div className="api-endpoint" key={method + path}>
-                      <span className={'api-method method-' + method.toLowerCase()}>{method}</span>
-                      <code>{path}</code>
-                      <span className="api-description">{description}</span>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
-
-          <div className="api-footer-note">
-            <span className="live-pulse" />
-            Real-time task updates are also available through WebSocket connections.
-            <code>/api/ws/tasks/{'{task_id}'}</code>
+          <div className="use-cases-note">
+            <ShieldCheck size={18} />
+            <p><strong>You stay in control.</strong> Follow the steps as they happen and review important actions before they go ahead.</p>
           </div>
         </section>
 
@@ -636,7 +597,7 @@ export default function Landing({ onOpen }) {
           <h2 className="reveal-fade-up">Your next workflow<br />starts with <em>one sentence.</em></h2>
           <p className="reveal-fade-up">Skip the repetitive clicks. Tell your agent what you need.</p>
           <button className="landing-primary reveal-fade-up" onClick={onOpen}>
-            Open AI Browser Agent <ChevronRight size={17} />
+            Start a task <ChevronRight size={17} />
           </button>
           <div className="cta-orbit cta-orbit-one" />
           <div className="cta-orbit cta-orbit-two" />
@@ -649,7 +610,7 @@ export default function Landing({ onOpen }) {
           <span className="landing-brand-mark"><Command size={16} /></span>
           <span>browser<span className="brand-accent">agent</span></span>
         </a>
-        <span>Automation with visibility. Intelligence with control.</span>
+        <span>Less repetitive browsing. More time for what matters.</span>
         <a href="#top">Back to top ↑</a>
       </footer>
     </div>
