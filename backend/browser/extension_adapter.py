@@ -472,16 +472,29 @@ class ExtensionBrowserAdapter:
         data: Dict[str, Any] = {}
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            resp = await self.manager.send_command(
-                task_id=self.task_id,
-                command_type="inspect_dom",
-                payload={"show_badges": self.show_badges},
-                timeout=18.0,
-            )
+            try:
+                resp = await self.manager.send_command(
+                    task_id=self.task_id,
+                    command_type="inspect_dom",
+                    payload={"show_badges": self.show_badges},
+                    timeout=18.0,
+                )
+            except Exception as exc:
+                reason = f"DOM inspection command error: {exc}"
+                logger.warning("DOM inspection failed for task %s (attempt %s/%s): %s",
+                               self.task_id, attempt, max_attempts, reason)
+                if attempt < max_attempts:
+                    await asyncio.sleep(1.0 * attempt)
+                    continue
+                return self._inspection_failure(reason, attempt)
+
             if not resp.get("success"):
                 reason = str(resp.get("error") or "Chrome content script did not return a DOM snapshot.")
                 logger.warning("DOM inspection failed for task %s (attempt %s/%s): %s",
                                self.task_id, attempt, max_attempts, reason)
+                if attempt < max_attempts:
+                    await asyncio.sleep(1.0 * attempt)
+                    continue
                 return self._inspection_failure(reason, attempt)
 
             candidate = resp.get("data")

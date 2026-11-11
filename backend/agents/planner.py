@@ -1290,7 +1290,7 @@ Output format example:
                 "source": source,
                 "reused": False,
                 "key": redis_key or "",
-                "message": f"⚡ Plan Cache MISS: Generated fresh {len(plan or [])}-step plan via {source.upper()} and cached to Redis",
+                "message": f"Generated fresh {len(plan or [])}-step plan via {source.upper()} and cached to Redis",
                 "details": f"Cached in Redis (Key: {redis_key or 'agent_cache:plan:...'}) for instant future reuse",
             }
 
@@ -2689,29 +2689,41 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
             goal_lower, ["upload", "attach", "folder", "create"]
         )
         if is_upload_task and on_target:
+            def _is_successful_step(h: Dict[str, Any]) -> bool:
+                if h.get("success") is False:
+                    return False
+                status = str(h.get("status") or "").lower()
+                if status in ("failed", "error") or "fail" in status:
+                    return False
+                return True
+
             has_clicked_new = any(
-                h.get("action") == "click" and h.get("reasoning") and ("new" in str(h.get("reasoning")).lower() or "upload" in str(h.get("reasoning")).lower() or "folder" in str(h.get("reasoning")).lower())
+                _is_successful_step(h) and h.get("action") == "click" and h.get("reasoning") and ("new" in str(h.get("reasoning")).lower() or "upload" in str(h.get("reasoning")).lower() or "folder" in str(h.get("reasoning")).lower())
                 for h in trajectory_history
             )
             has_clicked_file_upload = any(
-                (h.get("action") == "click" and h.get("reasoning") and "file upload" in str(h.get("reasoning")).lower())
-                or h.get("action") in ("upload", "upload_file")
+                _is_successful_step(h) and (
+                    (h.get("action") == "click" and h.get("reasoning") and "file upload" in str(h.get("reasoning")).lower())
+                    or h.get("action") in ("upload", "upload_file")
+                )
                 for h in trajectory_history
             )
             has_clicked_new_folder = any(
-                h.get("action") == "click" and h.get("reasoning") and "new folder" in str(h.get("reasoning")).lower()
+                _is_successful_step(h) and h.get("action") == "click" and h.get("reasoning") and "new folder" in str(h.get("reasoning")).lower()
                 for h in trajectory_history
             )
             has_typed_folder_name = any(
-                h.get("action") in ("type_text", "fill") and h.get("reasoning") and "folder name" in str(h.get("reasoning")).lower()
+                _is_successful_step(h) and h.get("action") in ("type_text", "fill") and h.get("reasoning") and "folder name" in str(h.get("reasoning")).lower()
                 for h in trajectory_history
             )
 
-            # Priority 1: Look for "+ New" button if we haven't clicked it yet
+            # Priority 1: Look for enabled "+ New" button if we haven't clicked it yet
             if not has_clicked_new and not has_clicked_file_upload and not has_clicked_new_folder:
                 upload_btn = None
                 # First pass: check for exact "New" / "+ New" button (Google Drive, Cloud storage)
                 for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
                     el_text = (el.get("text") or "").lower().strip()
                     el_aria = (el.get("aria_label") or "").lower().strip()
                     el_tag = el.get("tag", "").lower()
@@ -2724,6 +2736,8 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 if not upload_btn:
                     upload_keywords = ["new", "+ new", "upload", "add", "import", "attach"]
                     for el in elements:
+                        if el.get("disabled") is True or el.get("visible") is False:
+                            continue
                         el_text = (el.get("text") or "").lower().strip()
                         el_tag = el.get("tag", "").lower()
                         el_aria = (el.get("aria_label") or "").lower()
@@ -2756,6 +2770,8 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 is_folder_task = "folder" in goal_lower
                 
                 for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
                     el_text = (el.get("text") or "").lower()
                     el_aria = (el.get("aria_label") or "").lower()
                     combined_item = f"{el_text} {el_aria}"
@@ -2786,12 +2802,14 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 else:
                     wait_count = sum(
                         1 for h in trajectory_history
-                        if "waiting for the 'new' menu" in str(h.get("reasoning", "")).lower()
+                        if any(k in str(h.get("reasoning", "")).lower() for k in ["waiting for the 'new' menu", "waiting briefly before continuing"])
                     )
                     if wait_count >= 1:
                         # Re-click New button if menu didn't open
                         upload_btn = None
                         for el in elements:
+                            if el.get("disabled") is True or el.get("visible") is False:
+                                continue
                             el_text = (el.get("text") or "").lower().strip()
                             el_tag = el.get("tag", "").lower()
                             el_aria = (el.get("aria_label") or "").lower()
@@ -2807,7 +2825,8 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                                 reasoning="Re-clicking 'New' button to ensure menu opens.",
                             )
                     return BrowserAction(
-                        action=ActionType.EXTRACT,
+                        action=ActionType.WAIT,
+                        scroll_amount=800,
                         reasoning="Waiting for the 'New' menu to fully open to locate the target menu item.",
                     )
 
@@ -2815,6 +2834,8 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
             if has_clicked_new_folder and not has_typed_folder_name:
                 folder_name_input = None
                 for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
                     el_tag = el.get("tag", "")
                     el_type = el.get("type", "").lower()
                     el_val = (el.get("value") or el.get("text") or "").lower()
@@ -2852,7 +2873,8 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                     )
                 else:
                     return BrowserAction(
-                        action=ActionType.EXTRACT,
+                        action=ActionType.WAIT,
+                        scroll_amount=800,
                         reasoning="Waiting for the folder name input dialog to appear.",
                     )
 
@@ -2899,6 +2921,20 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                     "folders/" in url_current
                     or any(folder_name_used.lower() in h for h in headings_current)
                 )
+
+                # If task only wanted to create a folder (not upload inside it), we are finished!
+                if not also_wants_upload:
+                    return BrowserAction(
+                        action=ActionType.FINISH,
+                        reasoning=f"Folder '{folder_name_used}' created successfully in Google Drive.",
+                        extracted_data={
+                            "task_goal": goal,
+                            "folder_name": folder_name_used,
+                            "url": page_info.get("url"),
+                            "status": "Success",
+                            "total_steps": step_number,
+                        },
+                    )
 
                 if also_wants_upload and not is_inside_folder:
                     last_step = trajectory_history[-1] if trajectory_history else {}
@@ -2977,7 +3013,8 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                         )
                     else:
                         return BrowserAction(
-                            action=ActionType.EXTRACT,
+                            action=ActionType.WAIT,
+                            scroll_amount=1000,
                             reasoning=f"Waiting for page to load inside '{folder_name_used}' folder.",
                         )
 
@@ -3017,7 +3054,8 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                                 reasoning=f"Clicking 'New' button to start the upload/create flow inside '{folder_name_used}'.",
                             )
                     return BrowserAction(
-                        action=ActionType.EXTRACT,
+                        action=ActionType.WAIT,
+                        scroll_amount=800,
                         reasoning="Waiting for the 'New' menu to open to find File upload option.",
                     )
 
