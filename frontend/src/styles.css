@@ -109,6 +109,8 @@ a:hover {
   height: 27px;
 }
 
+.brand-icon img { display:block; width:27px; height:27px; }
+
 .brand-name {
   display: block;
   font-weight: 750;
