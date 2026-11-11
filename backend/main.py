@@ -49,8 +49,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="AI Browser Automation Agent",
-    description="Industry-grade AI Browser Agent for autonomous navigation, form filling, flight/ticket booking, web scraping, and Excel/PDF report generation.",
+    title="Automata",
+    description="Automata turns natural-language goals into browser actions with adaptive planning, verification, and human approval.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -219,7 +219,7 @@ async def serve_ui():
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Browser Agent — Frontend not built</title>
+  <title>Automata — Frontend not built</title>
   <style>
     body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:#e5e7eb;font:16px/1.6 system-ui,sans-serif}
     main{max-width:680px;margin:24px;padding:28px;border:1px solid #334155;border-radius:16px;background:#111827}
@@ -298,7 +298,7 @@ async def serve_test_form():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    print(f"Starting AI Browser Automation Agent server at http://localhost:{port}")
+    print(f"Starting Automata server at http://localhost:{port}")
     reload = "--reload" in sys.argv or os.getenv("RELOAD", "false").lower() in ("true", "1")
     host = os.getenv("HOST", "127.0.0.1")
     uvicorn.run("main:app", host=host, port=port, reload=reload)
