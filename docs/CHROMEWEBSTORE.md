@@ -2,9 +2,9 @@
 
 ## Basic Metadata
 
-- **Name**: AI Browser Automation Agent Bridge
-- **Short Name**: AIAgentBridge
-- **Summary**: Connects your Chrome browser session to the AI Browser Automation Agent backend for autonomous browsing and task execution.
+- **Name**: Automata Browser Assistant
+- **Short Name**: Automata
+- **Summary**: Connects your Chrome browser session to the Automata service for autonomous browsing and task execution.
 - **Version**: 1.0.0
 - **Category**: Productivity / Developer Tools
 - **Manifest Version**: 3
@@ -18,7 +18,7 @@
 | `tabs` | Required to create dedicated task tabs for automation, query tab properties (such as URL and title), and track tab lifecycle events (e.g. detecting when a task tab is closed). |
 | `scripting` | Required to inject the content script (`content.js`) into task tabs to perform DOM element inspection and execute user-directed browser actions. |
 | `storage` | Used locally in Chrome to store the backend WebSocket server URL and persist active task-to-tab mappings across service worker suspensions. |
-| `host_permissions: ["<all_urls>"]` | Required so the AI agent can navigate to and interact with any website requested by the user during automation tasks. |
+| `host_permissions: ["<all_urls>"]` | Required so the Automata can navigate to and interact with any website requested by the user during automation tasks. |
 
 ---
 
