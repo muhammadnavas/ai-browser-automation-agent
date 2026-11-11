@@ -103,10 +103,16 @@ a:hover {
   flex: 0 0 auto;
 }
 
+.brand-icon img {
+  display: block;
+  width: 27px;
+  height: 27px;
+}
+
 .brand-name {
   display: block;
   font-weight: 750;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.08em;
   font-size: 1.02rem;
 }
 
