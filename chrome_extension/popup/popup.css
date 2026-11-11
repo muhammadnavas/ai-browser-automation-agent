@@ -49,13 +49,25 @@ body {
 }
 
 .brand-icon {
-  font-size: 20px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+}
+
+.brand-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .brand-info h2 {
   font-size: 14px;
   font-weight: 700;
-  color: var(--accent-cyan);
+  color: var(--accent-green);
   line-height: 1.2;
 }
 
