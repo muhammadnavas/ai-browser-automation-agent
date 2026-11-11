@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI Browser Automation Agent Bridge",
+  "name": "Automata Browser Assistant",
   "version": "1.0.0",
-  "description": "Enables the AI Browser Automation Agent to execute actions directly inside your existing Chrome browser session.",
+  "description": "Connects Automata to your Chrome session so it can carry out browser tasks with your approval.",
   "permissions": [
     "tabs",
     "windows",
