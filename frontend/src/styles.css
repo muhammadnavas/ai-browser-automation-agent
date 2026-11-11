@@ -52,9 +52,11 @@ a {
   transition: color 0.15s ease;
 }
 
-a:hover {
+a:hover,
+a:focus,
+a:focus-visible {
   color: #a7f3d0;
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 .app-shell {
@@ -1581,9 +1583,11 @@ h1 {
   word-break: break-all;
 }
 
-.table-link:hover {
+.table-link:hover,
+.table-link:focus,
+.table-link:focus-visible {
   color: #a7f3d0;
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 .repo-link {
