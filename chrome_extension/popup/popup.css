@@ -141,7 +141,7 @@ input[type="text"] {
 }
 
 input[type="text"]:focus {
-  border-color: var(--accent-cyan);
+  border-color: var(--accent-green);
 }
 
 .btn-primary, .btn-secondary, .btn-outline {
