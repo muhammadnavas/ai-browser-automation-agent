@@ -1,6 +1,8 @@
-# AI Browser Automation Agent
+# Automata
 
-An AI-powered browser automation platform that turns natural-language goals into browser actions. It can navigate websites, interact with page elements, work with forms, extract information, and produce task artifacts through either a managed Playwright browser or a Chrome extension connected to an existing browser session.
+**Your intent. Our execution.**
+
+Automata is an AI-powered browser assistant that turns natural-language goals into browser actions. It can navigate websites, interact with page elements, work with forms, extract information, and produce task artifacts through either a managed Playwright browser or a Chrome extension connected to an existing browser session.
 
 The project combines LLM-based planning, live page context, browser automation, optional visual reasoning, adaptive replanning, and human-in-the-loop safeguards.
 
