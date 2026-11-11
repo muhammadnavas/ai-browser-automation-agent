@@ -107,8 +107,9 @@ async def test_extension_browser_adapter_start_and_lock_ui_flow():
 
 
 @pytest.mark.asyncio
-async def test_extension_browser_adapter_lock_ui_failure_raises():
-    """Verify lock_ui raises RuntimeError if the extension fails to confirm lock."""
+async def test_extension_browser_adapter_lock_ui_failure_handled_gracefully(caplog):
+    """Verify lock_ui handles extension lock failure gracefully as non-fatal without raising."""
+    import logging
     mock_mgr = MagicMock()
     mock_mgr.send_command = AsyncMock(return_value={
         "success": False,
@@ -116,22 +117,26 @@ async def test_extension_browser_adapter_lock_ui_failure_raises():
     })
 
     adapter = ExtensionBrowserAdapter(task_id="test-task-2", manager=mock_mgr)
-    with pytest.raises(RuntimeError) as exc_info:
+    with caplog.at_level(logging.WARNING):
+        # lock_ui must not raise when lock fails; it logs a warning instead
         await adapter.lock_ui()
-    assert "Could not lock the task browser" in str(exc_info.value)
-    assert "Content script not ready" in str(exc_info.value)
+    assert "lock_ui non-fatal" in caplog.text
+    assert "Content script not ready" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_extension_browser_adapter_lock_ui_timeout_handling():
-    """Verify lock_ui propagates TimeoutError when the extension does not respond within timeout."""
+async def test_extension_browser_adapter_lock_ui_timeout_handled_gracefully(caplog):
+    """Verify lock_ui handles timeout gracefully as non-fatal without raising."""
+    import logging
     mock_mgr = MagicMock()
     mock_mgr.send_command = AsyncMock(side_effect=TimeoutError("Extension command 'lock_ui' timed out after 8.0s."))
 
     adapter = ExtensionBrowserAdapter(task_id="test-task-3", manager=mock_mgr)
-    with pytest.raises(TimeoutError) as exc_info:
+    with caplog.at_level(logging.WARNING):
+        # lock_ui must not raise on timeout; it logs a warning instead
         await adapter.lock_ui()
-    assert "Extension command 'lock_ui' timed out after 8.0s." in str(exc_info.value)
+    assert "lock_ui non-fatal" in caplog.text
+    assert "timed out after 8.0s" in caplog.text
 
 
 @pytest.mark.asyncio

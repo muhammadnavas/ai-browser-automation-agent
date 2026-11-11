@@ -55,6 +55,18 @@ from backend.security.messages import (
     get_security_user_message,
     sanitize_user_facing_error,
 )
+from backend.security.auth import (
+    SessionData,
+    SessionManager,
+    session_manager,
+    extract_session_id,
+    get_current_session,
+    require_session,
+    verify_csrf_if_mutating,
+    SESSION_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+)
 
 __all__ = [
     "SensitivityTier",
@@ -92,4 +104,14 @@ __all__ = [
     "strip_internal_placeholders",
     "get_security_user_message",
     "sanitize_user_facing_error",
+    "SessionData",
+    "SessionManager",
+    "session_manager",
+    "extract_session_id",
+    "get_current_session",
+    "require_session",
+    "verify_csrf_if_mutating",
+    "SESSION_COOKIE_NAME",
+    "CSRF_COOKIE_NAME",
+    "CSRF_HEADER_NAME",
 ]

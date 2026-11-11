@@ -625,9 +625,13 @@ async def execute_with_retry_and_fallback(
                 elif action.action == ActionType.SCROLL and page:
                     direction = action.scroll_direction or "down"
                     amount = action.scroll_amount or 500
-                    delta = amount if direction == "down" else -amount
                     try:
-                        await page.evaluate(f"window.scrollBy(0, {delta});")
+                        numeric_amount = int(amount)
+                    except (ValueError, TypeError):
+                        numeric_amount = 500
+                    delta = numeric_amount if str(direction).lower() == "down" else -numeric_amount
+                    try:
+                        await page.evaluate("(d) => window.scrollBy(0, d)", delta)
                         fallback_success = True
                         fallback_desc = f"Scroll recovered via window.scrollBy({delta})"
                     except Exception as e:
