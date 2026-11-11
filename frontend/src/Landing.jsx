@@ -420,9 +420,9 @@ export default function Landing({ onOpen }) {
   return (
     <div className="landing-shell">
       <nav className="landing-nav">
-        <a className="landing-brand" href="#top" aria-label="AI Browser Agent home">
-          <span className="landing-brand-mark"><Command size={19} /></span>
-          <span>browser<span className="brand-accent">agent</span><small>YOUR BROWSER ASSISTANT</small></span>
+        <a className="landing-brand" href="#top" aria-label="Automata home">
+          <span className="landing-brand-mark"><img src="/automata-mark.svg" alt="" /></span>
+          <span className="landing-brand-word">AUTOMATA<small>YOUR AI BROWSER ASSISTANT</small></span>
         </a>
         <div className="landing-nav-links">
           <a href="#capabilities">Capabilities</a>
@@ -607,8 +607,8 @@ export default function Landing({ onOpen }) {
 
       <footer className="landing-footer">
         <a className="landing-brand" href="#top">
-          <span className="landing-brand-mark"><Command size={16} /></span>
-          <span>browser<span className="brand-accent">agent</span></span>
+          <span className="landing-brand-mark"><img src="/automata-mark.svg" alt="" /></span>
+          <span className="landing-brand-word">AUTOMATA</span>
         </a>
         <span>Less repetitive browsing. More time for what matters.</span>
         <a href="#top">Back to top ↑</a>
