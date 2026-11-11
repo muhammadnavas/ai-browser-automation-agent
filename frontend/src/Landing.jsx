@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ArrowDownRight, ArrowRight, Check, ChevronRight,
   CircleDot, Command, FileSearch, Fingerprint, FolderOpen, Globe2,
-  MousePointer2, ScanSearch, ShieldCheck, Sparkles, ClipboardList, Search,
+  MousePointer2, ScanSearch, ShieldCheck, Sparkles, ClipboardList, Search, Zap,
 } from 'lucide-react';
 import './landing.css';
 
