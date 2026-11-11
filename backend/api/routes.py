@@ -34,7 +34,7 @@ from services.research_service import research_service
 research_service.task_manager = task_manager
 from browser.extractor import InfoExtractor
 from browser.form_discovery import FormDiscovery
-from browser.pool import get_browser_pool
+from browser.pool import BrowserPool, get_browser_pool
 from browser.waiter import settle_page
 from browser.extension_adapter import extension_manager
 from browser.security import install_navigation_guard
@@ -455,8 +455,17 @@ async def get_pool_status():
     """Returns concurrency metrics: active running tasks, total tasks, and browser pool state."""
     pool_metrics = None
     try:
-        pool = await get_browser_pool()
-        pool_metrics = pool.get_metrics()
+        if BrowserPool._instance is not None and BrowserPool._instance._is_started:
+            pool_metrics = BrowserPool._instance.get_metrics()
+        else:
+            pool_metrics = {
+                "is_started": False,
+                "browser_type": "chromium",
+                "headless": True,
+                "active_contexts": 0,
+                "available_slots": max(1, int(os.getenv("BROWSER_POOL_MAX_CONTEXTS", "8"))),
+                "total_created": 0,
+            }
     except Exception as exc:
         pool_metrics = {"is_started": False, "error": str(exc)}
 

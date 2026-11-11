@@ -2385,6 +2385,12 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Child frames / embedded iframes must never respond to or intercept top-level page commands.
+    if (window !== window.top) {
+      if (["inspect_dom", "lock_ui", "unlock_ui", "clear_badges", "ping", "mask_sensitive_elements", "unmask_sensitive_elements"].includes(message?.type)) {
+        return false;
+      }
+    }
     (async () => {
       try {
         if (message.type === "inspect_dom") {

@@ -223,7 +223,7 @@ async function ensureContentScriptInjected(tabId) {
 
   const ping = async () => {
     try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "ping" });
+      const response = await chrome.tabs.sendMessage(tabId, { type: "ping" }, { frameId: 0 });
       return Boolean(response && response.pong);
     } catch (error) {
       return false;
@@ -278,10 +278,10 @@ async function ensureContentScriptInjected(tabId) {
   );
 }
 
-async function sendContentMessage(tabId, message) {
+async function sendContentMessage(tabId, message, options = { frameId: 0 }) {
   await ensureContentScriptInjected(tabId);
   try {
-    return await chrome.tabs.sendMessage(tabId, message);
+    return await chrome.tabs.sendMessage(tabId, message, options);
   } catch (error) {
     // A page can navigate between the readiness check and message delivery.
     // Re-inject into the new document and retry once.
@@ -290,7 +290,7 @@ async function sendContentMessage(tabId, message) {
     }
     await waitForTabLoaded(tabId, 10000);
     await ensureContentScriptInjected(tabId);
-    return await chrome.tabs.sendMessage(tabId, message);
+    return await chrome.tabs.sendMessage(tabId, message, options);
   }
 }
 
