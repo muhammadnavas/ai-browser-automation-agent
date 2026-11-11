@@ -90,7 +90,18 @@ a:hover {
   min-width: 0;
 }
 
-.brand-icon,
+.brand-icon {
+  display: grid;
+  place-items: center;
+  color: #65e6a4;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+}
+
 .section-icon {
   display: grid;
   place-items: center;
@@ -105,11 +116,10 @@ a:hover {
 
 .brand-icon img {
   display: block;
-  width: 27px;
-  height: 27px;
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
 }
-
-.brand-icon img { display:block; width:27px; height:27px; }
 
 .brand-name {
   display: block;
