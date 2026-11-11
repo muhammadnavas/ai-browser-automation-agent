@@ -24,7 +24,7 @@ const useCases = [
 const sampleSteps = [
   { icon: Globe2,      label: 'Open target website',    status: 'done'    },
   { icon: ScanSearch,  label: 'Understand the page', status: 'done'    },
-  { icon: Braces,      label: 'Plan the next steps',   status: 'active'  },
+  { icon: ClipboardList, label: 'Plan the next steps',   status: 'active'  },
   { icon: ShieldCheck, label: 'Ask before important actions', status: 'pending' },
 ];
 
