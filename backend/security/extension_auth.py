@@ -38,6 +38,7 @@ class ExtensionAuthManager:
     def __init__(self):
         self._registrations: Dict[str, ExtensionRegistration] = {}
         # token -> registration
+        self._revoked_tokens: Set[str] = set()
         self._allowed_extension_ids: Optional[Set[str]] = self._load_allowed_ids()
         self._lock = threading.Lock()
 
@@ -96,7 +97,7 @@ class ExtensionAuthManager:
             if token:
                 if token in self._registrations:
                     reg = self._registrations[token]
-                    if reg.revoked:
+                    if reg.revoked or token in self._revoked_tokens:
                         audit_logger.record_event(
                             event_type="extension_auth_rejected",
                             task_id="system",
@@ -107,6 +108,22 @@ class ExtensionAuthManager:
                     if extension_id and reg.extension_id == "unknown_extension":
                         reg.extension_id = extension_id
                     return True, token, "Authenticated successfully."
+                elif is_loopback and token.startswith("ext_sec_") and token not in self._revoked_tokens:
+                    # Seamlessly re-adopt existing loopback token after server/backend restart
+                    reg = ExtensionRegistration(
+                        token=token,
+                        extension_id=clean_ext_id,
+                        created_at=time.time(),
+                        last_seen=time.time(),
+                        revoked=False,
+                    )
+                    self._registrations[token] = reg
+                    audit_logger.record_event(
+                        event_type="extension_reconnected_after_restart",
+                        task_id="system",
+                        details={"extension_id": clean_ext_id},
+                    )
+                    return True, token, "Re-authenticated successfully after backend restart."
                 else:
                     audit_logger.record_event(
                         event_type="extension_auth_rejected",
@@ -152,6 +169,7 @@ class ExtensionAuthManager:
 
     def revoke_token(self, token: str) -> bool:
         with self._lock:
+            self._revoked_tokens.add(token)
             if token in self._registrations:
                 reg = self._registrations[token]
                 reg.revoked = True
@@ -166,7 +184,8 @@ class ExtensionAuthManager:
     def revoke_all(self) -> int:
         with self._lock:
             count = 0
-            for reg in self._registrations.values():
+            for tok, reg in self._registrations.items():
+                self._revoked_tokens.add(tok)
                 if not reg.revoked:
                     reg.revoked = True
                     count += 1

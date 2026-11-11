@@ -16,6 +16,7 @@ import socket
 from urllib.parse import urlsplit
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request
+from starlette.websockets import WebSocketDisconnected, WebSocketState
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -830,9 +831,13 @@ async def extension_websocket(websocket: WebSocket):
     await extension_manager.register(websocket)
     try:
         while True:
+            if websocket.client_state == WebSocketState.DISCONNECTED:
+                break
             data = await websocket.receive_json()
             await extension_manager.handle_message(websocket, data)
-    except WebSocketDisconnect:
+            if websocket.client_state == WebSocketState.DISCONNECTED:
+                break
+    except (WebSocketDisconnect, WebSocketDisconnected):
         await extension_manager.unregister(websocket)
     except Exception:
         logger.exception("Chrome extension WebSocket failed")

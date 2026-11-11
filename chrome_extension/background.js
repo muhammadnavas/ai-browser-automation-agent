@@ -149,6 +149,9 @@ async function connectWebSocket() {
     candidate.onclose = async (event) => {
       if (socket !== candidate) return;
       console.warn("[AI Extension] WebSocket disconnected. Code:", event.code, event.reason || "");
+      if (event.code === 4003) {
+        await chrome.storage.local.remove(["extensionToken"]);
+      }
       isConnecting = false;
       lastConnectionError = lastConnectionError || `WebSocket closed (code ${event.code})`;
       if (pingInterval) clearInterval(pingInterval);
