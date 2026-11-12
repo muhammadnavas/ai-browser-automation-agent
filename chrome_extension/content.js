@@ -777,6 +777,9 @@
         if (wantedRole && roleMatches.length === 1) return roleMatches[0];
         return null;
       }
+      // If the planner specified a role, do not fall through to a broad text
+      // match that could select a different kind of control.
+      if (wantedRole) return null;
     }
 
     // 7. By Text Content or Label (legacy fallback, constrained to visible elements)
