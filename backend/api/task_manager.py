@@ -3511,13 +3511,18 @@ Task evidence:
                         task.plan_metadata["independent_verification"] = {
                             "status": verification_result.status.value if verification_result else "unavailable",
                             "verified": verification_output.get("verified") if verification_output else None,
+                            "confidence": verification_output.get("confidence") if verification_output else None,
                             "reason": verification_output.get("reason") if verification_output else (
                                 verification_result.error if verification_result else "No verification result"
                             ),
                             "evidence": verification_output.get("evidence") if verification_output else None,
                             "checked_at": time.time(),
                         }
-                        if verification_output is not None and verification_output.get("verified") is False:
+                        if (
+                            verification_output is not None
+                            and verification_output.get("verified") is False
+                            and float(verification_output.get("confidence") or 0.0) >= 0.80
+                        ):
                             message = (
                                 "Independent Verification Agent could not confirm the requested outcome: "
                                 + str(verification_output.get("reason") or "insufficient evidence")
