@@ -113,9 +113,13 @@ class BrowserAction(BaseModel):
 
     action: ActionType
 
-    # Element targeting
+    # Element targeting. These semantic hints are resolved against the
+    # latest live DOM snapshot; they are never treated as durable selectors.
     selector: Optional[str] = None
     element_id: Optional[int] = None
+    target_text: Optional[str] = None
+    target_role: Optional[str] = None
+    field_label: Optional[str] = None
 
     # Text / value payloads
     text: Optional[str] = None
