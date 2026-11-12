@@ -10,11 +10,11 @@ import re
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 _RISK_PATTERNS = {
-    "delete": re.compile(r"\\b(delete|remove|trash|discard|empty|erase)\\b", re.I),
-    "send": re.compile(r"\\b(send|submit|publish|post)\\b", re.I),
-    "purchase": re.compile(r"\\b(buy|purchase|pay|checkout|place order)\\b", re.I),
-    "transfer": re.compile(r"\\b(transfer|withdraw|refund)\\b", re.I),
-    "share": re.compile(r"\\b(share|grant access|make public)\\b", re.I),
+    "delete": re.compile(r"\b(delete|remove|trash|discard|empty|erase)\\b", re.I),
+    "send": re.compile(r"\b(send|submit|publish|post)\\b", re.I),
+    "purchase": re.compile(r"\b(buy|purchase|pay|checkout|place order)\\b", re.I),
+    "transfer": re.compile(r"\b(transfer|withdraw|refund)\\b", re.I),
+    "share": re.compile(r"\b(share|grant access|make public)\\b", re.I),
 }
 
 
