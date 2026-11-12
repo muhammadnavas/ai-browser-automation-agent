@@ -1142,7 +1142,7 @@ class AIAgentPlanner:
                             "reused": True,
                             "key": redis_key,
                             "version": redis_cached.get("agent_version", self.agent_version),
-                            "message": f"Plan Cache HIT (Redis): Reused {len(plan_steps)}-step plan from Redis cache",
+                            "message": f"Reused {len(plan_steps)}-step plan from Redis cache",
                             "details": f"Redis Key: {redis_key} • State validated • Instant reuse without AI latency",
                         }
                         return self._filter_unrequested_report_steps(goal, plan_steps)

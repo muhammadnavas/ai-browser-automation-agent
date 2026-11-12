@@ -1407,6 +1407,7 @@
         pressed: el?.getAttribute("aria-pressed"),
         checked: "checked" in (el || {}) ? Boolean(el.checked) : null,
         dialogCount: document.querySelectorAll('[role="dialog"], dialog[open]').length,
+        menuItemCount: document.querySelectorAll('[role="menu"] [role="menuitem"], [role="listbox"] [role="option"], ul[role="listbox"] > li, .aqdrmf-E > li').length,
         targetConnected: Boolean(el?.isConnected),
       };
       const clickContext = [action.text, action.reasoning, action.selector].filter(Boolean).join(" ");
@@ -1574,25 +1575,43 @@
         }
       }
 
-      // Allow synchronous framework handlers and common dialog/navigation
-      // transitions to settle, then report what was actually observable.
+      // Allow synchronous framework handlers and SPA menu/dialog transitions to settle.
+      // Google Drive and similar SPAs animate menus asynchronously — 350ms is insufficient.
+      // We use a two-phase check: quick (350ms) for fast apps, and a longer poll (up to 900ms
+      // extra) specifically waiting for menu/dialog to open if it didn't appear immediately.
       await new Promise((resolve) => setTimeout(resolve, 350));
-      const afterClickState = {
+
+      const captureState = () => ({
         url: window.location.href,
         expanded: el?.isConnected ? el.getAttribute("aria-expanded") : null,
         pressed: el?.isConnected ? el.getAttribute("aria-pressed") : null,
         checked: el?.isConnected && "checked" in el ? Boolean(el.checked) : null,
         dialogCount: document.querySelectorAll('[role="dialog"], dialog[open]').length,
+        menuItemCount: document.querySelectorAll('[role="menu"] [role="menuitem"], [role="listbox"] [role="option"], ul[role="listbox"] > li, .aqdrmf-E > li').length,
         targetConnected: Boolean(el?.isConnected),
-      };
-      const observedChange = (
-        beforeClickState.url !== afterClickState.url ||
-        beforeClickState.expanded !== afterClickState.expanded ||
-        beforeClickState.pressed !== afterClickState.pressed ||
-        beforeClickState.checked !== afterClickState.checked ||
-        beforeClickState.dialogCount !== afterClickState.dialogCount ||
-        beforeClickState.targetConnected !== afterClickState.targetConnected
+      });
+
+      let afterClickState = captureState();
+      const stateChanged = (s) => (
+        beforeClickState.url !== s.url ||
+        beforeClickState.expanded !== s.expanded ||
+        beforeClickState.pressed !== s.pressed ||
+        beforeClickState.checked !== s.checked ||
+        beforeClickState.dialogCount !== s.dialogCount ||
+        beforeClickState.menuItemCount !== s.menuItemCount ||
+        beforeClickState.targetConnected !== s.targetConnected
       );
+
+      // If no change detected yet, poll up to 900ms more for async menus/dialogs.
+      if (!stateChanged(afterClickState)) {
+        for (const extraWait of [200, 300, 400]) {
+          await new Promise((r) => setTimeout(r, extraWait));
+          afterClickState = captureState();
+          if (stateChanged(afterClickState)) break;
+        }
+      }
+
+      const observedChange = stateChanged(afterClickState);
       return {
         success: true,
         description: observedChange

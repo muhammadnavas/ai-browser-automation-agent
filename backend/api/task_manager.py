@@ -1835,7 +1835,7 @@ class TaskManager:
                             ActionType.PRESS_KEY, ActionType.DOWNLOAD_FILE,
                         ):
                             verified, verification_note = await self._verify_extension_action_postcondition(
-                                action, controller, before_page=page_info
+                                action, controller, before_page=page_info, exec_description=description
                             )
                             description = f"{description} | {verification_note}"
                             if not verified:
@@ -2641,11 +2641,18 @@ class TaskManager:
         action: BrowserAction,
         controller: Any,
         before_page: Optional[Dict[str, Any]] = None,
+        exec_description: str = "",
     ) -> tuple[bool, str]:
         """
         Verify observable postconditions for extension-executed actions.
         Returns (verified, explanation). Unsupported/ambiguous actions are
         reported as inconclusive rather than being falsely marked as failures.
+
+        ``exec_description`` is the raw string returned by the content-script
+        executor.  When the content script already confirmed a state change
+        (``"observed a page-state change"`` in the description), we trust it
+        and skip the redundant DOM re-check for CLICK actions so that SPA
+        menu-trigger clicks are not falsely marked as failures.
         """
         action_type = action.action
         try:
@@ -2832,6 +2839,24 @@ class TaskManager:
             )
             if changed:
                 return True, "Click produced an observable page or target-state change."
+
+            # Heuristic 1: Trust the content-script's own observation.
+            # The content.js executor tracks aria-expanded, dialogCount, menuItemCount,
+            # and URL with a two-phase settle (up to 1250ms).  If it already confirmed
+            # a state change, there is no need to re-verify at the backend level.
+            if exec_description and "observed a page-state change" in exec_description:
+                return True, "Click verified: content-script observed a page-state change."
+
+            # Heuristic 2: New interactive elements appeared (e.g. SPA dropdown menu opened).
+            # A meaningful jump in element count (> 2) indicates a menu or dialog expanded.
+            before_element_count = len(before.get("elements") or [])
+            after_element_count = len(after.get("elements") or [])
+            if after_element_count > before_element_count + 2:
+                return True, (
+                    f"Click verified: {after_element_count - before_element_count} new "
+                    "interactive elements appeared after the click (menu or dialog opened)."
+                )
+
             # An accepted click is not proof that its intended effect occurred.
             # In particular, do not let an unchanged Submit button count as success.
             return False, "Click outcome is unverified: the page and target state did not observably change."

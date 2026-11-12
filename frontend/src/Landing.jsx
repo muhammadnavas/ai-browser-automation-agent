@@ -457,8 +457,6 @@ export default function Landing({ onOpen }) {
           <div className="hero-canvas-wrap">
             <NodeCanvas />
           </div>
-
-          <div className="landing-scroll-cue"><span /> SCROLL TO EXPLORE</div>
         </section>
 
         {/* ── Workflow ────────────────────────────────── */}
