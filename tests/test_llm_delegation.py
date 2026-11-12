@@ -18,7 +18,7 @@ def test_master_llm_can_select_multiple_read_only_specialists():
     planner = FakePlanner(json.dumps({
         "subtasks": [
             {"role": "research", "goal": "Read the visible report", "input": {"url": "https://example.com"}, "timeout_seconds": 80},
-            {"role": "verification", "goal": "Check whether the report title is visible", "input": {"url": "https://example.com"}, "timeout_seconds": 30},
+            {"role": "verification", "goal": "Check whether the report title is visible", "input": {"url": "https://example.com", "expected_text": "Annual Report"}, "timeout_seconds": 30},
         ]
     }))
     specs = asyncio.run(plan_subagent_specs(planner, "Research this report", "https://example.com"))
