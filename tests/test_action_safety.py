@@ -26,3 +26,8 @@ def test_approval_is_recognized_from_current_input_or_history():
 def test_negative_approval_response_is_not_treated_as_consent():
     assert not approval_was_granted("no, do not proceed", [])
     assert not approval_was_granted("cancel", [])
+
+
+def test_explicit_not_approved_response_is_not_consent():
+    assert not approval_was_granted("not approved", [])
+    assert not approval_was_granted("not confirmed", [])
