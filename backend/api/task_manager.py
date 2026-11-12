@@ -654,11 +654,26 @@ class TaskManager:
             await self.broadcast_task_update(task_id)
             await self._save_cached_task_state(task_id)
 
-            # Optional master-agent delegation. Existing clients send no
-            # subagent_specs and continue through the unchanged single-agent path.
+            # Master-agent delegation: explicit specs take precedence; otherwise
+            # select a safe specialist automatically from the task intent.
             raw_subagent_specs = getattr(req, "subagent_specs", None) or []
             if raw_subagent_specs:
                 child_specs = [SubagentSpec.model_validate(item) for item in raw_subagent_specs]
+                delegation_source = "explicit"
+            else:
+                from agents.delegation import build_automatic_subagent_specs
+                delegation_url = req.start_url or planner.extract_target_url(req.goal)
+                child_specs = build_automatic_subagent_specs(
+                    goal=req.goal,
+                    start_url=delegation_url,
+                )
+                delegation_source = "automatic" if child_specs else "none"
+
+            task.plan_metadata["delegation"] = {
+                "mode": delegation_source,
+                "selected_roles": [spec.role for spec in child_specs],
+            }
+            if child_specs:
                 child_batch = await self.run_subagent_batch(task_id, child_specs)
                 task.plan_metadata["subagent_batch_status"] = child_batch.status
                 task.plan_metadata["subagent_summary"] = child_batch.summary
