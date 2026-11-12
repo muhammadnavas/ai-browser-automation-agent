@@ -34,7 +34,7 @@ def approval_was_granted(user_approval_input: Optional[str], history: Iterable[D
     """Recognize affirmative approval; explicit rejection always takes precedence."""
     response = str(user_approval_input or "").strip().lower()
     if response:
-        if re.search(r"\b(no|deny|denied|reject|rejected|cancel|stop|don't|do not)\b", response):
+        if re.search(r"\b(no|deny|denied|reject|rejected|cancel|stop|don't|do not|not approved|not confirmed)\b", response):
             return False
         return bool(re.search(r"\b(yes|approve|approved|confirm|confirmed|proceed|continue|go ahead|granted)\b", response))
 
