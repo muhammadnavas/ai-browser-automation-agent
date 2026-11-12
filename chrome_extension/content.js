@@ -198,7 +198,8 @@
     const interactiveSelectors =
       "button, a, input, textarea, select, li, " +
       '[role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="combobox"], [role="menuitem"], ' +
-      '[role="row"], [role="treeitem"], [role="option"], [data-target="item"], c-wiz[data-target], [data-id], ' +
+      '[role="row"], [role="treeitem"], [role="option"], [role="gridcell"], [role="cell"], ' +
+      '[data-target="item"], c-wiz[data-target], [data-id], [onclick], [contenteditable="true"], ' +
       '[tabindex]:not([tabindex="-1"])';
 
     const rawElements = Array.from(document.querySelectorAll(interactiveSelectors));
