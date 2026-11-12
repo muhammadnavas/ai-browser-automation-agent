@@ -685,9 +685,45 @@ class TaskManager:
             }
             if child_specs:
                 child_batch = await self.run_subagent_batch(task_id, child_specs)
+                all_child_results = list(child_batch.results)
                 task.plan_metadata["subagent_batch_status"] = child_batch.status
                 task.plan_metadata["subagent_summary"] = child_batch.summary
-                for child_result in child_batch.results:
+
+                # One bounded collaboration round: the master reviews the first
+                # batch and may request targeted missing evidence or an alternate
+                # read-only worker after a failure. No unbounded agent loops.
+                if delegation_source == "llm_automatic":
+                    try:
+                        from agents.delegation import plan_followup_subagent_specs
+                        prior_result_payload = [
+                            {
+                                "role": item.role,
+                                "status": item.status.value,
+                                "goal": item.goal,
+                                "error": item.error,
+                                "output": item.output if isinstance(item.output, dict) else {},
+                            }
+                            for item in child_batch.results
+                        ]
+                        followup_specs = await plan_followup_subagent_specs(
+                            planner, req.goal, delegation_url, prior_result_payload
+                        )
+                        if followup_specs:
+                            followup_batch = await self.run_subagent_batch(task_id, followup_specs)
+                            all_child_results.extend(followup_batch.results)
+                            task.plan_metadata["followup_delegation"] = {
+                                "selected_roles": [spec.role for spec in followup_specs],
+                                "status": followup_batch.status,
+                                "summary": followup_batch.summary,
+                            }
+                    except Exception as followup_error:
+                        logger.warning(
+                            "Master follow-up delegation skipped for task %s: %s",
+                            task_id, followup_error,
+                        )
+
+                task.plan_metadata["subagent_results_count"] = len(all_child_results)
+                for child_result in all_child_results:
                     output = child_result.output
                     if isinstance(output, dict):
                         output = dict(output)
