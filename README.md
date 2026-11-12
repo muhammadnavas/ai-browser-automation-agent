@@ -31,27 +31,30 @@ The project combines LLM-based planning, live page context, browser automation, 
 User goal
    |
    v
-React frontend  <---- REST + WebSocket ---->  FastAPI backend
+React frontend  <---- REST + WebSocket ---->  FastAPI task manager
                                                |
                                                v
-                                         Task manager
-                                               |
-                                  +------------+------------+
-                                  |                         |
-                                  v                         v
-                              AI planner               Page context
-                         Ollama / Gemini / Groq       DOM / controls
-                                  |                         |
-                                  +------------+------------+
-                                               |
-                                               v
-                                        Browser executor
-                                      /                 \
-                               Playwright          Chrome Extension
-                                      \                 /
+                                      LLM Master Orchestrator
+                                      /          |          \\
+                                     /           |           \\
+                              Research       Navigation    Follow-up
+                               Agent           Agent        planning
+                                     \\           |           /
+                                      \\          |          /
+                                       Shared task context
                                                |
                                                v
-                                  Verification / replanning
+                                        Main Browser Agent
+                                               |
+                              +----------------+----------------+
+                              |                                 |
+                              v                                 v
+                       Recovery Agent                    Verification Agent
+                       (on failures)                     (before finish)
+                              |                                 |
+                              +----------------+----------------+
+                                               |
+                                  Safety / approval policy
                                                |
                                                v
                                   Results, screenshots, reports
@@ -155,12 +158,14 @@ See [chrome_extension/README.md](chrome_extension/README.md) for extension-speci
 ## How Planning Works
 
 1. The task manager receives the user's goal and execution settings.
-2. The browser opens the requested starting page or navigates to a relevant destination.
-3. The backend gathers live page context, including URL, title, headings, and available interactive elements.
-4. The planner selects the next action using the configured text provider or heuristic fallback. When enabled and useful, visual reasoning can also inspect the current screenshot.
-5. The selected action is sent to the chosen browser execution layer.
-6. Supported actions are checked against current page state. If an eligible recoverable failure occurs, the planner may replan the remaining milestones using refreshed context.
-7. The task manager records progress and streams updates to the frontend.
+2. The LLM Master Orchestrator may delegate bounded, read-only preflight work to Research and Navigation specialists.
+3. The master reviews the first batch and may request one targeted follow-up batch when evidence is missing or a worker failed. Agent loops are bounded.
+4. Specialist results are added to the parent task context. The Main Browser Agent remains the only component that chooses and executes user-facing browser actions.
+5. The browser agent observes the live page and selects actions using the configured text provider or heuristic fallback. Visual reasoning may also inspect the current screenshot.
+6. Existing action-policy checks and human approval gates apply to browser actions.
+7. After an eligible action failure, the Recovery Agent diagnoses the failure and proposes revised milestones. The primary planner still chooses the next action; existing adaptive replanning is the fallback if the specialist is unavailable.
+8. Before accepting FINISH, the primary goal verifier runs. An independent Verification Agent then checks the same live task tab. An explicit negative result blocks completion; an unavailable secondary verifier does not override a successful primary verification.
+9. The task manager records agent results, progress and evidence, then streams updates to the frontend.
 
 ### Screenshot efficiency
 
