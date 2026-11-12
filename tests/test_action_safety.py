@@ -21,3 +21,8 @@ def test_approval_is_recognized_from_current_input_or_history():
     assert approval_was_granted("yes, proceed", [])
     assert approval_was_granted(None, [{"action": "request_approval", "description": "User granted approval"}])
     assert not approval_was_granted(None, [{"action": "click", "description": "Clicked Spam"}])
+
+
+def test_negative_approval_response_is_not_treated_as_consent():
+    assert not approval_was_granted("no, do not proceed", [])
+    assert not approval_was_granted("cancel", [])
