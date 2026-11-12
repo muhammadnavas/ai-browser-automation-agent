@@ -2285,3 +2285,127 @@ h1 {
   width: 0;
   height: 0;
 }
+
+
+/* Multi-agent execution inspector */
+.agent-team-section {
+  margin-top: 18px;
+}
+
+.agent-role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.agent-role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid rgba(110, 231, 183, 0.2);
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.07);
+  color: #a7f3d0;
+  font-size: 0.72rem;
+  text-transform: capitalize;
+}
+
+.agent-result-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.agent-result-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.agent-result-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.agent-result-copy {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.agent-result-copy strong {
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  text-transform: capitalize;
+}
+
+.agent-result-copy span {
+  color: #9ca3af;
+  font-size: 0.73rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.agent-checkpoints {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.agent-checkpoint {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.agent-checkpoint > span {
+  color: #8b98aa;
+  font-size: 0.68rem;
+}
+
+.agent-checkpoint strong {
+  color: #d1fae5;
+  font-size: 0.76rem;
+  text-transform: capitalize;
+}
+
+.agent-checkpoint small {
+  color: #9ca3af;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 680px) {
+  .agent-checkpoints {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-result-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .agent-result-row > .status-tag {
+    margin-left: 39px;
+  }
+}
