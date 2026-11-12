@@ -304,7 +304,19 @@
         role: role,
         text: text.substring(0, 160),
         label: labelText.substring(0, 160),
+        accessible_name: (
+          el.getAttribute("aria-label") ||
+          (el.getAttribute("aria-labelledby") && document.getElementById(el.getAttribute("aria-labelledby"))?.innerText) ||
+          labelText || el.getAttribute("title") || text
+        ).trim().replace(/\s+/g, " ").substring(0, 180),
         aria_label: el.getAttribute("aria-label") || "",
+        aria_expanded: el.getAttribute("aria-expanded"),
+        aria_selected: el.getAttribute("aria-selected"),
+        aria_controls: el.getAttribute("aria-controls"),
+        aria_haspopup: el.getAttribute("aria-haspopup"),
+        contenteditable: el.getAttribute("contenteditable") === "true",
+        parent_text: String(el.closest('[role="row"],[role="treeitem"],[role="listitem"],[role="option"],[role="menuitem"],li')?.innerText || "")
+          .trim().replace(/\s+/g, " ").substring(0, 240),
         title: el.getAttribute("title") || "",
         alt: el.getAttribute("alt") || "",
         id: elId,
@@ -715,7 +727,7 @@
 
     // 5. Resolve accessible form-field labels (Gmail and other dynamic SPAs).
     // Prefer editable controls and exact accessible-name matches over broad text matches.
-    const textTarget = action.text || action.select_label;
+    const textTarget = action.target_text || action.text || action.select_label;
     if (textTarget) {
       const wanted = textTarget.toLowerCase().trim();
       const editable = Array.from(document.querySelectorAll(
@@ -736,7 +748,37 @@
       }
     }
 
-    // 6. By Text Content or Label (Precise search prioritizing exact leaf matches and Google Drive row items)
+    // 6. Resolve semantic targets from the current snapshot before broad text fallback.
+    if (textTarget) {
+      const wanted = String(textTarget).toLowerCase().trim();
+      const wantedRole = String(action.target_role || "").toLowerCase().trim();
+      const semanticCandidates = Array.from(document.querySelectorAll(
+        'button,a,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="treeitem"],[role="row"],[role="option"],[role="checkbox"],[role="radio"],[aria-label],[title]'
+      )).filter(isVisibleActionTarget);
+      const exactSemanticMatches = semanticCandidates.filter((el) => {
+        const role = String(el.getAttribute("role") || (
+          el.tagName === "A" ? "link" : el.tagName === "BUTTON" ? "button" : ""
+        )).toLowerCase();
+        if (wantedRole && role !== wantedRole) return false;
+        const names = [
+          el.getAttribute("aria-label"),
+          el.getAttribute("title"),
+          el.getAttribute("data-tooltip"),
+          el.innerText || el.textContent || "",
+        ].map((value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase());
+        return names.includes(wanted);
+      });
+      if (exactSemanticMatches.length === 1) return exactSemanticMatches[0];
+      if (exactSemanticMatches.length > 1) {
+        const roleMatches = exactSemanticMatches.filter((el) =>
+          String(el.getAttribute("role") || "").toLowerCase() === wantedRole
+        );
+        if (wantedRole && roleMatches.length === 1) return roleMatches[0];
+        return null;
+      }
+    }
+
+    // 7. By Text Content or Label (legacy fallback, constrained to visible elements)
     if (textTarget) {
       const lower = textTarget.toLowerCase().trim();
 
