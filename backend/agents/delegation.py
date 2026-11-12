@@ -18,7 +18,7 @@ _RESEARCH = re.compile(
     re.IGNORECASE,
 )
 _MUTATING = re.compile(
-    r"\\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
+    r"\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
     r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\\b",
     re.IGNORECASE,
 )
