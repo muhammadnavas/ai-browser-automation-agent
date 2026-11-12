@@ -10,11 +10,11 @@ import re
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 _RISK_PATTERNS = {
-    "delete": re.compile(r"\b(delete|remove|trash|discard|empty|erase)\\b", re.I),
-    "send": re.compile(r"\b(send|submit|publish|post)\\b", re.I),
-    "purchase": re.compile(r"\b(buy|purchase|pay|checkout|place order)\\b", re.I),
-    "transfer": re.compile(r"\b(transfer|withdraw|refund)\\b", re.I),
-    "share": re.compile(r"\b(share|grant access|make public)\\b", re.I),
+    "delete": re.compile(r"\b(delete|remove|trash|discard|empty|erase)\b", re.I),
+    "send": re.compile(r"\b(send|submit|publish|post)\b", re.I),
+    "purchase": re.compile(r"\b(buy|purchase|pay|checkout|place order)\b", re.I),
+    "transfer": re.compile(r"\b(transfer|withdraw|refund)\b", re.I),
+    "share": re.compile(r"\b(share|grant access|make public)\b", re.I),
 }
 
 
@@ -34,9 +34,9 @@ def approval_was_granted(user_approval_input: Optional[str], history: Iterable[D
     """Recognize affirmative approval; explicit rejection always takes precedence."""
     response = str(user_approval_input or "").strip().lower()
     if response:
-        if re.search(r"\\b(no|deny|denied|reject|rejected|cancel|stop|don't|do not)\\b", response):
+        if re.search(r"\b(no|deny|denied|reject|rejected|cancel|stop|don't|do not)\b", response):
             return False
-        return bool(re.search(r"\\b(yes|approve|approved|confirm|confirmed|proceed|continue|go ahead|granted)\\b", response))
+        return bool(re.search(r"\b(yes|approve|approved|confirm|confirmed|proceed|continue|go ahead|granted)\b", response))
 
     for item in history or []:
         if not isinstance(item, dict):
@@ -47,8 +47,8 @@ def approval_was_granted(user_approval_input: Optional[str], history: Iterable[D
             for key in ("description", "reasoning", "result", "status", "message")
         ).lower()
         if action in {"request_approval", "approval"}:
-            if re.search(r"\\b(denied|rejected|declined|cancelled|not approved)\\b", evidence):
+            if re.search(r"\b(denied|rejected|declined|cancelled|not approved)\b", evidence):
                 continue
-            if re.search(r"\\b(granted|approved|user confirmed|approval received)\\b", evidence):
+            if re.search(r"\b(granted|approved|user confirmed|approval received)\b", evidence):
                 return True
     return False
