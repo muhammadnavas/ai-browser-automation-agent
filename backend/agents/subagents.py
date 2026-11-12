@@ -49,7 +49,7 @@ class SubagentOrchestrator:
         self._workers[role]=worker
     def unregister_worker(self, role: str) -> None: self._workers.pop((role or "").strip().lower(),None)
     def get_batch(self, parent_task_id: str) -> Optional[SubagentBatchResult]: return self._batches.get(parent_task_id)
-    async def run_batch(self, parent_task_id: str, specs: Iterable[SubagentSpec], *, fail_fast: bool=False) -> SubagentBatchResult:
+    async def run_batch(self, parent_task_id: str, specs: Iterable[SubagentSpec], *, fail_fast: bool=False, shared_memory: Optional[Dict[str, Any]]=None) -> SubagentBatchResult:
         if not parent_task_id: raise ValueError("parent_task_id is required")
         if any(not t.done() for t in self._parent_tasks.get(parent_task_id,[])): raise RuntimeError("parent already has a running subagent batch")
         specs=list(specs); results: List[Optional[SubagentResult]]=[None]*len(specs); stop_event=asyncio.Event()
@@ -61,7 +61,7 @@ class SubagentOrchestrator:
                 result.status=SubagentStatus.FAILED; result.error=f"No worker registered for role {role!r}."; result.completed_at=time.time(); results[index]=result; return
             if spec.requires_exclusive_browser and not spec.resource_key:
                 result.status=SubagentStatus.FAILED; result.error="resource_key is required for exclusive browser work."; result.completed_at=time.time(); results[index]=result; return
-            ctx=SubagentContext(parent_task_id,child_id,role,spec.goal,dict(spec.input)); self._contexts[child_id]=ctx
+            ctx=SubagentContext(parent_task_id,child_id,role,spec.goal,dict(spec.input),memory=dict(shared_memory or {})); self._contexts[child_id]=ctx
             started=time.time(); result.status=SubagentStatus.RUNNING; result.started_at=started
             try:
                 async with self._semaphore:
