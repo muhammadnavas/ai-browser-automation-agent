@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 _ALLOWED_AUTOMATIC_ROLES = {"navigation", "research", "verification"}
 _MUTATING_INTENT = re.compile(
     r"\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
-    r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\\b",
+    r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\b",
     re.IGNORECASE,
 )
 
@@ -129,6 +129,11 @@ Rules:
                 continue
             if candidate_url != url or _MUTATING_INTENT.search(subgoal):
                 continue
+            if role == "verification":
+                expected_text = str(inputs.get("expected_text") or "").strip()
+                expected_url = str(inputs.get("expected_url_contains") or "").strip()
+                if not expected_text and not expected_url:
+                    continue
             timeout = row.get("timeout_seconds", 90)
             try:
                 timeout = max(10, min(120, int(timeout)))
@@ -137,7 +142,11 @@ Rules:
             specs.append(SubagentSpec(
                 role=role,
                 goal=subgoal[:1000],
-                input={"url": url},
+                input={
+                    "url": url,
+                    **({"expected_text": str(inputs.get("expected_text"))[:300]} if inputs.get("expected_text") else {}),
+                    **({"expected_url_contains": str(inputs.get("expected_url_contains"))[:300]} if inputs.get("expected_url_contains") else {}),
+                },
                 timeout_seconds=timeout,
             ))
         return specs
