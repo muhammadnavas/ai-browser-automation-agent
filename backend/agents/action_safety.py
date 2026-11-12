@@ -31,9 +31,13 @@ def confirmation_category(goal: str, target: str) -> Optional[str]:
 
 
 def approval_was_granted(user_approval_input: Optional[str], history: Iterable[Dict[str, Any]]) -> bool:
-    """Recognize an explicit current approval or a recorded granted approval."""
-    if str(user_approval_input or "").strip():
-        return True
+    """Recognize affirmative approval; explicit rejection always takes precedence."""
+    response = str(user_approval_input or "").strip().lower()
+    if response:
+        if re.search(r"\\b(no|deny|denied|reject|rejected|cancel|stop|don't|do not)\\b", response):
+            return False
+        return bool(re.search(r"\\b(yes|approve|approved|confirm|confirmed|proceed|continue|go ahead|granted)\\b", response))
+
     for item in history or []:
         if not isinstance(item, dict):
             continue
@@ -42,8 +46,9 @@ def approval_was_granted(user_approval_input: Optional[str], history: Iterable[D
             str(item.get(key) or "")
             for key in ("description", "reasoning", "result", "status", "message")
         ).lower()
-        if action in {"request_approval", "approval"} and any(
-            token in evidence for token in ("granted", "approved", "user confirmed", "approval received")
-        ):
-            return True
+        if action in {"request_approval", "approval"}:
+            if re.search(r"\\b(denied|rejected|declined|cancelled|not approved)\\b", evidence):
+                continue
+            if re.search(r"\\b(granted|approved|user confirmed|approval received)\\b", evidence):
+                return True
     return False
