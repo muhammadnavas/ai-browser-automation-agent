@@ -436,11 +436,20 @@ class TaskManager:
         self.tasks[task_id] = task_resp
         return task_resp
 
-    async def run_subagent_batch(self, parent_task_id: str, specs: List[SubagentSpec], *, fail_fast: bool = False) -> SubagentBatchResult:
+    async def run_subagent_batch(
+        self,
+        parent_task_id: str,
+        specs: List[SubagentSpec],
+        *,
+        fail_fast: bool = False,
+        shared_memory: Optional[Dict[str, Any]] = None,
+    ) -> SubagentBatchResult:
         """Run registered child workers under an existing parent task."""
         if parent_task_id not in self.tasks and parent_task_id not in self.task_history:
             raise KeyError(f"Parent task {parent_task_id} not found")
-        return await self.subagent_orchestrator.run_batch(parent_task_id, specs, fail_fast=fail_fast)
+        return await self.subagent_orchestrator.run_batch(
+            parent_task_id, specs, fail_fast=fail_fast, shared_memory=shared_memory
+        )
 
     def register_subagent_worker(self, role: str, worker: Any) -> None:
         """Register a role-specific async worker without replacing the main executor."""
