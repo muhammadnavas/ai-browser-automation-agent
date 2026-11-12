@@ -49,6 +49,29 @@ class SubagentOrchestrator:
         self._workers[role]=worker
     def unregister_worker(self, role: str) -> None: self._workers.pop((role or "").strip().lower(),None)
     def get_batch(self, parent_task_id: str) -> Optional[SubagentBatchResult]: return self._batches.get(parent_task_id)
+    def _store_batch(self, batch: SubagentBatchResult) -> SubagentBatchResult:
+        """Retain cumulative specialist history for the parent task."""
+        previous = self._batches.get(batch.parent_task_id)
+        results = (list(previous.results) if previous else []) + list(batch.results)
+        summary = {
+            status.value: sum(result.status == status for result in results)
+            for status in SubagentStatus
+        }
+        failures = summary["failed"] + summary["timed_out"]
+        status = "partial" if failures and summary["completed"] else (
+            "failed" if failures else ("cancelled" if summary["cancelled"] else "completed")
+        )
+        stored = SubagentBatchResult(
+            parent_task_id=batch.parent_task_id,
+            status=status,
+            results=results,
+            summary=summary,
+        )
+        self._batches[batch.parent_task_id] = stored
+        while len(self._batches) > self._max_batches:
+            self._batches.pop(next(iter(self._batches)))
+        return stored
+
     async def run_batch(self, parent_task_id: str, specs: Iterable[SubagentSpec], *, fail_fast: bool=False, shared_memory: Optional[Dict[str, Any]]=None) -> SubagentBatchResult:
         if not parent_task_id: raise ValueError("parent_task_id is required")
         if any(not t.done() for t in self._parent_tasks.get(parent_task_id,[])): raise RuntimeError("parent already has a running subagent batch")
@@ -101,9 +124,7 @@ class SubagentOrchestrator:
                 self._contexts.pop(child_id,None); results[index]=result
         if not specs:
             batch=SubagentBatchResult(parent_task_id=parent_task_id,status="completed")
-            self._batches[parent_task_id]=batch
-            while len(self._batches) > self._max_batches:
-                self._batches.pop(next(iter(self._batches)))
+            self._store_batch(batch)
             return batch
         tasks=[asyncio.create_task(execute(i,s),name=f"subagent:{parent_task_id}:{i}") for i,s in enumerate(specs)]
         self._parent_tasks[parent_task_id]=tasks
@@ -124,9 +145,7 @@ class SubagentOrchestrator:
         failures=summary["failed"]+summary["timed_out"]
         status="partial" if failures and summary["completed"] else ("failed" if failures else ("cancelled" if summary["cancelled"] else "completed"))
         batch=SubagentBatchResult(parent_task_id=parent_task_id,status=status,results=normalized,summary=summary)
-        self._batches[parent_task_id]=batch
-        while len(self._batches) > self._max_batches:
-            self._batches.pop(next(iter(self._batches)))
+        self._store_batch(batch)
         # Keep result snapshots, but release completed asyncio task handles.
         self._parent_tasks.pop(parent_task_id, None)
         return batch
