@@ -2272,20 +2272,76 @@ class TaskManager:
                                 live_page_info = page_info
 
                             try:
-                                revised_plan = await planner.replan_remaining_plan(
-                                    goal=req.goal,
-                                    current_plan=list(task.initial_plan or task.plan or []),
-                                    completed_history=trajectory_history,
-                                    page_info=live_page_info,
-                                    recent_errors=list(getattr(task.context, "recent_errors", []) or []),
-                                    task_context=task.context,
-                                    progressed_milestones=[
-                                        node.get("title", "")
-                                        for node in (task.plan_metadata or {}).get("milestone_graph", [])
-                                        if node.get("id") in set((task.plan_metadata or {}).get("completed_milestone_ids", []))
-                                    ],
-                                    active_milestone_index=int(task.current_plan_step or 0),
+                                # Recovery Specialist diagnoses the failure and proposes
+                                # milestones only. It cannot operate the browser; the
+                                # primary planner still selects every executable action.
+                                safe_recovery_elements = []
+                                for item in (live_page_info.get("elements") or [])[:35]:
+                                    if isinstance(item, dict):
+                                        safe_recovery_elements.append({
+                                            key: str(item.get(key) or "")[:180]
+                                            for key in ("tag", "role", "text", "aria_label", "label", "placeholder", "title", "href")
+                                            if item.get(key) is not None
+                                        })
+                                recovery_spec = SubagentSpec(
+                                    role="recovery",
+                                    goal=f"Diagnose step {step_num} failure and propose a safe revised milestone plan",
+                                    input={
+                                        "goal": req.goal,
+                                        "error": exec_description,
+                                        "page_info": {
+                                            "url": str(live_page_info.get("url") or "")[:500],
+                                            "title": str(live_page_info.get("title") or "")[:240],
+                                            "headings": (live_page_info.get("headings") or [])[:15],
+                                            "elements": safe_recovery_elements,
+                                        },
+                                        "current_plan": list(task.initial_plan or task.plan or [])[:12],
+                                        "recent_errors": list(getattr(task.context, "recent_errors", []) or [])[-5:],
+                                    },
+                                    timeout_seconds=45,
                                 )
+                                recovery_batch = await self.run_subagent_batch(
+                                    task_id, [recovery_spec], shared_memory={"planner": planner}
+                                )
+                                recovery_result = recovery_batch.results[0] if recovery_batch.results else None
+                                recovery_output = (
+                                    recovery_result.output
+                                    if recovery_result and recovery_result.status.value == "completed"
+                                    and isinstance(recovery_result.output, dict)
+                                    else {}
+                                )
+                                metadata["recovery_agent"] = {
+                                    "status": recovery_result.status.value if recovery_result else "unavailable",
+                                    "diagnosis": recovery_output.get("diagnosis"),
+                                    "strategy": recovery_output.get("strategy"),
+                                    "confidence": recovery_output.get("confidence"),
+                                    "requires_human_review": recovery_output.get("requires_human_review", False),
+                                    "updated_at": time.time(),
+                                }
+                                task.plan_metadata = metadata
+                                if recovery_output.get("requires_human_review"):
+                                    task.status = TaskStatus.FAILED
+                                    task.plan_status = "failed"
+                                    task.error = "Recovery Agent recommends human review because the action outcome may be ambiguous."
+                                    break
+                                revised_plan = recovery_output.get("revised_steps") or None
+                                if not revised_plan:
+                                    # The established adaptive planner remains a fallback
+                                    # when the specialist is unavailable or returns no plan.
+                                    revised_plan = await planner.replan_remaining_plan(
+                                        goal=req.goal,
+                                        current_plan=list(task.initial_plan or task.plan or []),
+                                        completed_history=trajectory_history,
+                                        page_info=live_page_info,
+                                        recent_errors=list(getattr(task.context, "recent_errors", []) or []),
+                                        task_context=task.context,
+                                        progressed_milestones=[
+                                            node.get("title", "")
+                                            for node in (task.plan_metadata or {}).get("milestone_graph", [])
+                                            if node.get("id") in set((task.plan_metadata or {}).get("completed_milestone_ids", []))
+                                        ],
+                                        active_milestone_index=int(task.current_plan_step or 0),
+                                    )
                                 if revised_plan:
                                     metadata.setdefault("original_plan", list(task.initial_plan or []))
                                     versions = metadata.setdefault("plan_versions", [])
