@@ -3442,6 +3442,59 @@ Task evidence:
                         task.plan_status = "failed"
                         task.error = verification_message
                         return verification_message, {"status": "Failed", "error": verification_message}, False
+
+                    # Independent Verification Agent: re-inspect the same live
+                    # task tab and judge the final goal separately. It cannot
+                    # click or mutate anything. If unavailable, retain the
+                    # existing primary verifier result; if it explicitly
+                    # contradicts completion, fail closed.
+                    try:
+                        verification_spec = SubagentSpec(
+                            role="verification",
+                            goal=f"Independently verify completion of: {task.goal}",
+                            input={"goal": task.goal, "use_parent_tab": True},
+                            timeout_seconds=45,
+                        )
+                        verification_batch = await self.run_subagent_batch(
+                            task_id,
+                            [verification_spec],
+                            shared_memory={"planner": planner, "controller": controller},
+                        )
+                        verification_result = (
+                            verification_batch.results[0]
+                            if verification_batch.results else None
+                        )
+                        verification_output = (
+                            verification_result.output
+                            if verification_result
+                            and verification_result.status.value == "completed"
+                            and isinstance(verification_result.output, dict)
+                            else None
+                        )
+                        task.plan_metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+                        task.plan_metadata["independent_verification"] = {
+                            "status": verification_result.status.value if verification_result else "unavailable",
+                            "verified": verification_output.get("verified") if verification_output else None,
+                            "reason": verification_output.get("reason") if verification_output else (
+                                verification_result.error if verification_result else "No verification result"
+                            ),
+                            "evidence": verification_output.get("evidence") if verification_output else None,
+                            "checked_at": time.time(),
+                        }
+                        if verification_output is not None and verification_output.get("verified") is False:
+                            message = (
+                                "Independent Verification Agent could not confirm the requested outcome: "
+                                + str(verification_output.get("reason") or "insufficient evidence")
+                            )
+                            task.status = TaskStatus.FAILED
+                            task.plan_status = "failed"
+                            task.error = message
+                            return message, {"status": "Failed", "error": message}, False
+                    except Exception as verification_error:
+                        logger.warning(
+                            "Independent verification unavailable for task %s; retaining primary verifier result: %s",
+                            task_id, verification_error,
+                        )
                     await controller.clear_badges()
                     if action.extracted_data:
                         task.extracted_data.append(action.extracted_data)
