@@ -678,6 +678,11 @@ class ExtensionBrowserAdapter:
                 payload={"action": action_payload},
                 timeout=cmd_timeout,
             )
+            if os_dialog_task and not os_dialog_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(os_dialog_task), timeout=10.0)
+                except Exception as exc:
+                    logger.debug(f"OS dialog watcher finished or timed out: {exc}")
         finally:
             if os_dialog_task and not os_dialog_task.done():
                 os_dialog_task.cancel()

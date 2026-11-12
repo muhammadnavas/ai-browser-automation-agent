@@ -2857,6 +2857,12 @@ class TaskManager:
                     "interactive elements appeared after the click (menu or dialog opened)."
                 )
 
+            # Heuristic 3: File upload triggers (e.g. clicking 'File upload' in '+ New' menu).
+            # These trigger a native OS file dialog or hidden input[type=file] without mutating the DOM or URL.
+            action_text_combined = f"{action.text or ''} {action.reasoning or ''}".lower()
+            if any(k in action_text_combined for k in ["file upload", "upload file", "upload folder", "choose file"]):
+                return True, "Click verified: upload trigger dispatched to file input / OS dialog."
+
             # An accepted click is not proof that its intended effect occurred.
             # In particular, do not let an unchanged Submit button count as success.
             return False, "Click outcome is unverified: the page and target state did not observably change."

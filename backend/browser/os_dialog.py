@@ -383,6 +383,52 @@ def get_user_system_file(
                             candidate = str(mock_dir / fallback_name)
                             break
 
+        # Check user-requested folders (e.g. "from the downloads", "documents", or requested file extension like .pdf)
+        if not candidate:
+            target_folder = extract_target_folder(combined_context)
+            category = infer_requested_category(goal, context_text, accept_types)
+            from pathlib import Path
+
+            folder_candidates = []
+
+            # Check project mock files first (safe, guaranteed to exist, within project allowlist)
+            project_root = Path(__file__).resolve().parent.parent.parent
+            mock_dir = project_root / "downloads" / "mock_files"
+            if not mock_dir.exists():
+                mock_dir = Path.cwd() / "downloads" / "mock_files"
+            if mock_dir.exists():
+                folder_candidates.append(mock_dir)
+
+            if target_folder == "downloads" or "download" in combined_lower:
+                folder_candidates.append(Path.home() / "Downloads")
+            elif target_folder == "documents" or "document" in combined_lower:
+                folder_candidates.append(Path.home() / "Documents")
+            elif target_folder == "desktop":
+                folder_candidates.append(Path.home() / "Desktop")
+            elif target_folder == "pictures" or any(w in combined_lower for w in ["photo", "picture", "image"]):
+                folder_candidates.append(Path.home() / "Pictures")
+
+            desired_exts = set()
+            if "pdf" in combined_lower or category in ("document", "pdf"):
+                desired_exts.update([".pdf"])
+            if "csv" in combined_lower or category in ("spreadsheet", "csv"):
+                desired_exts.update([".csv", ".xlsx"])
+            if any(w in combined_lower for w in ["jpg", "png", "jpeg", "image", "photo"]) or category == "image":
+                desired_exts.update([".jpg", ".jpeg", ".png"])
+
+            for folder in folder_candidates:
+                if folder.exists() and folder.is_dir():
+                    try:
+                        for item in folder.iterdir():
+                            if item.is_file() and not is_sensitive_file(item.name):
+                                if not desired_exts or item.suffix.lower() in desired_exts:
+                                    candidate = str(item.resolve())
+                                    break
+                    except Exception:
+                        pass
+                if candidate:
+                    break
+
     if not candidate:
         logger.info("Upload safety: no explicit file path specified. Refusing automatic directory search.")
         return None

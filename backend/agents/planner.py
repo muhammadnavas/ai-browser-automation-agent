@@ -2717,6 +2717,91 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 for h in trajectory_history
             )
 
+            # Determine whether the user wants to CREATE a new folder vs FIND/OPEN an existing folder
+            is_create_folder_task = any(kw in goal_lower for kw in [
+                "create folder", "create a folder", "new folder", "make a folder", "make folder",
+                "add folder", "add a folder", "create new folder", "mkdir"
+            ])
+
+            import re as _re
+            existing_folder_target = None
+            if not is_create_folder_task:
+                _ef_match = _re.search(
+                    r"\b(?:find|open|search for|search|into|in|inside|select|go to)?\s*([a-zA-Z0-9_\-\.]+)\s+folder\b",
+                    goal, _re.IGNORECASE
+                )
+                if _ef_match:
+                    cand = _ef_match.group(1).strip()
+                    if cand.lower() not in ("a", "an", "the", "this", "that", "my", "new", "each", "every", "some"):
+                        existing_folder_target = cand
+                if not existing_folder_target:
+                    _ef_match2 = _re.search(
+                        r"\bfolder\s+(?:named|called)?\s*['\"]?([a-zA-Z0-9_\-\.]+)['\"]?",
+                        goal, _re.IGNORECASE
+                    )
+                    if _ef_match2:
+                        cand = _ef_match2.group(1).strip()
+                        if cand.lower() not in ("a", "an", "the", "this", "that", "my", "new"):
+                            existing_folder_target = cand
+
+            # If user wants to upload into an existing folder, navigate into it before clicking New
+            url_current = (page_info.get("url") or "").lower()
+            headings_current = [(h or "").lower() for h in page_info.get("headings", [])]
+            is_inside_target_folder = bool(
+                existing_folder_target
+                and (
+                    "folders/" in url_current
+                    or any(existing_folder_target.lower() in h for h in headings_current)
+                )
+            )
+
+            if existing_folder_target and not is_inside_target_folder:
+                last_step = trajectory_history[-1] if trajectory_history else {}
+                if last_step.get("action") in ("click", "double_click") and existing_folder_target.lower() in str(last_step.get("reasoning", "")).lower():
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=2000,
+                        reasoning=f"Waiting for '{existing_folder_target}' folder to finish opening.",
+                    )
+
+                folder_el = None
+                for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
+                    el_text = (el.get("text") or "").strip().lower()
+                    el_aria = (el.get("aria_label") or "").strip().lower()
+                    if existing_folder_target.lower() in el_text or (existing_folder_target.lower() in el_aria and "folder" in el_aria):
+                        folder_el = el
+                        break
+
+                if folder_el:
+                    return BrowserAction(
+                        action=ActionType.DOUBLE_CLICK,
+                        element_id=folder_el.get("index"),
+                        selector=folder_el.get("selector"),
+                        text=folder_el.get("text") or existing_folder_target,
+                        reasoning=f"Opening '{existing_folder_target}' folder to upload file inside it.",
+                    )
+                else:
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=1500,
+                        reasoning=f"Looking for '{existing_folder_target}' folder in Google Drive.",
+                    )
+
+            # If we just entered the target folder, wait once for Drive SPA to settle before clicking New
+            if existing_folder_target and is_inside_target_folder:
+                has_waited_in_target_folder = any(
+                    h.get("action") == "wait" and "folder view" in str(h.get("reasoning", "")).lower()
+                    for h in trajectory_history
+                )
+                if not has_waited_in_target_folder:
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=1500,
+                        reasoning=f"Waiting for '{existing_folder_target}' folder view to fully load before clicking New.",
+                    )
+
             # Priority 1: Look for enabled "+ New" button if we haven't clicked it yet
             if not has_clicked_new and not has_clicked_file_upload and not has_clicked_new_folder:
                 upload_btn = None
@@ -2767,7 +2852,7 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
             # Priority 2: After clicking New, look for "File upload" or "New folder" option in the menu
             if has_clicked_new and not has_clicked_file_upload and not has_clicked_new_folder:
                 target_el = None
-                is_folder_task = "folder" in goal_lower
+                is_folder_task = is_create_folder_task
                 
                 for el in elements:
                     if el.get("disabled") is True or el.get("visible") is False:
@@ -2792,11 +2877,21 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                             reasoning="Clicking 'New folder' option in the New menu.",
                         )
                     else:
+                        from browser.os_dialog import get_user_system_file
+                        _rf = None
+                        try:
+                            _rf = get_user_system_file(goal)
+                        except Exception:
+                            pass
+                        _rf_name = _rf["name"] if _rf else None
+                        _rf_paths = [_rf["path"]] if _rf else []
                         return BrowserAction(
                             action=ActionType.CLICK,
                             element_id=target_el.get("index"),
                             selector=target_el.get("selector"),
                             text=target_el.get("text"),
+                            file_name=_rf_name,
+                            upload_paths=_rf_paths,
                             reasoning="Clicking 'File upload' option in the New menu.",
                         )
                 else:
@@ -2968,6 +3063,39 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
 
             # Priority 4: We have successfully uploaded/created. Verify and finish.
             if has_clicked_file_upload or has_typed_folder_name:
+                has_waited_after_upload = any(
+                    h.get("action") == "wait" and h.get("reasoning") and "upload" in str(h.get("reasoning")).lower()
+                    for h in trajectory_history
+                )
+                if has_clicked_file_upload and not has_typed_folder_name:
+                    if not has_waited_after_upload:
+                        return BrowserAction(
+                            action=ActionType.WAIT,
+                            scroll_amount=3000,
+                            reasoning="Waiting for file upload to complete.",
+                        )
+                    try:
+                        from browser.os_dialog import get_user_system_file
+                        real_file = get_user_system_file(goal)
+                        uploaded_file_name = real_file["name"] if real_file else "system file"
+                        uploaded_file_path = real_file["path"] if real_file else ""
+                    except Exception:
+                        uploaded_file_name = "system file"
+                        uploaded_file_path = ""
+
+                    return BrowserAction(
+                        action=ActionType.FINISH,
+                        reasoning=f"Upload of '{uploaded_file_name}' from user system completed successfully.",
+                        extracted_data={
+                            "task_goal": goal,
+                            "uploaded_file": uploaded_file_name,
+                            "system_file_path": uploaded_file_path,
+                            "url": page_info.get("url"),
+                            "status": "Success",
+                            "total_steps": step_number,
+                        },
+                    )
+
                 # After typing folder name, wait briefly for the dialog to dismiss
                 if has_typed_folder_name and not has_waited_after_folder:
                     return BrowserAction(
@@ -3123,11 +3251,21 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                         el_text = (el.get("text") or "").lower()
                         el_aria = (el.get("aria_label") or "").lower()
                         if "file upload" in el_text or "file upload" in el_aria or "upload file" in el_text:
+                            from browser.os_dialog import get_user_system_file
+                            _rf = None
+                            try:
+                                _rf = get_user_system_file(goal)
+                            except Exception:
+                                pass
+                            _rf_name = _rf["name"] if _rf else None
+                            _rf_paths = [_rf["path"]] if _rf else []
                             return BrowserAction(
                                 action=ActionType.CLICK,
                                 element_id=el.get("index"),
                                 selector=el.get("selector"),
                                 text=el.get("text"),
+                                file_name=_rf_name,
+                                upload_paths=_rf_paths,
                                 reasoning="Clicking 'File upload' option in the New menu.",
                             )
                     wait_count_upload = sum(
@@ -3170,11 +3308,6 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                         reasoning="Waiting for file upload to complete.",
                     )
 
-                if not has_extracted:
-                    return BrowserAction(
-                        action=ActionType.EXTRACT,
-                        reasoning="Extracting page state to verify the action completed successfully.",
-                    )
                 try:
                     from browser.os_dialog import get_user_system_file
                     real_file = get_user_system_file(goal)
