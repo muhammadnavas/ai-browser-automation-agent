@@ -2780,7 +2780,7 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                         element_id=folder_el.get("index"),
                         selector=folder_el.get("selector"),
                         text=folder_el.get("text") or existing_folder_target,
-                        reasoning=f"Opening '{existing_folder_target}' folder to upload file inside it.",
+                        reasoning=f"Opening '{existing_folder_target}' folder.",
                     )
                 else:
                     return BrowserAction(
@@ -3192,7 +3192,7 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                             element_id=folder_el.get("index"),
                             selector=folder_el.get("selector"),
                             text=folder_name_used,
-                            reasoning=f"Opening '{folder_name_used}' folder to upload file inside it.",
+                            reasoning=f"Opening '{folder_name_used}' folder.",
                         )
                     else:
                         # Fallback: text-based double click
@@ -3201,7 +3201,7 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                             element_id=None,
                             selector=None,
                             text=folder_name_used,
-                            reasoning=f"Opening '{folder_name_used}' folder to upload file inside it.",
+                            reasoning=f"Opening '{folder_name_used}' folder.",
                         )
 
                 # --- Compound task sub-flow: upload into created folder ---

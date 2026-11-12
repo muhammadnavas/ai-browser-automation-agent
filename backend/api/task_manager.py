@@ -1598,11 +1598,16 @@ class TaskManager:
                     extracted_item = None
                     action_success = True
                 else:
-                    # If this action involves file upload, attach real file from user's system
+                    # If this action involves file upload, attach real file from user's system.
+                    # Exclude folder navigation actions and DOUBLE_CLICK from being treated as uploads.
                     is_upload_step = (
-                        (action.reasoning and any(k in action.reasoning.lower() for k in ["file upload", "upload file", "upload", "attach", "add file", "insert file"]))
-                        or (action.text and any(k in action.text.lower() for k in ["file upload", "upload file", "upload", "attach", "add file", "insert file", "browse"]))
-                        or action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
+                        action.action != ActionType.DOUBLE_CLICK
+                        and not any(k in str(action.reasoning or "").lower() for k in ["folder", "open folder", "enter folder"])
+                        and (
+                            (action.reasoning and any(k in action.reasoning.lower() for k in ["file upload", "upload file", "choose file", "attach file"]))
+                            or (action.text and any(k in action.text.lower() for k in ["file upload", "upload file", "choose file", "attach file", "browse"]))
+                            or action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
+                        )
                     )
                     if is_upload_step:
                         try:
@@ -2790,14 +2795,21 @@ class TaskManager:
             return False, "Radio postcondition inconclusive: selected state was not exposed by the extension."
 
         if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
-            upload_intent = bool(
-                getattr(action, "file_name", None)
-                or getattr(action, "file_base64", None)
-                or re.search(
-                    r"add\s+file|choose\s+file|browse|upload|attach",
-                    " ".join(str(value or "") for value in (
-                        action.text, action.reasoning, action.selector
-                    )).lower(),
+            is_folder_action = action_type == ActionType.DOUBLE_CLICK or any(
+                k in f"{action.text or ''} {action.reasoning or ''}".lower()
+                for k in ["folder", "open folder", "directory"]
+            )
+            upload_intent = (
+                not is_folder_action
+                and bool(
+                    getattr(action, "file_name", None)
+                    or getattr(action, "file_base64", None)
+                    or re.search(
+                        r"add\s+file|choose\s+file|browse|upload|attach",
+                        " ".join(str(value or "") for value in (
+                            action.text, action.reasoning, action.selector
+                        )).lower(),
+                    )
                 )
             )
             if upload_intent and getattr(action, "file_name", None):
