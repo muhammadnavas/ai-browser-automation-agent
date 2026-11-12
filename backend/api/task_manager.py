@@ -2300,10 +2300,17 @@ class TaskManager:
                                     },
                                     timeout_seconds=45,
                                 )
-                                recovery_batch = await self.run_subagent_batch(
-                                    task_id, [recovery_spec], shared_memory={"planner": planner}
-                                )
-                                recovery_result = recovery_batch.results[0] if recovery_batch.results else None
+                                try:
+                                    recovery_batch = await self.run_subagent_batch(
+                                        task_id, [recovery_spec], shared_memory={"planner": planner}
+                                    )
+                                    recovery_result = recovery_batch.results[0] if recovery_batch.results else None
+                                except Exception as recovery_error:
+                                    logger.warning(
+                                        "Recovery Agent failed for task %s; using primary planner fallback: %s",
+                                        task_id, recovery_error,
+                                    )
+                                    recovery_result = None
                                 recovery_output = (
                                     recovery_result.output
                                     if recovery_result and recovery_result.status.value == "completed"
