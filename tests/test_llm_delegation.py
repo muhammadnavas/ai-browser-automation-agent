@@ -14,7 +14,7 @@ class FakePlanner:
         return self.response
 
 
-def test_master_llm_can_select_multiple_read_only_specialists():
+def test_master_llm_can_select_allowed_read_only_specialists():
     planner = FakePlanner(json.dumps({
         "subtasks": [
             {"role": "research", "goal": "Read the visible report", "input": {"url": "https://example.com"}, "timeout_seconds": 80},
