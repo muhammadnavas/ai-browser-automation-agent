@@ -2239,3 +2239,49 @@ h1 {
     font-size: 9px;
   }
 }
+
+
+/* -------------------------------------------------------------------------
+   Automata global scrollbar theme
+------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+  scrollbar-color: rgba(101, 230, 164, 0.48) #080e0a;
+  scrollbar-width: thin;
+}
+
+* {
+  scrollbar-color: rgba(101, 230, 164, 0.48) #080e0a;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #080e0a;
+  border-left: 1px solid rgba(101, 230, 164, 0.07);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 34px;
+  background: linear-gradient(180deg, rgba(101, 230, 164, 0.58), rgba(55, 143, 94, 0.58));
+  border: 2px solid #080e0a;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #83f0b7, #55c98e);
+}
+
+*::-webkit-scrollbar-corner {
+  background: #080e0a;
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
