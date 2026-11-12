@@ -2855,14 +2855,93 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                             break
                 
                 if folder_name_input:
-                    # Extract desired folder name from goal, e.g. "name it as 'Agent Browser'"
+                    # ----------------------------------------------------------------
+                    # Extract the desired folder name from the user's goal string.
+                    # Patterns are tried in priority order so the most explicit form
+                    # wins.  The name may contain letters, digits, spaces, hyphens,
+                    # underscores, dots, and parentheses.
+                    #
+                    # Priority 1 – quoted (most explicit):
+                    #   create a folder named "Automata"
+                    #   create a folder called 'My Work'
+                    #
+                    # Priority 2 – keyword phrases (unquoted):
+                    #   named Automata              →  "named"
+                    #   name it Automata            →  "name it"
+                    #   name it as Automata         →  "name it as"
+                    #   name the folder Automata    →  "name the folder"
+                    #   called Automata             →  "called"
+                    #   call it Automata            →  "call it"
+                    #   title it Automata           →  "title it"
+                    #   titled Automata             →  "titled"
+                    #   labeled Automata            →  "labeled"
+                    #   with the name Automata      →  "with (the) name"
+                    #   with name Automata          →  "with name"
+                    #   as Automata                 →  "as"
+                    #
+                    # Priority 3 – positional / last-word heuristics:
+                    #   "folder Automata"           →  word(s) right after "folder"
+                    #   "create Automata"           →  word(s) right after "create"
+                    # ----------------------------------------------------------------
+                    import re as _re
+
+                    # Character class for a single name token (no stop-words inside)
+                    _NAME_CHARS = r"[A-Za-z0-9_\-\.\(\) ]+"
+
+                    # Stop-words that mark the end of an unquoted name
+                    _STOP = r"(?:\s*$|\s+(?:in|on|at|inside|to|and|then|for|from|under|within)\b)"
+
                     name = "New Folder"
-                    if '"' in goal:
-                        name = goal.split('"')[1]
-                    elif "'" in goal:
-                        name = goal.split("'")[1]
-                    elif " as " in goal_lower:
-                        name = goal[goal_lower.index(" as ") + 4:].strip()
+
+                    # --- Priority 1: quoted ---
+                    _dq = _re.search(r'"([^"]+)"', goal)
+                    _sq = _re.search(r"'([^']+)'", goal)
+                    if _dq:
+                        name = _dq.group(1).strip()
+                    elif _sq:
+                        name = _sq.group(1).strip()
+                    else:
+                        # --- Priority 2: keyword phrases ---
+                        # Order matters: more specific patterns first.
+                        _kw_patterns = [
+                            # "name it as X" / "name it X" / "name the folder X"
+                            r"\bname\s+(?:it\s+(?:as\s+)?|the\s+folder\s+)" + f"({_NAME_CHARS})" + _STOP,
+                            # "named X" / "name X"
+                            r"\bnamed?\s+" + f"({_NAME_CHARS})" + _STOP,
+                            # "called X" / "call it X"
+                            r"\bcall(?:ed|ing|s)?\s+(?:it\s+)?" + f"({_NAME_CHARS})" + _STOP,
+                            # "titled X" / "title it X"
+                            r"\btitl(?:ed?|ing)\s+(?:it\s+)?" + f"({_NAME_CHARS})" + _STOP,
+                            # "labeled X" / "labelled X"
+                            r"\blabell?ed?\s+(?:it\s+)?" + f"({_NAME_CHARS})" + _STOP,
+                            # "with (the) name X"
+                            r"\bwith\s+(?:the\s+)?name\s+" + f"({_NAME_CHARS})" + _STOP,
+                            # "as X"  (least specific, only if nothing else matched)
+                            r"\bas\s+" + f"({_NAME_CHARS})" + _STOP,
+                        ]
+                        _matched = False
+                        for _pat in _kw_patterns:
+                            _m = _re.search(_pat, goal, _re.IGNORECASE)
+                            if _m:
+                                name = _m.group(1).strip()
+                                _matched = True
+                                break
+
+                        if not _matched:
+                            # --- Priority 3: positional heuristics ---
+                            # Word(s) immediately after "folder" or "create"
+                            _pos = _re.search(
+                                r"\b(?:folder|create|make|mkdir)\s+([A-Za-z0-9_\-\.]+(?:\s+[A-Za-z0-9_\-\.]+)?)",
+                                goal, _re.IGNORECASE,
+                            )
+                            if _pos:
+                                # Reject generic stop-words that aren't real names
+                                _candidate = _pos.group(1).strip()
+                                _skip = {"a", "an", "the", "new", "in", "on", "inside",
+                                         "named", "called", "with", "my", "this", "that"}
+                                _words = _candidate.lower().split()
+                                if _words and _words[0] not in _skip:
+                                    name = _candidate
                     
                     return BrowserAction(
                         action=ActionType.TYPE_TEXT,
@@ -2900,17 +2979,37 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 # Check if task ALSO wants to upload a file (compound task)
                 also_wants_upload = _has_keyword(goal_lower, ["upload", "attach"]) and has_typed_folder_name
 
-                # Extract name that was used for the folder
+                # Extract name that was used for the folder.
+                # Priority: 1) the actual text the agent typed, 2) parsed from goal.
+                import re as _re
                 folder_name_used = "New Folder"
                 for h in trajectory_history:
                     if h.get("action") in ("type_text", "fill") and "folder name" in str(h.get("reasoning", "")).lower():
-                        folder_name_used = h.get("description", "").split("'")[1] if "'" in str(h.get("description", "")) else folder_name_used
+                        raw_desc = str(h.get("description", ""))
+                        raw_text = str(h.get("text") or h.get("value") or "")
+                        # Prefer the actual text value over the description
+                        if raw_text:
+                            folder_name_used = raw_text
+                        elif "'" in raw_desc:
+                            folder_name_used = raw_desc.split("'")[1]
                         break
-                # Also try extracting from goal
-                if '"' in goal:
-                    folder_name_used = goal.split('"')[1]
-                elif "'" in goal:
-                    folder_name_used = goal.split("'")[1]
+                # Refine from goal if the trajectory didn't record the right name
+                if folder_name_used == "New Folder":
+                    if '"' in goal:
+                        folder_name_used = goal.split('"')[1]
+                    elif "'" in goal:
+                        folder_name_used = goal.split("'")[1]
+                    else:
+                        _kw_m = _re.search(
+                            r"\b(?:named?|called|as)\s+([A-Za-z0-9_\-\. ]+?)(?:\s*$|\s+(?:in|on|at|inside|to)\b)",
+                            goal, _re.IGNORECASE,
+                        )
+                        if _kw_m:
+                            folder_name_used = _kw_m.group(1).strip()
+                        else:
+                            _fm = _re.search(r"\bfolder\s+([A-Za-z0-9_\-\.]+)", goal, _re.IGNORECASE)
+                            if _fm:
+                                folder_name_used = _fm.group(1).strip()
 
                 # Check if we are ACTUALLY inside the created folder
                 url_current = (page_info.get("url") or "").lower()

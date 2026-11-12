@@ -2078,13 +2078,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <div className="welcome-process">
-              <span><i>01</i> Describe your goal</span>
-              <b />
-              <span><i>02</i> Automata plans the steps</span>
-              <b />
-              <span><i>03</i> Review and stay in control</span>
-            </div>
           </section>
         ) : (
           <>
