@@ -220,7 +220,7 @@ Extracted evidence summary:
 {json.dumps(extracted, ensure_ascii=False)[:2000]}
 
 Return only JSON:
-{{"verified":false,"reason":"short explanation","evidence":"specific observable evidence"}}
+{{"verified":false,"confidence":0.0,"reason":"short explanation","evidence":"specific observable evidence"}}
 
 Rules:
 - verified=true only when evidence directly supports completion of the full user goal.
@@ -232,10 +232,15 @@ Rules:
         parsed = json.loads(raw)
         if not isinstance(parsed, dict) or not isinstance(parsed.get("verified"), bool):
             raise ValueError("Verification model returned an invalid result")
+        try:
+            confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
         return {
             "url": page.get("url"),
             "title": page.get("title"),
             "verified": parsed["verified"],
+            "confidence": confidence,
             "reason": str(parsed.get("reason") or "")[:800],
             "evidence": str(parsed.get("evidence") or "")[:1200],
         }
