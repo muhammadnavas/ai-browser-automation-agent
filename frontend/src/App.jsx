@@ -576,30 +576,58 @@ function ActionCard({ step }) {
   );
 }
 
-function ReportDownloadButton({ task }) {
-  if (!task || !task.task_id) return null;
-  const isFinished = isTerminal(task.status);
-  if (!isFinished) return null;
+function ReportDownloadButton({ task, onError }) {
+  const [downloading, setDownloading] = useState(false);
+  if (!task || !task.task_id || !isTerminal(task.status)) return null;
 
-  const rawHref =
-    task.reports?.pdf ||
-    api(`/api/reports/${encodeURIComponent(task.task_id)}/download`);
-  const pdfHref = isSafeWebUrl(rawHref) ? rawHref : '#';
+  async function downloadReport() {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const rawPath =
+        task.reports?.pdf ||
+        `/api/reports/${encodeURIComponent(task.task_id)}/download`;
+      // Report URLs in task payloads are API-relative. Apply the configured
+      // backend origin when the frontend and FastAPI are deployed separately.
+      const reportUrl = /^https?:\/\//i.test(rawPath) ? rawPath : api(rawPath.startsWith('/') ? rawPath : `/${rawPath}`);
+      if (!isSafeWebUrl(reportUrl)) throw new Error('The report download address is invalid.');
+
+      const response = await authFetch(reportUrl);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `Report download failed (HTTP ${response.status}).`);
+      }
+
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('The generated report is empty.');
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `report-${String(task.task_id).replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+    } catch (error) {
+      onError?.(`Could not download the report: ${error.message}`);
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return (
-    <a
+    <button
       className="report-download-btn"
-      href={pdfHref}
-      download={`report-${task.task_id}.pdf`}
+      type="button"
+      onClick={downloadReport}
+      disabled={downloading}
       title="Download complete PDF task report"
       aria-label="Download complete PDF task report"
-      target="_blank"
-      rel="noopener noreferrer"
     >
       <FileText size={15} />
-      <span>Download Report</span>
+      <span>{downloading ? 'Preparing report…' : 'Download Report'}</span>
       <Download size={13} />
-    </a>
+    </button>
   );
 }
 
@@ -2092,7 +2120,7 @@ export default function App() {
                   <p>{currentTask.goal}</p>
                 </div>
                 <StatusPill task={currentTask} />
-                <ReportDownloadButton task={currentTask} />
+                <ReportDownloadButton task={currentTask} onError={setError} />
               </div>
 
               {metadata && (
