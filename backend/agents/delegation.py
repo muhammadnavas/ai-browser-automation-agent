@@ -97,7 +97,7 @@ Known starting URL: {url}
 Available workers:
 - navigation: open the known URL and report title/headings/interactive element count.
 - research: read visible page content and links without clicking or changing anything.
-- verification: inspect a known URL for expected visible text or URL fragments.
+- verification: inspect a known URL for expected visible text or URL fragments. It must include expected_text or expected_url_contains in input.
 
 Return a JSON object only:
 {{"subtasks":[{{"role":"research","goal":"specific read-only objective","input":{{"url":"{url}"}},"timeout_seconds":90}}]}}
