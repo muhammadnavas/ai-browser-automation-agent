@@ -45,3 +45,7 @@ Individual specialist outputs are also appended to bounded context.extracted_sni
 ## Operational limits
 
 This architecture is hierarchical but not a general-purpose swarm. Workers are bounded specialists, not unrestricted autonomous browser sessions. Automatic preflight requires a known starting URL and a connected Chrome Extension. Research is limited to visible content from the loaded page; it does not crawl arbitrary websites. Verification can be inconclusive on pages where completion evidence is transient or hidden. Provider availability, page authentication and site-specific DOM behavior still affect results.
+
+## Frontend visibility
+
+The task inspector includes an Agent team panel. It shows the selected preflight roles, completed specialist outputs, master follow-up round, recovery diagnosis and independent verification status from the parent task response. The panel is responsive and uses the existing dark theme.
