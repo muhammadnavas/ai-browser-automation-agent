@@ -17,6 +17,11 @@ _RESEARCH = re.compile(
     r"look up|collect|gather|identify)\b",
     re.IGNORECASE,
 )
+_MUTATING = re.compile(
+    r"\\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
+    r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\\b",
+    re.IGNORECASE,
+)
 _NAVIGATION_ONLY = re.compile(
     r"^\s*(please\s+)?(open|visit|navigate to|go to)\b",
     re.IGNORECASE,
@@ -36,7 +41,7 @@ def build_automatic_subagent_specs(
     """
     url = (start_url or extracted_url or "").strip()
     text = (goal or "").strip()
-    if not url or not text:
+    if not url or not text or _MUTATING.search(text):
         return []
 
     if _RESEARCH.search(text):
