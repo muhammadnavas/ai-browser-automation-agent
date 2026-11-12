@@ -684,6 +684,9 @@ class TaskManager:
                 "selected_roles": [spec.role for spec in child_specs],
             }
             if child_specs:
+                task.plan_status = "delegating"
+                task.updated_at = time.time()
+                await self.broadcast_task_update(task_id)
                 child_batch = await self.run_subagent_batch(task_id, child_specs)
                 all_child_results = list(child_batch.results)
                 task.plan_metadata["subagent_batch_status"] = child_batch.status
@@ -743,6 +746,7 @@ class TaskManager:
                         "error": child_result.error,
                     })
                 task.context.extracted_snippets = task.context.extracted_snippets[-20:]
+                task.plan_status = "planned"
                 task.updated_at = time.time()
                 await self.broadcast_task_update(task_id)
                 await self._save_cached_task_state(task_id)
