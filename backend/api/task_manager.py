@@ -661,13 +661,14 @@ class TaskManager:
                 child_specs = [SubagentSpec.model_validate(item) for item in raw_subagent_specs]
                 delegation_source = "explicit"
             else:
-                from agents.delegation import build_automatic_subagent_specs
+                from agents.delegation import plan_subagent_specs
                 delegation_url = req.start_url or planner.extract_target_url(req.goal)
-                child_specs = build_automatic_subagent_specs(
+                child_specs = await plan_subagent_specs(
+                    planner=planner,
                     goal=req.goal,
                     start_url=delegation_url,
                 )
-                delegation_source = "automatic" if child_specs else "none"
+                delegation_source = "llm_automatic" if child_specs else "none"
 
             task.plan_metadata["delegation"] = {
                 "mode": delegation_source,
