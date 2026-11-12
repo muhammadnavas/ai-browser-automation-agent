@@ -303,7 +303,7 @@ Recent errors:
 {json.dumps([str(x)[:250] for x in recent_errors[-5:]], ensure_ascii=False)}
 
 Return only JSON:
-{{"diagnosis":"short cause","strategy":"short recovery strategy","revised_steps":["step 1","step 2"],"confidence":0.0}}
+{{"diagnosis":"short cause","strategy":"short recovery strategy","revised_steps":["step 1","step 2"],"confidence":0.0,"requires_human_review":false}}
 
 Rules:
 - revised_steps must contain 1 to 8 concise browser-task milestones.
