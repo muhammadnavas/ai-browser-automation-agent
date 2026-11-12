@@ -127,11 +127,6 @@ Rules:
                 continue
             if candidate_url != url or _MUTATING_INTENT.search(subgoal):
                 continue
-            if role == "verification":
-                expected_text = str(inputs.get("expected_text") or "").strip()
-                expected_url = str(inputs.get("expected_url_contains") or "").strip()
-                if not expected_text and not expected_url:
-                    continue
             timeout = row.get("timeout_seconds", 90)
             try:
                 timeout = max(10, min(120, int(timeout)))
