@@ -2049,11 +2049,42 @@ export default function App() {
 
         {!currentTask ? (
           <section className="welcome-state">
-            <EmptyState
-              icon={Bot}
-              title="Ready when you are"
-              description="Launch your first task above. Live plans, actions, approvals, and reports will appear here."
-            />
+            <div className="welcome-panel">
+              <div className="welcome-copy">
+                <span className="welcome-eyebrow"><Zap size={13} /> YOUR BROWSER, WORKING FOR YOU</span>
+                <h2>Give your browser<br /><em>a little direction.</em></h2>
+                <p>Automata can research websites, gather useful details, and handle repetitive browser steps. Tell it what you need above, then stay in control as it works.</p>
+                <div className="welcome-assurance"><ShieldCheck size={15} /> You stay in control of important actions.</div>
+              </div>
+              <div className="welcome-starters">
+                <div className="welcome-starters-heading">
+                  <span>GET STARTED</span>
+                  <small>Choose an example to fill your task</small>
+                </div>
+                <button type="button" className="starter-card" onClick={() => { setGoal('Research three project management tools and compare their key features and pricing.'); document.querySelector('[aria-label="Task goal"]')?.focus(); }}>
+                  <span className="starter-icon"><Search size={17} /></span>
+                  <span className="starter-copy"><strong>Research & compare</strong><small>Find information across websites and compare options.</small></span>
+                  <ChevronRight size={16} className="starter-arrow" />
+                </button>
+                <button type="button" className="starter-card" onClick={() => { setGoal('Find the official website, contact details, and key information for a company.'); document.querySelector('[aria-label="Task goal"]')?.focus(); }}>
+                  <span className="starter-icon"><Globe size={17} /></span>
+                  <span className="starter-copy"><strong>Explore a website</strong><small>Navigate a site and collect the details that matter.</small></span>
+                  <ChevronRight size={16} className="starter-arrow" />
+                </button>
+                <button type="button" className="starter-card" onClick={() => { setGoal('Open a web form and fill it using the details I provide. Do not submit it without my approval.'); document.querySelector('[aria-label="Task goal"]')?.focus(); }}>
+                  <span className="starter-icon"><FileText size={17} /></span>
+                  <span className="starter-copy"><strong>Handle a routine task</strong><small>Fill in forms and review before anything is submitted.</small></span>
+                  <ChevronRight size={16} className="starter-arrow" />
+                </button>
+              </div>
+            </div>
+            <div className="welcome-process">
+              <span><i>01</i> Describe your goal</span>
+              <b />
+              <span><i>02</i> Automata plans the steps</span>
+              <b />
+              <span><i>03</i> Review and stay in control</span>
+            </div>
           </section>
         ) : (
           <>
