@@ -2319,14 +2319,25 @@ class TaskManager:
                                             for key in ("tag", "role", "text", "aria_label", "label", "placeholder", "title", "href")
                                             if item.get(key) is not None
                                         })
+                                from backend.security import redact_sensitive_data
+                                raw_recovery_url = str(live_page_info.get("url") or "")
+                                parsed_recovery_url = urlparse(raw_recovery_url)
+                                safe_recovery_url = (
+                                    f"{parsed_recovery_url.scheme}://{parsed_recovery_url.netloc}{parsed_recovery_url.path}"
+                                    if parsed_recovery_url.scheme and parsed_recovery_url.netloc
+                                    else ""
+                                )
+                                safe_recovery_error = redact_sensitive_data(
+                                    exec_description, mask_tier3=True
+                                )
                                 recovery_spec = SubagentSpec(
                                     role="recovery",
                                     goal=f"Diagnose step {step_num} failure and propose a safe revised milestone plan",
                                     input={
                                         "goal": req.goal,
-                                        "error": exec_description,
+                                        "error": str(safe_recovery_error)[:1200],
                                         "page_info": {
-                                            "url": str(live_page_info.get("url") or "")[:500],
+                                            "url": safe_recovery_url[:500],
                                             "title": str(live_page_info.get("title") or "")[:240],
                                             "headings": (live_page_info.get("headings") or [])[:15],
                                             "elements": safe_recovery_elements,
