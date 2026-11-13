@@ -512,6 +512,7 @@ class TaskManager:
                     "title": str(page_info.get("title") or "")[:160],
                     "headings": headings,
                     "controls": visible_controls,
+                    "dom_fingerprint": getattr(task.context, "last_dom_fingerprint", None),
                 },
                 sort_keys=True,
             ).encode("utf-8")
