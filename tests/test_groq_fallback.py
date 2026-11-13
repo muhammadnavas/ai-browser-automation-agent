@@ -607,3 +607,15 @@ def test_half_open_probe_failure_reopens_circuit_and_resets_probe_flag():
         mock_groq.assert_called_once()
 
 
+
+
+
+def test_gemini_fallback_chain_uses_current_model_ids():
+    models = AIAgentPlanner._FALLBACK_MODELS
+    assert models == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3-flash-preview",
+    ]
+    assert "gemini-2.5-flash-lite" not in models
+    assert "gemini-3.1-flash-lite-preview" not in models
