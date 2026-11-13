@@ -567,6 +567,7 @@ class TaskManager:
             attempt["summary"] = batch.summary
 
             from backend.security import redact_sensitive_data
+            batch_evidence = []
             for child in batch.results:
                 output = child.output if isinstance(child.output, dict) else {"result": str(child.output or "")}
                 output = redact_sensitive_data(output, mask_tier3=True)
@@ -578,16 +579,28 @@ class TaskManager:
                         output["links"] = output["links"][:12]
                     if isinstance(output.get("controls"), list):
                         output["controls"] = output["controls"][:35]
-                task.context.extracted_snippets.append({
-                    "source": "runtime_subagent",
+                evidence_item = {
                     "subagent_id": child.subagent_id,
                     "role": child.role,
                     "status": child.status.value,
                     "goal": child.goal,
-                    "url": live_url[:700],
                     "output": output,
                     "error": str(child.error or "")[:300],
+                }
+                batch_evidence.append(evidence_item)
+                task.context.extracted_snippets.append({
+                    "source": "runtime_subagent",
+                    **evidence_item,
+                    "url": live_url[:700],
                 })
+            # TaskContext's prompt helper includes the latest snippet. Add one
+            # compact aggregate so the master planner sees every specialist's
+            # evidence from this batch, not just the last worker's result.
+            task.context.extracted_snippets.append({
+                "source": "runtime_subagent_batch",
+                "url": live_url[:700],
+                "specialists": batch_evidence[:2],
+            })
             task.context.extracted_snippets = task.context.extracted_snippets[-20:]
             logger.info(
                 "Runtime delegation completed for task %s on %s: roles=%s status=%s",
