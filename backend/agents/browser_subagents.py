@@ -343,6 +343,10 @@ def register_browser_subagents() -> None:
     subagent_orchestrator.register_worker("form", form_worker)
     subagent_orchestrator.register_worker("verification", verification_worker)
     subagent_orchestrator.register_worker("recovery", recovery_worker)
+    # Import lazily: the interaction specialist reuses this module's safe tab
+    # lifecycle helpers, so importing it at module load time would be circular.
+    from agents.interaction_subagent import interaction_worker
+    subagent_orchestrator.register_worker("interaction", interaction_worker)
 
 
 async def close_form_review_tab(parent_task_id: str, subagent_id: str) -> bool:
