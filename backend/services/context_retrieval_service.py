@@ -47,8 +47,11 @@ def extract_keywords(text: str) -> Set[str]:
     return {t for t in tokens if t not in COMMON_STOP_WORDS}
 
 
-def sanitize_untrusted_context_text(text: str) -> str:
+def sanitize_untrusted_context_text(text: Any) -> str:
     """Neutralize prompt injection attempts and structural delimiters in retrieved data."""
+    if text is None:
+        return ""
+    text = str(text)
     if not text:
         return ""
     # Strip existing untrusted content tags to prevent tag escape attacks
@@ -59,6 +62,26 @@ def sanitize_untrusted_context_text(text: str) -> str:
     # Strip internal security markers
     clean = strip_internal_placeholders(clean)
     return clean.strip()
+
+
+def sanitize_untrusted_context_value(value: Any, depth: int = 0) -> Any:
+    """Recursively sanitize profile values before adding them to an LLM context block."""
+    if depth > 8:
+        return "[nested profile content omitted]"
+    if isinstance(value, str):
+        return sanitize_untrusted_context_text(value)
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in list(value.items())[:50]:
+            safe_key = sanitize_untrusted_context_text(key)[:100]
+            if safe_key:
+                sanitized[safe_key] = sanitize_untrusted_context_value(item, depth + 1)
+        return sanitized
+    if isinstance(value, (list, tuple, set)):
+        return [sanitize_untrusted_context_value(item, depth + 1) for item in list(value)[:50]]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return sanitize_untrusted_context_text(value)
 
 
 class ContextRetrievalService:
@@ -97,8 +120,10 @@ class ContextRetrievalService:
             relevant_profile: Optional[Dict[str, Any]] = None
             if profile_data:
                 personal = profile_data.get("personal_details", {})
-                education = profile_data.get("education", {})
-                skills = profile_data.get("skills_and_experience", {})
+                if not isinstance(personal, dict):
+                    personal = {}
+                education = sanitize_untrusted_context_value(profile_data.get("education", {}))
+                skills = sanitize_untrusted_context_value(profile_data.get("skills_and_experience", {}))
                 instructions = profile_data.get("custom_instructions", "")
 
                 # Always include contact details if available
