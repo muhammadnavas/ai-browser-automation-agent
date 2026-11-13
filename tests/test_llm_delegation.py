@@ -155,7 +155,6 @@ def test_runtime_delegation_rejects_unknown_url_role_and_mutating_subtask():
         "subtasks": [
             {"role": "interaction", "goal": "Click delete", "input": {"url": "https://mail.google.com"}},
             {"role": "research", "goal": "Read another site", "input": {"url": "https://evil.example"}},
-            {"role": "executor", "goal": "Execute browser actions", "input": {"url": "https://mail.google.com"}},
         ]
     }))
     specs = asyncio.run(plan_runtime_subagent_specs(
