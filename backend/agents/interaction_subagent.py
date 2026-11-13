@@ -14,10 +14,11 @@ from agents.browser_subagents import _open_owned_tab, _close_owned_tab
 
 async def interaction_worker(ctx: SubagentContext) -> Dict[str, Any]:
     """Inspect visible controls and return bounded, non-mutating evidence."""
-    adapter = await _open_owned_tab(ctx)
+    from agents.browser_subagents import _observation_adapter, _inspect_observation
+    adapter, owns_adapter = await _observation_adapter(ctx)
     try:
         ctx.raise_if_cancelled()
-        page = await adapter.parse_interactive_elements()
+        page = await _inspect_observation(ctx, adapter)
         if page.get("inspection_error") or not page.get("url"):
             raise RuntimeError("Interaction specialist could not inspect the live page")
 
@@ -53,7 +54,8 @@ async def interaction_worker(ctx: SubagentContext) -> Dict[str, Any]:
             "note": "Controls are observations only; the master executor must re-inspect before acting.",
         }
     finally:
-        await _close_owned_tab(adapter)
+        if owns_adapter:
+            await _close_owned_tab(adapter)
 
 
 def register_interaction_worker() -> None:
