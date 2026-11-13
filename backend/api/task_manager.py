@@ -455,6 +455,136 @@ class TaskManager:
         """Register a role-specific async worker without replacing the main executor."""
         self.subagent_orchestrator.register_worker(role, worker)
 
+    async def _delegate_from_live_page(
+        self,
+        task_id: str,
+        planner: Any,
+        goal: str,
+        page_info: Dict[str, Any],
+    ) -> None:
+        """Run a small, deduplicated read-only delegation batch on a live page."""
+        task = self.tasks.get(task_id)
+        if task is None or self._is_cancelled(task_id):
+            return
+        metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+        attempts = metadata.setdefault("runtime_delegation_attempts", [])
+        if not isinstance(attempts, list):
+            attempts = []
+            metadata["runtime_delegation_attempts"] = attempts
+        if len(attempts) >= 6:
+            return
+
+        # Never launch child tabs while the current page is asking for passwords,
+        # OTPs, or other authentication input.
+        from backend.security import is_auth_field
+        auth_fields = (page_info.get("form_fields") or []) + (page_info.get("elements") or [])
+        if any(is_auth_field(field) for field in auth_fields):
+            return
+
+        raw_url = str(page_info.get("browser_tab_url") or page_info.get("url") or "").strip()
+        if not raw_url:
+            return
+        safe, reason, normalized = await asyncio.to_thread(validate_url_security, raw_url, True)
+        if not safe or not normalized:
+            logger.info("Runtime delegation skipped for task %s: unsafe live URL (%s)", task_id, reason)
+            return
+
+        parsed = urlparse(normalized)
+        # Drop query parameters (which can contain search terms or identifiers),
+        # but preserve the fragment because many SPAs encode the current view there.
+        live_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if parsed.fragment:
+            live_url += f"#{parsed.fragment}"
+        headings = [str(x)[:120] for x in (page_info.get("headings") or [])[:8]]
+        page_signature = hashlib.sha256(
+            json.dumps(
+                {"url": live_url, "title": str(page_info.get("title") or "")[:160], "headings": headings},
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        if any(isinstance(item, dict) and item.get("page_signature") == page_signature for item in attempts):
+            return
+
+        # Reserve the page before awaiting the LLM/workers, preventing duplicate
+        # delegation if another execution callback observes the same snapshot.
+        attempt = {
+            "page_signature": page_signature,
+            "url": live_url[:700],
+            "step": int(getattr(task, "current_step", 0) or 0) + 1,
+            "status": "planning",
+            "roles": [],
+            "created_at": time.time(),
+        }
+        attempts.append(attempt)
+        metadata["runtime_delegation_attempts"] = attempts[-6:]
+        task.plan_metadata = metadata
+
+        try:
+            from agents.delegation import plan_runtime_subagent_specs
+            prior_history = [
+                {"role": role, "status": status, "goal": goal_text}
+                for item in attempts[:-1] if isinstance(item, dict)
+                for role, status, goal_text in zip(
+                    item.get("roles", []),
+                    item.get("statuses", []),
+                    item.get("goals", []),
+                )
+            ][-8:]
+            specs = await plan_runtime_subagent_specs(
+                planner=planner,
+                goal=goal,
+                current_url=live_url,
+                page_info=page_info,
+                recent_history=prior_history,
+            )
+            attempt["roles"] = [spec.role for spec in specs]
+            attempt["goals"] = [spec.goal for spec in specs]
+            if not specs:
+                attempt["status"] = "no_delegation_needed"
+                return
+
+            if self._is_cancelled(task_id):
+                attempt["status"] = "cancelled"
+                return
+            batch = await self.run_subagent_batch(task_id, specs, shared_memory={"planner": planner})
+            attempt["statuses"] = [item.status.value for item in batch.results]
+            attempt["status"] = batch.status
+            attempt["summary"] = batch.summary
+
+            from backend.security import redact_sensitive_data
+            for child in batch.results:
+                output = child.output if isinstance(child.output, dict) else {"result": str(child.output or "")}
+                output = redact_sensitive_data(output, mask_tier3=True)
+                if isinstance(output, dict):
+                    output = dict(output)
+                    if isinstance(output.get("page_text"), str):
+                        output["page_text"] = output["page_text"][:3500]
+                    if isinstance(output.get("links"), list):
+                        output["links"] = output["links"][:12]
+                    if isinstance(output.get("controls"), list):
+                        output["controls"] = output["controls"][:35]
+                task.context.extracted_snippets.append({
+                    "source": "runtime_subagent",
+                    "subagent_id": child.subagent_id,
+                    "role": child.role,
+                    "status": child.status.value,
+                    "goal": child.goal,
+                    "url": live_url[:700],
+                    "output": output,
+                    "error": str(child.error or "")[:300],
+                })
+            task.context.extracted_snippets = task.context.extracted_snippets[-20:]
+            logger.info(
+                "Runtime delegation completed for task %s on %s: roles=%s status=%s",
+                task_id, live_url, attempt["roles"], attempt["status"],
+            )
+            await self.broadcast_task_update(task_id)
+            await self._save_cached_task_state(task_id)
+        except Exception as exc:
+            attempt["status"] = "failed"
+            attempt["error"] = str(exc)[:300]
+            logger.warning("Runtime delegation failed safely for task %s: %s", task_id, exc)
+
     # ------------------------------------------------------------------
     # WebSocket pub/sub
     # ------------------------------------------------------------------
