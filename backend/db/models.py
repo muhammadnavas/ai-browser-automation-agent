@@ -43,7 +43,9 @@ class GUID(TypeDecorator):
         if value is None:
             return value
         elif dialect.name == "postgresql":
-            return str(value)
+            # PG_UUID(as_uuid=True) expects uuid.UUID objects (not strings),
+            # especially with asyncpg's native UUID codec.
+            return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
         else:
             if isinstance(value, uuid.UUID):
                 return str(value)
