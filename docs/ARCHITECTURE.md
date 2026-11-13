@@ -220,3 +220,7 @@ The system avoids breaking on bot verification barriers through automated securi
 2. **Interception**: If detected, `AIAgentPlanner` issues a `REQUEST_APPROVAL` action, transitioning the task status to `WAITING_APPROVAL`.
 3. **Remote Interaction**: The user can either complete the challenge directly on a headed browser window or interact through the Web UI via normalized coordinate clicks (`POST /api/tasks/{task_id}/click?x=0.5&y=0.5`), which translates percentages into exact viewport pixel mouse clicks.
 4. **Resumption**: Calling `POST /api/tasks/{task_id}/approve` triggers the internal `asyncio.Event` to resume automated execution.
+
+
+### 2.8. Live-tab specialist observation
+Runtime navigation, research, and interaction specialists can inspect the exact task tab through the parent's existing extension adapter. They do not create duplicate tabs when this mode is enabled. A per-task async observation lock serializes their DOM snapshots, and workers receive no mutation API or permission to execute actions. The main TaskManager remains the sole browser-action executor and re-inspects the page before acting. If a parent adapter is unavailable or ownership does not match, the specialist fails closed rather than attaching to another task.
