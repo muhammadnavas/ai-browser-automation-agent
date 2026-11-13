@@ -1,8 +1,8 @@
-"""Concrete Chrome Extension subagents for navigation, research, forms and verification.
+"""Chrome Extension subagents for read-only observation and bounded form work.
 
-Each worker owns a dedicated extension task tab identified by its child ID.
-No worker shares mutable page state with another worker. Form workers only fill
-explicitly supplied values and never submit a form.
+Runtime navigation, research, and interaction workers can inspect the parent's
+exact live tab. Standalone workers retain child-owned tabs. Form workers only
+fill explicitly supplied values and never submit a form.
 """
 import asyncio
 import json
