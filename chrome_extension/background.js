@@ -22,6 +22,8 @@ let socket = null;
 let reconnectTimer = null;
 let pingInterval = null;
 let isConnecting = false;
+let isAuthenticated = false;
+let isRevoked = false;
 let lastConnectionError = null;
 let lastConnectedAt = null;
 
@@ -87,6 +89,19 @@ async function connectWebSocket() {
   isConnecting = true;
 
   try {
+    if (socket) {
+      try {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        if (socket.readyState !== WebSocket.CLOSED) {
+          socket.close();
+        }
+      } catch (e) {}
+      socket = null;
+    }
+
     const { serverUrl } = await loadSettings();
     console.log(`[AI Extension] Connecting to ${serverUrl}...`);
     const candidate = new WebSocket(serverUrl);
@@ -94,15 +109,17 @@ async function connectWebSocket() {
 
     candidate.onopen = async () => {
       if (socket !== candidate) return;
-      console.log("[AI Extension] Connected to FastAPI backend.");
+      console.log("[AI Extension] Connected to FastAPI backend. Awaiting registration handshake...");
       isConnecting = false;
+      isAuthenticated = false;
       lastConnectionError = null;
-      lastConnectedAt = new Date().toISOString();
-      await updateBadgeStatus(true);
-      await chrome.storage.local.set({ isConnected: true, lastConnectionError: null, lastConnectedAt });
 
       // Send initial registration handshake
       const { extensionToken } = await loadSettings();
+      const taskTabsObj = {};
+      for (const [taskId, tabId] of taskTabMap.entries()) {
+        taskTabsObj[taskId] = tabId;
+      }
       sendWsMessage({
         type: "register",
         client: "chrome-extension",
@@ -110,15 +127,8 @@ async function connectWebSocket() {
         token: extensionToken || null,
         extension_id: (typeof chrome !== "undefined" && chrome.runtime?.id) ? chrome.runtime.id : "chrome-extension",
         active_tasks: Array.from(taskTabMap.keys()),
+        task_tabs: taskTabsObj,
       });
-
-      // Start ping heartbeat every 20s
-      if (pingInterval) clearInterval(pingInterval);
-      pingInterval = setInterval(() => {
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          sendWsMessage({ type: "ping", timestamp: Date.now() });
-        }
-      }, 20000);
     };
 
     candidate.onmessage = async (event) => {
@@ -149,17 +159,15 @@ async function connectWebSocket() {
     candidate.onclose = async (event) => {
       if (socket !== candidate) return;
       console.warn("[AI Extension] WebSocket disconnected. Code:", event.code, event.reason || "");
-      if (event.code === 4003) {
-        await chrome.storage.local.remove(["extensionToken"]);
-      }
       isConnecting = false;
+      isAuthenticated = false;
       lastConnectionError = lastConnectionError || `WebSocket closed (code ${event.code})`;
       if (pingInterval) clearInterval(pingInterval);
       await updateBadgeStatus(false);
-      await chrome.storage.local.set({ isConnected: false, lastConnectionError });
+      await chrome.storage.local.set({ isConnected: false, isAuthenticated: false, lastConnectionError });
 
-      // Schedule reconnection with backoff
-      if (!reconnectTimer) {
+      // Schedule reconnection with backoff only if not explicitly revoked and not an auth failure (code 4003)
+      if (!reconnectTimer && !isRevoked && event.code !== 4003) {
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
           connectWebSocket();
@@ -235,7 +243,7 @@ async function ensureContentScriptInjected(tabId) {
   const ping = async () => {
     try {
       const response = await chrome.tabs.sendMessage(tabId, { type: "ping" }, { frameId: 0 });
-      return Boolean(response && response.pong);
+      return Boolean(response && response.pong && response.is_top_frame !== false);
     } catch (error) {
       return false;
     }
@@ -294,14 +302,16 @@ async function sendContentMessage(tabId, message, options = { frameId: 0 }) {
   try {
     return await chrome.tabs.sendMessage(tabId, message, options);
   } catch (error) {
-    // A page can navigate between the readiness check and message delivery.
-    // Re-inject into the new document and retry once.
-    if (!/receiving end does not exist|could not establish connection/i.test(error.message || "")) {
-      throw error;
+    // For read-only inspection or informational queries, a document transition / BFCache entry
+    // can be recovered by waiting for the new document and re-querying once.
+    // For action execution, we do NOT re-dispatch the action here to prevent duplicate actions.
+    const isChannelClosed = /receiving end does not exist|could not establish connection|back\/forward cache|message channel.*closed/i.test(error.message || "");
+    if (isChannelClosed && message && message.type !== "execute_action") {
+      await waitForTabLoaded(tabId, 10000);
+      await ensureContentScriptInjected(tabId);
+      return await chrome.tabs.sendMessage(tabId, message, options);
     }
-    await waitForTabLoaded(tabId, 10000);
-    await ensureContentScriptInjected(tabId);
-    return await chrome.tabs.sendMessage(tabId, message, options);
+    throw error;
   }
 }
 
@@ -322,15 +332,22 @@ async function focusTaskTab(tabId) {
   return activeTab;
 }
 
-async function waitForTabLoaded(tabId, timeoutMs = 12000) {
-  // Give Chrome a short slice (50ms) to transition tab.status to 'loading' if navigation just initiated
-  await new Promise((r) => setTimeout(r, 50));
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    if (tab && tab.status === "complete") {
-      return true;
-    }
-  } catch (e) {}
+async function waitForTabLoaded(tabId, timeoutMs = 12000, options = {}) {
+  const { expectNavigation = false, minWaitMs = 100 } = options;
+  // If we do not expect navigation to start, a tab that is already complete is immediately ready
+  if (!expectNavigation) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab && tab.status === "complete") {
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  // Give Chrome a short slice to transition tab.status to 'loading' if navigation just initiated
+  if (minWaitMs > 0) {
+    await new Promise((r) => setTimeout(r, minWaitMs));
+  }
 
   return new Promise((resolve) => {
     let resolved = false;
@@ -354,6 +371,18 @@ async function waitForTabLoaded(tabId, timeoutMs = 12000) {
     }
 
     chrome.tabs.onUpdated.addListener(listener);
+
+    // If navigation settled while adding the listener, check current status
+    chrome.tabs.get(tabId).then((t) => {
+      if (t && t.status === "complete" && !resolved) {
+        if (!expectNavigation) {
+          resolved = true;
+          clearTimeout(timer);
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve(true);
+        }
+      }
+    }).catch(() => {});
   });
 }
 
@@ -369,20 +398,65 @@ async function handleBackendMessage(msg) {
   }
 
   if (type === "registered") {
+    console.log("[AI Extension] Successfully authenticated and paired with backend.");
+    isAuthenticated = true;
+    isRevoked = false;
+    lastConnectionError = null;
+    lastConnectedAt = new Date().toISOString();
+    await updateBadgeStatus(true);
+    const storageUpdate = {
+      isConnected: true,
+      isAuthenticated: true,
+      isRevoked: false,
+      lastConnectionError: null,
+      lastConnectedAt,
+    };
     if (msg.token) {
-      await chrome.storage.local.set({ extensionToken: msg.token });
+      storageUpdate.extensionToken = msg.token;
     }
+    await chrome.storage.local.set(storageUpdate);
+
+    // Start ping heartbeat every 20s
+    if (pingInterval) clearInterval(pingInterval);
+    pingInterval = setInterval(() => {
+      if (socket && socket.readyState === WebSocket.OPEN && isAuthenticated) {
+        sendWsMessage({ type: "ping", timestamp: Date.now() });
+      }
+    }, 20000);
     return;
   }
 
   if (type === "auth_failed") {
     console.warn("[AI Extension] Authentication failed:", msg.reason);
-    await chrome.storage.local.remove(["extensionToken"]);
-    lastConnectionError = msg.reason || "Extension authentication failed";
-    await chrome.storage.local.set({ lastConnectionError });
+    isAuthenticated = false;
+    await updateBadgeStatus(false);
+    const reason = msg.reason || "Extension authentication failed";
+    lastConnectionError = reason;
+
+    const isRevocation = Boolean(reason && reason.toLowerCase().includes("revoked"));
+    if (isRevocation) {
+      isRevoked = true;
+      // When explicitly revoked, do NOT delete token or auto-reconnect to prevent silently hijacking TOFU
+      await chrome.storage.local.set({
+        isConnected: false,
+        isAuthenticated: false,
+        isRevoked: true,
+        lastConnectionError: reason,
+      });
+    } else {
+      // If token is invalid or rejected, remove stale token so user can re-pair explicitly
+      await chrome.storage.local.remove(["extensionToken"]);
+      await chrome.storage.local.set({
+        isConnected: false,
+        isAuthenticated: false,
+        isRevoked: false,
+        lastConnectionError: reason,
+      });
+    }
+
     if (socket) {
       try {
-        socket.close(4003, msg.reason || "Authentication failed");
+        socket.close(4003, reason);
       } catch (e) {}
     }
     return;
@@ -698,21 +772,50 @@ async function handleBackendMessage(msg) {
   // ── 5. DOM Inspection ──
   if (type === "inspect_dom") {
     try {
+      const liveTab = await chrome.tabs.get(tabId);
+      const currentUrl = liveTab?.url || "";
+      if (isRestrictedUrl(currentUrl) || !currentUrl) {
+        // Restricted or blank pages (about:blank, chrome://) cannot run content scripts.
+        // Return a clean, non-interactive live document snapshot so the backend can
+        // plan navigation or handle initial blank state without failing closed.
+        sendWsMessage({
+          id,
+          task_id,
+          type: "response",
+          success: true,
+          data: {
+            url: currentUrl || "about:blank",
+            browser_tab_url: currentUrl || "about:blank",
+            title: liveTab?.title || "",
+            elements: [],
+            page_text: "",
+            headings: [],
+            form_questions: [],
+            form_fields: [],
+            compact_forms: { form_count: 0, fields: [] },
+            restricted: true,
+          },
+        });
+        return;
+      }
+
       // DOM inspection is safe in an inactive tab. Never activate/focus the
       // task tab here: the planner inspects repeatedly between actions, and
       // focusing on every inspection steals the user's active Chrome tab.
       const response = await sendContentMessage(tabId, {
         type: "inspect_dom",
         show_badges: msg.show_badges,
-      });
+      }, { frameId: 0 });
 
-      const liveTab = await chrome.tabs.get(tabId);
+      const updatedTab = await chrome.tabs.get(tabId).catch(() => liveTab);
       const inspectionData = response && response.data ? {
         ...response.data,
         // The browser's tab URL is authoritative; content-script state can
         // lag during SPA redirects or after a navigation.
-        url: liveTab.url || response.data.url || "",
-        browser_tab_url: liveTab.url || "",
+        url: updatedTab?.url || response.data.url || currentUrl,
+        browser_tab_url: updatedTab?.url || currentUrl,
+        frame_url: response.data.url || updatedTab?.url || currentUrl,
+        is_top_frame: response.data.is_top_frame !== false,
       } : null;
       sendWsMessage({
         id,
@@ -789,10 +892,69 @@ async function handleBackendMessage(msg) {
         }
       }
 
-      const result = await sendContentMessage(tabId, {
-        type: "execute_action",
-        action: action,
-      });
+      // Capture pre-action tab URL to verify whether genuine navigation occurred
+      const preActionTab = await chrome.tabs.get(tabId).catch(() => null);
+      const preActionUrl = preActionTab?.url || "";
+
+      let result;
+      try {
+        result = await sendContentMessage(tabId, {
+          type: "execute_action",
+          action: action,
+        });
+      } catch (contentErr) {
+        // Detect BFCache entry and message channel closure caused by action-induced navigation
+        const isBfCacheOrChannelClosed = /back\/forward cache|message channel.*closed|port is closed/i.test(contentErr.message || "");
+        if (isBfCacheOrChannelClosed) {
+          // Wait for any in-flight navigation / document transition to settle
+          await waitForTabLoaded(tabId, 12000);
+          const postActionTab = await chrome.tabs.get(tabId).catch(() => null);
+          const postActionUrl = postActionTab?.url || "";
+
+          // Verify whether genuine navigation occurred by checking URL change
+          const urlChanged = Boolean(
+            postActionUrl &&
+            preActionUrl &&
+            postActionUrl !== preActionUrl &&
+            postActionUrl !== "about:blank"
+          );
+
+          if (urlChanged) {
+            // Re-establish content script readiness in the new top-level document using frameId: 0
+            if (!isRestrictedUrl(postActionUrl)) {
+              await ensureContentScriptInjected(tabId);
+            }
+            sendWsMessage({
+              id,
+              task_id,
+              type: "response",
+              success: true,
+              data: {
+                description: `Action [${action.action || "click"}] navigated to ${postActionUrl}`,
+                url: postActionUrl,
+                navigated: true,
+                target: action.selector || action.element_id || action.text,
+              },
+            });
+            return;
+          }
+
+          // If navigation could not be verified (e.g. tab URL did not change),
+          // do NOT treat channel closure as successful navigation. Report an uncertain outcome
+          // so recovery pauses without repeating a potentially side-effecting action.
+          sendWsMessage({
+            id,
+            task_id,
+            type: "response",
+            success: false,
+            error: `Action execution error: Message channel closed during [${action.action || "action"}], but navigation could not be verified (tab URL unchanged: ${postActionUrl || preActionUrl}). Inspect page state before retrying.`,
+          });
+          return;
+        }
+
+        // Re-throw any other execution error
+        throw contentErr;
+      }
 
       sendWsMessage({
         id,
@@ -950,22 +1112,59 @@ async function handleBackendMessage(msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab Lifecycle Event Listeners
+// Tab Lifecycle Event Listeners (including popups and child tabs)
 // ---------------------------------------------------------------------------
+
+const taskChildTabsMap = new Map(); // taskId -> Set of child tabIds
+
+if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.onCreated) {
+  chrome.tabs.onCreated.addListener(async (tab) => {
+    if (tab && tab.openerTabId && tabTaskMap.has(tab.openerTabId)) {
+      const taskId = tabTaskMap.get(tab.openerTabId);
+      let childSet = taskChildTabsMap.get(taskId);
+      if (!childSet) {
+        childSet = new Set();
+        taskChildTabsMap.set(taskId, childSet);
+      }
+      childSet.add(tab.id);
+      tabTaskMap.set(tab.id, taskId);
+      console.log(`[AI Extension] Tracked child tab ${tab.id} for task ${taskId} (opener: ${tab.openerTabId})`);
+    }
+  });
+}
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const taskId = tabTaskMap.get(tabId);
   if (taskId) {
-    taskTabMap.delete(taskId);
     tabTaskMap.delete(tabId);
-    await saveMappings();
+    const childSet = taskChildTabsMap.get(taskId);
+    if (childSet) {
+      childSet.delete(tabId);
+    }
 
-    // Notify backend
-    sendWsMessage({
-      type: "tab_closed",
-      task_id: taskId,
-      tab_id: tabId,
-    });
+    // Only if the closed tab was the active primary tab for the task:
+    if (taskTabMap.get(taskId) === tabId) {
+      // If a child tab exists (e.g. popup or target="_blank" tab), promote it
+      if (childSet && childSet.size > 0) {
+        const remaining = Array.from(childSet);
+        const nextTabId = remaining[remaining.length - 1];
+        taskTabMap.set(taskId, nextTabId);
+        await saveMappings();
+        console.log(`[AI Extension] Primary tab ${tabId} closed; switched task ${taskId} to child tab ${nextTabId}`);
+        return;
+      }
+
+      taskTabMap.delete(taskId);
+      taskChildTabsMap.delete(taskId);
+      await saveMappings();
+
+      // Notify backend
+      sendWsMessage({
+        type: "tab_closed",
+        task_id: taskId,
+        tab_id: tabId,
+      });
+    }
   }
 });
 
@@ -977,14 +1176,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "get_status") {
       const { serverUrl } = await loadSettings();
-      const { isConnected } = await chrome.storage.local.get("isConnected");
-      const connected = Boolean(socket && socket.readyState === WebSocket.OPEN);
+      const connected = Boolean(socket && socket.readyState === WebSocket.OPEN && isAuthenticated);
       const activeTasks = Array.from(taskTabMap.entries()).map(([taskId, tabId]) => ({
         task_id: taskId,
         tab_id: tabId,
       }));
       sendResponse({
         connected,
+        authenticated: isAuthenticated,
+        is_revoked: isRevoked,
         socket_state: socket ? socket.readyState : -1,
         server_url: serverUrl,
         last_error: lastConnectionError,
@@ -992,6 +1192,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         active_tasks: activeTasks,
       });
     } else if (message.type === "reconnect") {
+      isRevoked = false;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (socket) {
         try {
           socket.close();

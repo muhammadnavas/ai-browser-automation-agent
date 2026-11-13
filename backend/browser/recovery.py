@@ -369,6 +369,8 @@ def classify_browser_error(error: Any) -> str:
     if any(token in message for token in (
         "navigation", "net::err", "chrome-error", "target closed",
         "page closed", "dns_probe", "name_not_resolved",
+        "back/forward cache", "message channel is closed",
+        "message channel closed", "extension port is moved",
     )):
         return "navigation_or_page_state"
     return "unknown"
@@ -514,6 +516,83 @@ async def _verify_recovered_action(
     except Exception as exc:
         return False, f"Postcondition verification failed: {classify_browser_error(exc)}: {exc}"
 
+async def _check_action_already_satisfied(
+    controller: Any,
+    action: BrowserAction,
+    form_fields: Optional[List[Any]] = None,
+) -> Tuple[bool, str]:
+    """Query-before-retry: check if the action's intended effect already occurred on the page."""
+    if not controller or not hasattr(controller, "parse_interactive_elements"):
+        return False, "Controller cannot inspect live page state"
+    try:
+        page_info = await controller.parse_interactive_elements()
+        if not isinstance(page_info, dict) or page_info.get("inspection_error"):
+            return False, "Page inspection not available"
+
+        action_type = action.action
+        if action_type in (ActionType.FILL, ActionType.TYPE_TEXT, ActionType.FILL_FIELD):
+            expected = str(action.value if action.value is not None else action.text or "").strip()
+            fields = page_info.get("form_fields") or []
+            target_selector = str(action.selector or "")
+            target_id = action.element_id
+            for f in fields:
+                get = f.get if isinstance(f, dict) else lambda key, default=None: getattr(f, key, default)
+                if (target_selector and get("selector") == target_selector) or (target_id is not None and str(get("field_id") or get("index") or "") == str(target_id)):
+                    cur_val = str(get("current_value", "") or "").strip()
+                    if cur_val == expected or (expected and expected in cur_val):
+                        return True, f"Field already contains expected value: '{expected}'"
+            for el in page_info.get("elements") or []:
+                if isinstance(el, dict) and ((target_selector and el.get("selector") == target_selector) or (target_id is not None and el.get("index") == target_id)):
+                    el_val = str(el.get("value") or "").strip()
+                    if el_val == expected or (expected and expected in el_val):
+                        return True, f"Element already populated with value: '{expected}'"
+
+        elif action_type in (ActionType.SELECT, ActionType.SELECT_OPTION):
+            expected = str(action.select_label or action.value or action.text or "").strip().lower()
+            fields = page_info.get("form_fields") or []
+            for f in fields:
+                get = f.get if isinstance(f, dict) else lambda key, default=None: getattr(f, key, default)
+                cur_val = str(get("current_value", "") or "").strip().lower()
+                if cur_val and (cur_val == expected or expected in cur_val or cur_val in expected):
+                    return True, f"Option already selected: '{expected}'"
+
+        elif action_type in (ActionType.CHECK, ActionType.CHECK_BOX, ActionType.UNCHECK):
+            target_selector = str(action.selector or "")
+            target_id = action.element_id
+            expected_checked = action.checked if action.checked is not None else (action_type != ActionType.UNCHECK)
+            for el in page_info.get("elements") or []:
+                if isinstance(el, dict) and ((target_selector and el.get("selector") == target_selector) or (target_id is not None and el.get("index") == target_id)):
+                    if bool(el.get("checked")) == bool(expected_checked):
+                        return True, f"Checkbox already in desired state (checked={expected_checked})"
+
+        elif action_type == ActionType.NAVIGATE:
+            target_url = str(action.url or action.text or "").strip()
+            current_url = str(page_info.get("url") or getattr(controller, "current_url", "") or "").strip()
+            if target_url and current_url and (target_url in current_url or current_url in target_url):
+                return True, f"Already at destination URL: {current_url}"
+
+        elif action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+            target_selector = str(action.selector or "")
+            target_id = action.element_id
+            target_label = str(action.text or "").strip().lower()
+            matching = [
+                el for el in (page_info.get("elements") or [])
+                if isinstance(el, dict) and (
+                    (target_id is not None and el.get("index") == target_id)
+                    or (target_selector and el.get("selector") == target_selector)
+                    or (target_label and target_label in str(el.get("text") or el.get("aria_label") or "").lower())
+                )
+            ]
+            if matching:
+                target_el = matching[0]
+                if target_el.get("aria_expanded") in (True, "true") or target_el.get("aria_selected") in (True, "true"):
+                    return True, "Click state already satisfied (aria-expanded/selected is true)"
+    except Exception as exc:
+        logger.debug("Query-before-retry inspection error: %s", exc)
+
+    return False, "Action outcome not yet verified on page"
+
+
 # ---------------------------------------------------------------------------
 # High-Level Resilient Action Execution Runner
 # ---------------------------------------------------------------------------
@@ -541,6 +620,12 @@ async def execute_with_retry_and_fallback(
     last_error = "No recovery attempt was made"
     error_category = "unknown"
     for attempt in range(1, policy.max_retries + 1):
+        if attempt > 1:
+            satisfied, note = await _check_action_already_satisfied(controller, action, form_fields)
+            if satisfied:
+                recovery_log.append(f"Attempt {attempt}: Query-before-retry confirmed effect already occurred ({note}).")
+                return f"{action.action.value.upper()}: {note}", None, True, recovery_log
+
         # Never blindly repeat an action that might already have caused a side effect.
         # Only the first primary attempt is allowed for such actions; ambiguous outcomes
         # are surfaced to the planner/user instead of risking duplicate submissions.
@@ -638,6 +723,11 @@ async def execute_with_retry_and_fallback(
                         fallback_desc = str(e)
                 else:
                     # Chrome Extension or unhandled fallback action: re-invoke primary fn
+                    if _requires_manual_recovery(action):
+                        recovery_log.append(
+                            f"Attempt {attempt}: Non-idempotent action {action.action.value} skipped to avoid duplicate execution."
+                        )
+                        break
                     desc, extracted_item, success = await execute_primary_fn()
                     if success:
                         recovery_log.append(f"Attempt {attempt}: Primary retry succeeded ({desc})")

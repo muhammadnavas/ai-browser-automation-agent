@@ -22,9 +22,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const response = await chrome.runtime.sendMessage({ type: "get_status" });
       if (response) {
-        if (response.connected) {
+        if (response.connected && response.authenticated) {
           statusIndicator.className = "status-pill status-connected";
           statusText.textContent = "Connected";
+          statusText.title = `Connected and authenticated with ${response.server_url || "FastAPI backend"}`;
+        } else if (response.is_revoked) {
+          statusIndicator.className = "status-pill status-disconnected";
+          statusText.textContent = "Revoked";
+          statusText.title = response.last_error || "Extension pairing was revoked by the backend.";
+        } else if (response.socket_state === 0 || (response.socket_state === 1 && !response.authenticated)) {
+          statusIndicator.className = "status-pill status-disconnected";
+          statusText.textContent = "Authenticating...";
+          statusText.title = "WebSocket connected. Awaiting backend pairing handshake...";
         } else {
           statusIndicator.className = "status-pill status-disconnected";
           const stateLabels = {

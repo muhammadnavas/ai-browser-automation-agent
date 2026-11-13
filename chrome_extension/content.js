@@ -17,6 +17,13 @@
   }
   window.__AI_AGENT_CONTENT_SCRIPT_INITIALIZED__ = true;
 
+  // Re-establish content script readiness when thawed from BFCache
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) {
+      window.__AI_AGENT_CONTENT_SCRIPT_READY__ = true;
+    }
+  });
+
   // ---------------------------------------------------------------------------
   // Helper: Label Resolution & CSS Selector Generation
   // ---------------------------------------------------------------------------
@@ -198,8 +205,7 @@
     const interactiveSelectors =
       "button, a, input, textarea, select, li, " +
       '[role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="combobox"], [role="menuitem"], ' +
-      '[role="row"], [role="treeitem"], [role="option"], [role="gridcell"], [role="cell"], ' +
-      '[data-target="item"], c-wiz[data-target], [data-id], [onclick], [contenteditable="true"], ' +
+      '[role="row"], [role="treeitem"], [role="option"], [data-target="item"], c-wiz[data-target], [data-id], ' +
       '[tabindex]:not([tabindex="-1"])';
 
     const rawElements = Array.from(document.querySelectorAll(interactiveSelectors));
@@ -305,19 +311,7 @@
         role: role,
         text: text.substring(0, 160),
         label: labelText.substring(0, 160),
-        accessible_name: (
-          el.getAttribute("aria-label") ||
-          (el.getAttribute("aria-labelledby") && document.getElementById(el.getAttribute("aria-labelledby"))?.innerText) ||
-          labelText || el.getAttribute("title") || text
-        ).trim().replace(/\s+/g, " ").substring(0, 180),
         aria_label: el.getAttribute("aria-label") || "",
-        aria_expanded: el.getAttribute("aria-expanded"),
-        aria_selected: el.getAttribute("aria-selected"),
-        aria_controls: el.getAttribute("aria-controls"),
-        aria_haspopup: el.getAttribute("aria-haspopup"),
-        contenteditable: el.getAttribute("contenteditable") === "true",
-        parent_text: String(el.closest('[role="row"],[role="treeitem"],[role="listitem"],[role="option"],[role="menuitem"],li')?.innerText || "")
-          .trim().replace(/\s+/g, " ").substring(0, 240),
         title: el.getAttribute("title") || "",
         alt: el.getAttribute("alt") || "",
         id: elId,
@@ -728,7 +722,7 @@
 
     // 5. Resolve accessible form-field labels (Gmail and other dynamic SPAs).
     // Prefer editable controls and exact accessible-name matches over broad text matches.
-    const textTarget = action.target_text || action.text || action.select_label;
+    const textTarget = action.text || action.select_label;
     if (textTarget) {
       const wanted = textTarget.toLowerCase().trim();
       const editable = Array.from(document.querySelectorAll(
@@ -749,40 +743,7 @@
       }
     }
 
-    // 6. Resolve semantic targets from the current snapshot before broad text fallback.
-    if (textTarget) {
-      const wanted = String(textTarget).toLowerCase().trim();
-      const wantedRole = String(action.target_role || "").toLowerCase().trim();
-      const semanticCandidates = Array.from(document.querySelectorAll(
-        'button,a,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="treeitem"],[role="row"],[role="option"],[role="checkbox"],[role="radio"],[aria-label],[title]'
-      )).filter(isVisibleActionTarget);
-      const exactSemanticMatches = semanticCandidates.filter((el) => {
-        const role = String(el.getAttribute("role") || (
-          el.tagName === "A" ? "link" : el.tagName === "BUTTON" ? "button" : ""
-        )).toLowerCase();
-        if (wantedRole && role !== wantedRole) return false;
-        const names = [
-          el.getAttribute("aria-label"),
-          el.getAttribute("title"),
-          el.getAttribute("data-tooltip"),
-          el.innerText || el.textContent || "",
-        ].map((value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase());
-        return names.includes(wanted);
-      });
-      if (exactSemanticMatches.length === 1) return exactSemanticMatches[0];
-      if (exactSemanticMatches.length > 1) {
-        const roleMatches = exactSemanticMatches.filter((el) =>
-          String(el.getAttribute("role") || "").toLowerCase() === wantedRole
-        );
-        if (wantedRole && roleMatches.length === 1) return roleMatches[0];
-        return null;
-      }
-      // If the planner specified a role, do not fall through to a broad text
-      // match that could select a different kind of control.
-      if (wantedRole) return null;
-    }
-
-    // 7. By Text Content or Label (legacy fallback, constrained to visible elements)
+    // 6. By Text Content or Label (Precise search prioritizing exact leaf matches and Google Drive row items)
     if (textTarget) {
       const lower = textTarget.toLowerCase().trim();
 
@@ -1453,7 +1414,6 @@
         pressed: el?.getAttribute("aria-pressed"),
         checked: "checked" in (el || {}) ? Boolean(el.checked) : null,
         dialogCount: document.querySelectorAll('[role="dialog"], dialog[open]').length,
-        menuItemCount: document.querySelectorAll('[role="menu"] [role="menuitem"], [role="listbox"] [role="option"], ul[role="listbox"] > li, .aqdrmf-E > li').length,
         targetConnected: Boolean(el?.isConnected),
       };
       const clickContext = [action.text, action.reasoning, action.selector].filter(Boolean).join(" ");
@@ -1541,6 +1501,14 @@
       } catch (e) {}
       // ---------------------------------
 
+      // Detect navigation initiation early to acknowledge before document freeze/BFCache
+      let willNavigate = false;
+      const onNavigationInitiated = () => {
+        willNavigate = true;
+      };
+      window.addEventListener("pagehide", onNavigationInitiated, { once: true });
+      window.addEventListener("beforeunload", onNavigationInitiated, { once: true });
+
       const opts = { bubbles: true, cancelable: true, view: window };
       try {
         const rect = el.getBoundingClientRect();
@@ -1558,6 +1526,21 @@
         el.click();
       } else {
         el.dispatchEvent(new MouseEvent("click", opts));
+      }
+
+      // If navigation began immediately synchronously
+      if (willNavigate || window.location.href !== beforeClickState.url) {
+        window.removeEventListener("pagehide", onNavigationInitiated);
+        window.removeEventListener("beforeunload", onNavigationInitiated);
+        return {
+          success: true,
+          description: `Clicked [${action.selector || action.element_id || action.text || el.tagName}] and navigation initiated.`,
+          details: {
+            will_navigate: true,
+            postcondition: "navigated",
+            url: window.location.href,
+          },
+        };
       }
 
       // A Gmail Compose click is asynchronous: wait for the actual compose
@@ -1621,43 +1604,39 @@
         }
       }
 
-      // Allow synchronous framework handlers and SPA menu/dialog transitions to settle.
-      // Google Drive and similar SPAs animate menus asynchronously — 350ms is insufficient.
-      // We use a two-phase check: quick (350ms) for fast apps, and a longer poll (up to 900ms
-      // extra) specifically waiting for menu/dialog to open if it didn't appear immediately.
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      // Allow brief slice (100ms) for framework handlers and UI state changes to settle
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      window.removeEventListener("pagehide", onNavigationInitiated);
+      window.removeEventListener("beforeunload", onNavigationInitiated);
 
-      const captureState = () => ({
+      if (willNavigate || window.location.href !== beforeClickState.url) {
+        return {
+          success: true,
+          description: `Clicked [${action.selector || action.element_id || action.text || el.tagName}] and navigation initiated.`,
+          details: {
+            will_navigate: true,
+            postcondition: "navigated",
+            url: window.location.href,
+          },
+        };
+      }
+
+      const afterClickState = {
         url: window.location.href,
         expanded: el?.isConnected ? el.getAttribute("aria-expanded") : null,
         pressed: el?.isConnected ? el.getAttribute("aria-pressed") : null,
         checked: el?.isConnected && "checked" in el ? Boolean(el.checked) : null,
         dialogCount: document.querySelectorAll('[role="dialog"], dialog[open]').length,
-        menuItemCount: document.querySelectorAll('[role="menu"] [role="menuitem"], [role="listbox"] [role="option"], ul[role="listbox"] > li, .aqdrmf-E > li').length,
         targetConnected: Boolean(el?.isConnected),
-      });
-
-      let afterClickState = captureState();
-      const stateChanged = (s) => (
-        beforeClickState.url !== s.url ||
-        beforeClickState.expanded !== s.expanded ||
-        beforeClickState.pressed !== s.pressed ||
-        beforeClickState.checked !== s.checked ||
-        beforeClickState.dialogCount !== s.dialogCount ||
-        beforeClickState.menuItemCount !== s.menuItemCount ||
-        beforeClickState.targetConnected !== s.targetConnected
+      };
+      const observedChange = (
+        beforeClickState.url !== afterClickState.url ||
+        beforeClickState.expanded !== afterClickState.expanded ||
+        beforeClickState.pressed !== afterClickState.pressed ||
+        beforeClickState.checked !== afterClickState.checked ||
+        beforeClickState.dialogCount !== afterClickState.dialogCount ||
+        beforeClickState.targetConnected !== afterClickState.targetConnected
       );
-
-      // If no change detected yet, poll up to 900ms more for async menus/dialogs.
-      if (!stateChanged(afterClickState)) {
-        for (const extraWait of [200, 300, 400]) {
-          await new Promise((r) => setTimeout(r, extraWait));
-          afterClickState = captureState();
-          if (stateChanged(afterClickState)) break;
-        }
-      }
-
-      const observedChange = stateChanged(afterClickState);
       return {
         success: true,
         description: observedChange
@@ -2450,16 +2429,34 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // Child frames / embedded iframes must never respond to or intercept top-level page commands.
-    if (window !== window.top) {
-      if (["inspect_dom", "lock_ui", "unlock_ui", "clear_badges", "ping", "mask_sensitive_elements", "unmask_sensitive_elements"].includes(message?.type)) {
-        return false;
-      }
+    let isTopFrame = false;
+    try {
+      isTopFrame = window.top === window;
+    } catch (e) {
+      isTopFrame = false;
     }
+
+    if (message.type === "inspect_dom" && !isTopFrame) {
+      // Child frames must NEVER answer tab-level DOM inspection.
+      // Returning false immediately releases the message channel in this frame.
+      return false;
+    }
+
+    if (message.type === "ping") {
+      sendResponse({
+        success: true,
+        pong: true,
+        is_top_frame: isTopFrame,
+        url: window.location.href,
+      });
+      return false;
+    }
+
     (async () => {
       try {
         if (message.type === "inspect_dom") {
           const domData = await inspectPageDOM(Boolean(message.show_badges));
+          domData.is_top_frame = true;
           domData.diagnostics = collectPageDiagnostics();
           sendResponse({ success: true, data: domData });
         } else if (message.type === "clear_badges") {
@@ -2484,8 +2481,6 @@
         } else if (message.type === "unmask_sensitive_elements") {
           unmaskSensitiveElements();
           sendResponse({ success: true });
-        } else if (message.type === "ping") {
-          sendResponse({ success: true, pong: true, url: window.location.href });
         } else {
           sendResponse({ success: false, error: `Unknown message type: ${message.type}` });
         }

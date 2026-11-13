@@ -16,7 +16,6 @@ import socket
 from urllib.parse import urlsplit
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request
-from starlette.websockets import WebSocketDisconnected, WebSocketState
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -35,12 +34,14 @@ from services.research_service import research_service
 research_service.task_manager = task_manager
 from browser.extractor import InfoExtractor
 from browser.form_discovery import FormDiscovery
-from browser.pool import BrowserPool, get_browser_pool
+from browser.pool import get_browser_pool
 from browser.waiter import settle_page
 from browser.extension_adapter import extension_manager
 from browser.security import install_navigation_guard
+from backend.api.context_routes import router as context_router
 
 router = APIRouter(prefix="/api")
+router.include_router(context_router)
 logger = logging.getLogger("api.routes")
 MAX_ACTIVE_TASKS = max(1, int(os.getenv("MAX_ACTIVE_TASKS", "8")))
 
@@ -131,7 +132,7 @@ def _validate_public_http_url(raw_url: str) -> str:
 
 
 @router.post("/tasks", response_model=TaskResponse)
-async def create_task(req: TaskRequest):
+async def create_task(req: TaskRequest, request: Request = None):
     """Creates and starts an AI Browser Automation task."""
     active_statuses = {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL, TaskStatus.PAUSED}
     active_count = sum(task.status in active_statuses for task in task_manager.tasks.values())
@@ -145,7 +146,11 @@ async def create_task(req: TaskRequest):
             detail="Chrome Extension is disconnected. Please connect the extension in your Chrome browser before starting a task.",
         )
 
-    task = task_manager.create_task(req)
+    from backend.security.auth import get_current_session, get_authenticated_user_id
+    session = get_current_session(request) if request else None
+    user_id = get_authenticated_user_id(session) if session else "default_user"
+
+    task = task_manager.create_task(req, user_id=user_id)
     bg_task = asyncio.create_task(task_manager.run_task_execution(task.task_id, req))
     task_manager.running_tasks[task.task_id] = bg_task
     return _sanitize_task_response(task)
@@ -459,17 +464,8 @@ async def get_pool_status():
     """Returns concurrency metrics: active running tasks, total tasks, and browser pool state."""
     pool_metrics = None
     try:
-        if BrowserPool._instance is not None and BrowserPool._instance._is_started:
-            pool_metrics = BrowserPool._instance.get_metrics()
-        else:
-            pool_metrics = {
-                "is_started": False,
-                "browser_type": "chromium",
-                "headless": True,
-                "active_contexts": 0,
-                "available_slots": max(1, int(os.getenv("BROWSER_POOL_MAX_CONTEXTS", "8"))),
-                "total_created": 0,
-            }
+        pool = await get_browser_pool()
+        pool_metrics = pool.get_metrics()
     except Exception as exc:
         pool_metrics = {"is_started": False, "error": str(exc)}
 
@@ -831,16 +827,32 @@ async def extension_websocket(websocket: WebSocket):
     await extension_manager.register(websocket)
     try:
         while True:
-            if websocket.client_state == WebSocketState.DISCONNECTED:
+            client_state = getattr(websocket, "client_state", None)
+            if client_state and client_state.name == "DISCONNECTED":
                 break
-            data = await websocket.receive_json()
-            await extension_manager.handle_message(websocket, data)
-            if websocket.client_state == WebSocketState.DISCONNECTED:
+            try:
+                data = await websocket.receive_json()
+            except RuntimeError as re:
+                err_text = str(re).lower()
+                if "not connected" in err_text or "cannot call" in err_text or "disconnect" in err_text:
+                    logger.debug("Extension WebSocket closed during receive: %s", re)
+                    break
+                raise
+            except WebSocketDisconnect:
                 break
-    except (WebSocketDisconnect, WebSocketDisconnected):
-        await extension_manager.unregister(websocket)
-    except Exception:
-        logger.exception("Chrome extension WebSocket failed")
+
+            should_continue = await extension_manager.handle_message(websocket, data)
+            if should_continue is False:
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        err_msg = str(exc).lower()
+        if "not connected" in err_msg or "cannot call" in err_msg or "disconnect" in err_msg:
+            logger.debug("Extension WebSocket disconnected: %s", exc)
+        else:
+            logger.exception("Chrome extension WebSocket failed: %s", exc)
+    finally:
         await extension_manager.unregister(websocket)
 
 
