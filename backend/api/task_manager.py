@@ -496,9 +496,23 @@ class TaskManager:
         if parsed.fragment:
             live_url += f"#{parsed.fragment}"
         headings = [str(x)[:120] for x in (page_info.get("headings") or [])[:8]]
+        visible_controls = []
+        for element in (page_info.get("elements") or [])[:15]:
+            if isinstance(element, dict):
+                visible_controls.append({
+                    "tag": str(element.get("tag") or "")[:20],
+                    "role": str(element.get("role") or "")[:25],
+                    "text": str(element.get("text") or "")[:70],
+                    "label": str(element.get("aria_label") or element.get("label") or "")[:70],
+                })
         page_signature = hashlib.sha256(
             json.dumps(
-                {"url": live_url, "title": str(page_info.get("title") or "")[:160], "headings": headings},
+                {
+                    "url": live_url,
+                    "title": str(page_info.get("title") or "")[:160],
+                    "headings": headings,
+                    "controls": visible_controls,
+                },
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
