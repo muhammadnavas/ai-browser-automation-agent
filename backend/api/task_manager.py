@@ -558,6 +558,13 @@ class TaskManager:
                 attempt["status"] = "no_delegation_needed"
                 return
 
+            # Runtime reconnaissance must inspect the exact active task tab,
+            # not a duplicate tab with potentially different SPA/session state.
+            # Only the three registered read-only roles receive this capability.
+            for spec in specs:
+                if spec.role in {"navigation", "research", "interaction"}:
+                    spec.input["use_parent_tab"] = True
+
             if self._is_cancelled(task_id):
                 attempt["status"] = "cancelled"
                 return
