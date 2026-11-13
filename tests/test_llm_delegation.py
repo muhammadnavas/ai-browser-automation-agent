@@ -77,3 +77,39 @@ def test_followup_agent_can_retry_failed_role_but_not_repeat_completed_role():
     specs = asyncio.run(plan_followup_subagent_specs(planner, "Research this report", "https://example.com", prior))
     assert [item.role for item in specs] == ["research"]
     assert specs[0].input["url"] == "https://example.com"
+
+
+
+def test_master_can_delegate_read_only_interaction_specialist():
+    planner = FakePlanner(json.dumps({
+        "subtasks": [
+            {
+                "role": "interaction",
+                "goal": "Identify the Gmail search control and inbox navigation links",
+                "input": {"url": "https://mail.google.com"},
+                "timeout_seconds": 50,
+            }
+        ]
+    }))
+    specs = asyncio.run(plan_subagent_specs(
+        planner, "Open Gmail and locate the search control", "https://mail.google.com"
+    ))
+    assert [item.role for item in specs] == ["interaction"]
+    assert specs[0].input == {"url": "https://mail.google.com"}
+    assert "interaction" in planner.calls[0][0]
+
+
+def test_interaction_specialist_cannot_be_given_mutating_goal():
+    planner = FakePlanner(json.dumps({
+        "subtasks": [
+            {
+                "role": "interaction",
+                "goal": "Click delete and remove the selected email",
+                "input": {"url": "https://mail.google.com"},
+            }
+        ]
+    }))
+    specs = asyncio.run(plan_subagent_specs(
+        planner, "Inspect the inbox", "https://mail.google.com"
+    ))
+    assert specs == []
