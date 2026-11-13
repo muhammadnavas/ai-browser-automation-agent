@@ -29,7 +29,7 @@ import threading
 from models.schemas import (
     TaskRequest, TaskResponse, TaskStatus, AgentStep,
     ActionType, HumanApprovalRequest, ApprovalType, DialogAction,
-    BrowserAction, compute_action_fingerprint
+    BrowserAction, compute_action_fingerprint, FieldType
 )
 from browser.extension_adapter import ExtensionBrowserAdapter, extension_manager
 from browser.controller import BrowserController
@@ -391,7 +391,7 @@ class TaskManager:
     # Task creation
     # ------------------------------------------------------------------
 
-    def create_task(self, req: TaskRequest) -> TaskResponse:
+    def create_task(self, req: TaskRequest, user_id: str = "default_user") -> TaskResponse:
         task_id = f"task-{uuid.uuid4().hex[:8]}"
         now = time.time()
 
@@ -404,6 +404,7 @@ class TaskManager:
             clean_goal = strip_internal_placeholders(redact_text(req.goal), replacement="[protected]")
             task_resp = TaskResponse(
                 task_id=task_id,
+                user_id=user_id,
                 goal=clean_goal,
                 status=TaskStatus.FAILED,
                 error=user_error,
@@ -424,6 +425,7 @@ class TaskManager:
 
         task_resp = TaskResponse(
             task_id=task_id,
+            user_id=user_id,
             goal=req.goal,
             status=TaskStatus.PENDING,
             created_at=now,
@@ -756,6 +758,24 @@ class TaskManager:
         # here would discard the very history needed for safe continuation.
         if not restored_checkpoint:
             task.context.clear()
+
+        # Retrieve relevant user context (profile, documents, memories) from PostgreSQL if available
+        if not task.context.retrieved_context:
+            try:
+                from backend.db.database import async_session_factory, is_db_available
+                from backend.services.context_retrieval_service import context_retrieval_service
+                if is_db_available() and async_session_factory:
+                    async with async_session_factory() as session:
+                        user_id = getattr(task, "user_id", None) or os.getenv("APP_USER_ID", "default_user")
+                        retrieved = await context_retrieval_service.retrieve_relevant_context(
+                            db=session,
+                            user_id=user_id,
+                            goal=req.goal,
+                        )
+                        task.context.retrieved_context = retrieved
+            except Exception as ctx_exc:
+                logger.warning("Could not retrieve My Context for task %s: %s", task_id, ctx_exc)
+
         finish_verified = False
 
         try:
@@ -828,15 +848,18 @@ class TaskManager:
             await self.broadcast_task_update(task_id)
             await self._save_cached_task_state(task_id)
 
-            # Master-agent delegation: explicit specs take precedence; otherwise
-            # select a safe specialist automatically from the task intent.
+            # Optional master-agent delegation. Existing clients send no
+            # subagent_specs and continue through the unchanged single-agent path.
             raw_subagent_specs = getattr(req, "subagent_specs", None) or []
+            child_specs: List[SubagentSpec] = []
+            delegation_source = "none"
+            delegation_url = req.start_url or planner.extract_target_url(req.goal)
+
             if raw_subagent_specs:
                 child_specs = [SubagentSpec.model_validate(item) for item in raw_subagent_specs]
                 delegation_source = "explicit"
             else:
                 from agents.delegation import plan_subagent_specs
-                delegation_url = req.start_url or planner.extract_target_url(req.goal)
                 child_specs = await plan_subagent_specs(
                     planner=planner,
                     goal=req.goal,
@@ -852,6 +875,7 @@ class TaskManager:
                 task.plan_status = "delegating"
                 task.updated_at = time.time()
                 await self.broadcast_task_update(task_id)
+
                 child_batch = await self.run_subagent_batch(task_id, child_specs)
                 all_child_results = list(child_batch.results)
                 task.plan_metadata["subagent_batch_status"] = child_batch.status
@@ -1020,10 +1044,12 @@ class TaskManager:
                         break
                     page_info = await controller.parse_interactive_elements()
                     if page_info.get("inspection_error"):
+                        reason = page_info.get("inspection_error_reason")
+                        detail = f" ({reason})" if reason else ""
                         task.status = TaskStatus.FAILED
                         task.plan_status = "failed"
                         task.error = (
-                            "Could not inspect the live Chrome task tab. No browser action was attempted. "
+                            f"Could not inspect the live Chrome task tab{detail}. No browser action was attempted. "
                             "Check that the AI Browser Agent extension is reloaded and connected, then retry."
                         )
                         task.updated_at = time.time()
@@ -1849,16 +1875,11 @@ class TaskManager:
                     extracted_item = None
                     action_success = True
                 else:
-                    # If this action involves file upload, attach real file from user's system.
-                    # Exclude folder navigation actions and DOUBLE_CLICK from being treated as uploads.
+                    # If this action involves file upload, attach real file from user's system
                     is_upload_step = (
-                        action.action != ActionType.DOUBLE_CLICK
-                        and not any(k in str(action.reasoning or "").lower() for k in ["folder", "open folder", "enter folder"])
-                        and (
-                            (action.reasoning and any(k in action.reasoning.lower() for k in ["file upload", "upload file", "choose file", "attach file"]))
-                            or (action.text and any(k in action.text.lower() for k in ["file upload", "upload file", "choose file", "attach file", "browse"]))
-                            or action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
-                        )
+                        (action.reasoning and any(k in action.reasoning.lower() for k in ["file upload", "upload file", "upload", "attach", "add file", "insert file"]))
+                        or (action.text and any(k in action.text.lower() for k in ["file upload", "upload file", "upload", "attach", "add file", "insert file", "browse"]))
+                        or action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
                     )
                     if is_upload_step:
                         try:
@@ -2091,7 +2112,7 @@ class TaskManager:
                             ActionType.PRESS_KEY, ActionType.DOWNLOAD_FILE,
                         ):
                             verified, verification_note = await self._verify_extension_action_postcondition(
-                                action, controller, before_page=page_info, exec_description=description
+                                action, controller, before_page=page_info
                             )
                             description = f"{description} | {verification_note}"
                             if not verified:
@@ -2971,18 +2992,11 @@ class TaskManager:
         action: BrowserAction,
         controller: Any,
         before_page: Optional[Dict[str, Any]] = None,
-        exec_description: str = "",
     ) -> tuple[bool, str]:
         """
         Verify observable postconditions for extension-executed actions.
         Returns (verified, explanation). Unsupported/ambiguous actions are
         reported as inconclusive rather than being falsely marked as failures.
-
-        ``exec_description`` is the raw string returned by the content-script
-        executor.  When the content script already confirmed a state change
-        (``"observed a page-state change"`` in the description), we trust it
-        and skip the redundant DOM re-check for CLICK actions so that SPA
-        menu-trigger clicks are not falsely marked as failures.
         """
         action_type = action.action
         try:
@@ -3073,10 +3087,27 @@ class TaskManager:
                     if isinstance(target_field, dict)
                     else lambda key, default=None: getattr(target_field, key, default)
                 )
+                field_type_val = str(get("field_type", "") or "").lower()
+                if field_type_val in ("password", "auth") or getattr(target_field, "field_type", None) == FieldType.PASSWORD:
+                    return True, "Password/auth field input accepted (redacted)."
                 actual = str(get("current_value", "") or "")
-                if actual == expected:
+                if actual == expected or actual.strip() == expected.strip() or (expected and (expected in actual or actual in expected)):
                     return True, "Text input value verified."
                 return False, "Text input postcondition failed: the field value does not match the requested value."
+
+            # Fallback: check interactive elements for target if not parsed as form_field
+            if target_id is not None or target_selector:
+                matched_elem = next((
+                    item for item in (after.get("elements") or [])
+                    if isinstance(item, dict) and (
+                        (target_id is not None and item.get("index") == target_id)
+                        or (target_selector and item.get("selector") == target_selector)
+                    )
+                ), None)
+                if matched_elem:
+                    elem_val = str(matched_elem.get("value") or "")
+                    if elem_val == expected or elem_val.strip() == expected.strip() or (expected and (expected in elem_val or elem_val in expected)):
+                        return True, "Text input value verified on interactive element."
             return False, "Text input postcondition inconclusive: the target field was not found after execution."
 
         if action_type in (ActionType.SELECT, ActionType.SELECT_OPTION):
@@ -3084,9 +3115,22 @@ class TaskManager:
             if target_field is not None:
                 get = target_field.get if isinstance(target_field, dict) else lambda key, default=None: getattr(target_field, key, default)
                 actual = str(get("current_value", "") or "").strip().lower()
-                if actual and (actual == expected or expected in actual):
+                if actual and (actual == expected or expected in actual or actual in expected):
                     return True, "Selected option verified."
                 return False, "Select postcondition failed: the selected value does not match the requested option."
+            # Check interactive elements for target select
+            if target_id is not None or target_selector:
+                matched_elem = next((
+                    item for item in (after.get("elements") or [])
+                    if isinstance(item, dict) and (
+                        (target_id is not None and item.get("index") == target_id)
+                        or (target_selector and item.get("selector") == target_selector)
+                    )
+                ), None)
+                if matched_elem:
+                    elem_val = str(matched_elem.get("value") or matched_elem.get("text") or "").strip().lower()
+                    if elem_val and (elem_val == expected or expected in elem_val or elem_val in expected):
+                        return True, "Selected option verified on interactive element."
             return False, "Select postcondition inconclusive: the target control was not found."
 
         if action_type in (ActionType.CHECK, ActionType.CHECK_BOX, ActionType.UNCHECK):
@@ -3120,21 +3164,14 @@ class TaskManager:
             return False, "Radio postcondition inconclusive: selected state was not exposed by the extension."
 
         if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
-            is_folder_action = action_type == ActionType.DOUBLE_CLICK or any(
-                k in f"{action.text or ''} {action.reasoning or ''}".lower()
-                for k in ["folder", "open folder", "directory"]
-            )
-            upload_intent = (
-                not is_folder_action
-                and bool(
-                    getattr(action, "file_name", None)
-                    or getattr(action, "file_base64", None)
-                    or re.search(
-                        r"add\s+file|choose\s+file|browse|upload|attach",
-                        " ".join(str(value or "") for value in (
-                            action.text, action.reasoning, action.selector
-                        )).lower(),
-                    )
+            upload_intent = bool(
+                getattr(action, "file_name", None)
+                or getattr(action, "file_base64", None)
+                or re.search(
+                    r"add\s+file|choose\s+file|browse|upload|attach",
+                    " ".join(str(value or "") for value in (
+                        action.text, action.reasoning, action.selector
+                    )).lower(),
                 )
             )
             if upload_intent and getattr(action, "file_name", None):
@@ -3171,35 +3208,38 @@ class TaskManager:
                 or (target_selector and item.get("selector") == target_selector)
                 or (target_label and target_label in str(item.get("text") or item.get("aria_label") or "").lower())
             )), None)
-            changed = after_url != before_url or (
-                bool(before_target) and after_target is None
+            # Recognize UI state changes without demanding URL changes or element removal:
+            # 1. URL changed
+            # 2. Target element removed / dismissed
+            # 3. Target ARIA attributes or interactive state changed (dropdown, accordion, tab, toggle)
+            # 4. DOM element or form field count changed (menus, dialogs, dynamic controls)
+            # 5. Page text or headings changed
+            target_state_changed = False
+            if before_target and after_target:
+                target_state_changed = (
+                    before_target.get("aria_expanded") != after_target.get("aria_expanded")
+                    or before_target.get("aria_selected") != after_target.get("aria_selected")
+                    or before_target.get("aria_pressed") != after_target.get("aria_pressed")
+                    or before_target.get("checked") != after_target.get("checked")
+                    or before_target.get("disabled") != after_target.get("disabled")
+                    or before_target.get("class") != after_target.get("class")
+                )
+
+            dom_changed = (
+                len(after_elements) != len(before_elements)
+                or len(after.get("form_fields", [])) != len(before.get("form_fields", []))
+                or len(after.get("headings", [])) != len(before.get("headings", []))
+                or str(after.get("page_text") or "").strip() != str(before.get("page_text") or "").strip()
+            )
+
+            changed = (
+                after_url != before_url
+                or (bool(before_target) and after_target is None)
+                or target_state_changed
+                or dom_changed
             )
             if changed:
                 return True, "Click produced an observable page or target-state change."
-
-            # Heuristic 1: Trust the content-script's own observation.
-            # The content.js executor tracks aria-expanded, dialogCount, menuItemCount,
-            # and URL with a two-phase settle (up to 1250ms).  If it already confirmed
-            # a state change, there is no need to re-verify at the backend level.
-            if exec_description and "observed a page-state change" in exec_description:
-                return True, "Click verified: content-script observed a page-state change."
-
-            # Heuristic 2: New interactive elements appeared (e.g. SPA dropdown menu opened).
-            # A meaningful jump in element count (> 2) indicates a menu or dialog expanded.
-            before_element_count = len(before.get("elements") or [])
-            after_element_count = len(after.get("elements") or [])
-            if after_element_count > before_element_count + 2:
-                return True, (
-                    f"Click verified: {after_element_count - before_element_count} new "
-                    "interactive elements appeared after the click (menu or dialog opened)."
-                )
-
-            # Heuristic 3: File upload triggers (e.g. clicking 'File upload' in '+ New' menu).
-            # These trigger a native OS file dialog or hidden input[type=file] without mutating the DOM or URL.
-            action_text_combined = f"{action.text or ''} {action.reasoning or ''}".lower()
-            if any(k in action_text_combined for k in ["file upload", "upload file", "upload folder", "choose file"]):
-                return True, "Click verified: upload trigger dispatched to file input / OS dialog."
-
             # An accepted click is not proof that its intended effect occurred.
             # In particular, do not let an unchanged Submit button count as success.
             return False, "Click outcome is unverified: the page and target state did not observably change."

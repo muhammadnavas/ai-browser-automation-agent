@@ -113,13 +113,9 @@ class BrowserAction(BaseModel):
 
     action: ActionType
 
-    # Element targeting. These semantic hints are resolved against the
-    # latest live DOM snapshot; they are never treated as durable selectors.
+    # Element targeting
     selector: Optional[str] = None
     element_id: Optional[int] = None
-    target_text: Optional[str] = None
-    target_role: Optional[str] = None
-    field_label: Optional[str] = None
 
     # Text / value payloads
     text: Optional[str] = None
@@ -269,6 +265,9 @@ class TaskContext(BaseModel):
     # SHA-256 fingerprint of the last seen DOM state
     last_dom_fingerprint: Optional[str] = None
 
+    # Retrieved user context from My Context (Profile, Documents, Memories)
+    retrieved_context: Optional[Dict[str, Any]] = None
+
     # ----------------------------------------------------------------
     # Mutation helpers
     # ----------------------------------------------------------------
@@ -373,7 +372,18 @@ class TaskContext(BaseModel):
         self.filled_fields = {}
         self.recent_errors = []
         self.consecutive_failures = 0
+        self.retrieved_context = None
         self.clear_transient()
+
+    def get_retrieved_context_prompt(self) -> str:
+        """Return formatted prompt block from retrieved user context."""
+        if not self.retrieved_context:
+            return ""
+        if isinstance(self.retrieved_context, str):
+            return self.retrieved_context
+        if isinstance(self.retrieved_context, dict):
+            return self.retrieved_context.get("formatted_prompt", "")
+        return ""
 
     # ----------------------------------------------------------------
     # LLM prompt helper
@@ -499,6 +509,7 @@ class ExtensionStatusResponse(BaseModel):
 
 class TaskResponse(BaseModel):
     task_id: str
+    user_id: str = "default_user"
     goal: str
     status: TaskStatus
     created_at: float

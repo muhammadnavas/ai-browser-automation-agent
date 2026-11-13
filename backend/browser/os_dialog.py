@@ -391,21 +391,22 @@ def get_user_system_file(
 
             folder_candidates = []
 
-            # Check project mock files first (safe, guaranteed to exist, within project allowlist)
-            project_root = Path(__file__).resolve().parent.parent.parent
-            mock_dir = project_root / "downloads" / "mock_files"
-            if not mock_dir.exists():
-                mock_dir = Path.cwd() / "downloads" / "mock_files"
-            if mock_dir.exists():
-                folder_candidates.append(mock_dir)
+            # Only check mock files if explicitly requested via target folder or mock keyword
+            if target_folder in ("mock_files", "mock") or any(w in combined_lower for w in ["mock", "dummy", "sample"]):
+                project_root = Path(__file__).resolve().parent.parent.parent
+                mock_dir = project_root / "downloads" / "mock_files"
+                if not mock_dir.exists():
+                    mock_dir = Path.cwd() / "downloads" / "mock_files"
+                if mock_dir.exists():
+                    folder_candidates.append(mock_dir)
 
-            if target_folder == "downloads" or "download" in combined_lower:
+            if target_folder in ("downloads", "download"):
                 folder_candidates.append(Path.home() / "Downloads")
-            elif target_folder == "documents" or "document" in combined_lower:
+            elif target_folder in ("documents", "document"):
                 folder_candidates.append(Path.home() / "Documents")
             elif target_folder == "desktop":
                 folder_candidates.append(Path.home() / "Desktop")
-            elif target_folder == "pictures" or any(w in combined_lower for w in ["photo", "picture", "image"]):
+            elif target_folder in ("pictures", "photos", "images", "saved pictures", "camera roll"):
                 folder_candidates.append(Path.home() / "Pictures")
 
             desired_exts = set()

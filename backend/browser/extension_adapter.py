@@ -36,16 +36,28 @@ class ExtensionManager:
         self.task_tabs: Dict[str, int] = {}
         # A task remains pinned to the extension socket that created its tab.
         self.task_connections: Dict[str, WebSocket] = {}
+        self.task_tokens: Dict[str, str] = {}
         self.closed_tasks: Set[str] = set()
         self.disconnected_tasks: Set[str] = set()
         self.connection_tokens: Dict[WebSocket, str] = {}
         self.token_connections: Dict[str, WebSocket] = {}
+        self._task_locks: Dict[str, asyncio.Lock] = {}
         self.lock = asyncio.Lock()
+
+    def get_task_lock(self, task_id: str) -> asyncio.Lock:
+        """Returns a per-task serialization lock to prevent concurrent command races."""
+        if task_id not in self._task_locks:
+            self._task_locks[task_id] = asyncio.Lock()
+        return self._task_locks[task_id]
 
     @property
     def is_connected(self) -> bool:
-        """Returns True if at least one Chrome Extension client is connected."""
-        return len(self.active_connections) > 0
+        """Returns True if at least one authenticated Chrome Extension client is connected."""
+        if not self.active_connections:
+            return False
+        if self.connection_tokens:
+            return any(ws in self.connection_tokens for ws in self.active_connections)
+        return True
 
     async def register(self, websocket: WebSocket) -> None:
         """Registers a newly connected Chrome Extension client."""
@@ -58,13 +70,13 @@ class ExtensionManager:
         async with self.lock:
             self.active_connections.discard(websocket)
             # A task cannot silently migrate to another user's browser session.
+            # Preserve task_tabs mapping across temporary disconnections.
             disconnected_tasks = [
                 task_id for task_id, origin in self.task_connections.items()
                 if origin is websocket
             ]
             for task_id in disconnected_tasks:
                 self.task_connections.pop(task_id, None)
-                self.task_tabs.pop(task_id, None)
                 self.disconnected_tasks.add(task_id)
 
             tok = self.connection_tokens.pop(websocket, None)
@@ -83,13 +95,21 @@ class ExtensionManager:
             len(self.active_connections), len(disconnected_tasks)
         )
 
-    async def handle_message(self, websocket: WebSocket, message: Dict[str, Any]) -> None:
-        """Processes a message only from the socket that owns its task/request."""
+    async def handle_message(self, websocket: WebSocket, message: Dict[str, Any]) -> bool:
+        """Processes a message only from the socket that owns its task/request.
+        Returns False if the connection was terminated or rejected; True to continue."""
         msg_type = message.get("type")
         msg_id = message.get("id")
 
         if msg_type == "pong":
-            return
+            return True
+
+        if msg_type == "ping":
+            try:
+                await websocket.send_json({"type": "pong", "timestamp": message.get("timestamp")})
+            except Exception:
+                pass
+            return True
 
         if msg_type == "register":
             from backend.security.extension_auth import extension_auth_manager
@@ -97,8 +117,10 @@ class ExtensionManager:
             token = message.get("token")
             extension_id = message.get("extension_id")
             client_host = "127.0.0.1"
-            if hasattr(websocket, "client") and websocket.client and getattr(websocket.client, "host", None):
-                client_host = websocket.client.host
+            if hasattr(websocket, "client") and websocket.client:
+                raw_host = getattr(websocket.client, "host", None)
+                if isinstance(raw_host, str):
+                    client_host = raw_host
             is_loop = session_manager.is_loopback(client_host)
 
             auth_ok, active_token, reason = extension_auth_manager.register_or_authenticate(
@@ -113,12 +135,48 @@ class ExtensionManager:
                 except Exception:
                     pass
                 await self.unregister(websocket)
-                return
+                return False
 
             async with self.lock:
                 if active_token:
+                    # Clean up any stale connection for this active token
+                    old_ws = self.token_connections.get(active_token)
+                    if old_ws and old_ws is not websocket and old_ws in self.active_connections:
+                        self.active_connections.discard(old_ws)
+                        self.connection_tokens.pop(old_ws, None)
+                        for tid, origin in list(self.task_connections.items()):
+                            if origin is old_ws:
+                                self.task_connections[tid] = websocket
+                                logger.info("Re-pinned task %s to reconnected extension client.", tid)
+                        try:
+                            await old_ws.close(code=1000, reason="Replaced by new connection")
+                        except Exception:
+                            pass
+
                     self.connection_tokens[websocket] = active_token
                     self.token_connections[active_token] = websocket
+
+                self.active_connections.add(websocket)
+
+                # Re-associate tasks reported by extension as still active
+                active_tasks = message.get("active_tasks")
+                if isinstance(active_tasks, list):
+                    for tid in active_tasks:
+                        if isinstance(tid, str) and tid not in self.closed_tasks:
+                            self.task_connections[tid] = websocket
+                            self.disconnected_tasks.discard(tid)
+
+                task_tabs_payload = message.get("task_tabs")
+                if isinstance(task_tabs_payload, dict):
+                    for tid, tab_id in task_tabs_payload.items():
+                        if tid not in self.closed_tasks:
+                            self.task_tabs[tid] = tab_id
+
+                if active_token:
+                    for tid, tok in list(self.task_tokens.items()):
+                        if tok == active_token and tid not in self.closed_tasks:
+                            self.task_connections[tid] = websocket
+                            self.disconnected_tasks.discard(tid)
 
             try:
                 await websocket.send_json({
@@ -128,7 +186,7 @@ class ExtensionManager:
                 })
             except Exception:
                 pass
-            return
+            return True
 
         if msg_type == "tab_closed":
             task_id = message.get("task_id")
@@ -138,7 +196,7 @@ class ExtensionManager:
                         self.closed_tasks.add(task_id)
                         self.task_tabs.pop(task_id, None)
                         logger.warning(f"Chrome tab for task {task_id} was closed by user.")
-            return
+            return True
 
         # Resolve correlated pending request
         if msg_id:
@@ -148,6 +206,7 @@ class ExtensionManager:
                     origin, fut = pending
                     if origin is websocket and not fut.done():
                         fut.set_result(message)
+        return True
 
     async def disconnect_token(self, token: str) -> None:
         """Disconnect and invalidate an extension socket matching a revoked token."""
@@ -184,68 +243,110 @@ class ExtensionManager:
     ) -> Dict[str, Any]:
         """
         Dispatches a command to the connected Chrome Extension and awaits the result.
+        Serializes execution per task to prevent command race conditions.
         """
-        msg_id = str(uuid.uuid4())
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        # Pin a task to one browser client when its dedicated tab is created.
-        # Never route an existing task to an arbitrary connected user's browser.
-        async with self.lock:
-            if task_id in self.closed_tasks and command_type not in ("create_tab", "close_tab"):
-                raise RuntimeError(f"Chrome tab for task {task_id} is no longer available.")
-            if command_type == "create_tab":
-                if task_id in self.task_connections:
-                    raise RuntimeError(f"Chrome tab for task {task_id} is already initialized.")
-                if not self.active_connections:
-                    raise RuntimeError("Chrome Extension is not connected. Please load and connect the extension.")
-                target_ws = next(iter(self.active_connections))
-                self.closed_tasks.discard(task_id)
-                self.disconnected_tasks.discard(task_id)
-                self.task_tabs.pop(task_id, None)
-                self.task_connections[task_id] = target_ws
-            else:
-                target_ws = self.task_connections.get(task_id)
-                if target_ws is None or target_ws not in self.active_connections:
+        task_lock = self.get_task_lock(task_id)
+        async with task_lock:
+            msg_id = str(uuid.uuid4())
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            target_ws = None
+            reconnect_deadline = loop.time() + (0.0 if command_type in ("create_tab", "close_tab") else 3.0)
+
+            while True:
+                async with self.lock:
+                    if task_id in self.closed_tasks and command_type not in ("create_tab", "close_tab"):
+                        raise RuntimeError(f"Chrome tab for task {task_id} is no longer available.")
+                    if command_type == "create_tab":
+                        if task_id in self.task_connections:
+                            raise RuntimeError(f"Chrome tab for task {task_id} is already initialized.")
+                        if not self.active_connections:
+                            raise RuntimeError("Chrome Extension is not connected. Please load and connect the extension.")
+                        auth_sockets = [ws for ws in self.active_connections if ws in self.connection_tokens]
+                        target_ws = auth_sockets[-1] if auth_sockets else next(iter(self.active_connections))
+                        self.closed_tasks.discard(task_id)
+                        self.disconnected_tasks.discard(task_id)
+                        self.task_tabs.pop(task_id, None)
+                        self.task_connections[task_id] = target_ws
+                        token = self.connection_tokens.get(target_ws)
+                        if token:
+                            self.task_tokens[task_id] = token
+                        self.pending_requests[msg_id] = (target_ws, future)
+                        break
+                    else:
+                        ws_candidate = self.task_connections.get(task_id)
+                        if (ws_candidate is None or ws_candidate not in self.active_connections) and task_id not in self.closed_tasks:
+                            # Attempt recovery if matching client reconnected
+                            token = self.task_tokens.get(task_id)
+                            if token and token in self.token_connections:
+                                candidate_ws = self.token_connections[token]
+                                if candidate_ws in self.active_connections:
+                                    ws_candidate = candidate_ws
+                                    self.task_connections[task_id] = ws_candidate
+                                    self.disconnected_tasks.discard(task_id)
+                                    logger.info("Auto-recovered task %s to reconnected client with matching token.", task_id)
+                            elif not token and self.active_connections:
+                                # Fallback for environments without token auth (e.g. testing)
+                                auth_sockets = [ws for ws in self.active_connections if ws in self.connection_tokens]
+                                candidate_ws = auth_sockets[-1] if auth_sockets else next(iter(self.active_connections))
+                                ws_candidate = candidate_ws
+                                self.task_connections[task_id] = ws_candidate
+                                self.disconnected_tasks.discard(task_id)
+
+                        if ws_candidate is not None and ws_candidate in self.active_connections:
+                            target_ws = ws_candidate
+                            self.pending_requests[msg_id] = (target_ws, future)
+                            break
+
+                if loop.time() >= reconnect_deadline:
                     raise RuntimeError(
                         f"No connected Chrome client is assigned to task {task_id}. "
                         "Reconnect the extension and start a new task."
                     )
-            self.pending_requests[msg_id] = (target_ws, future)
+                await asyncio.sleep(0.1)
 
-        msg = {
-            "id": msg_id,
-            "type": command_type,
-            "task_id": task_id,
-        }
-        if payload:
-            msg.update(payload)
+            msg = {
+                "id": msg_id,
+                "type": command_type,
+                "task_id": task_id,
+            }
+            if payload:
+                msg.update(payload)
 
-        # Send only to the connection associated with this request.
-        try:
-            await target_ws.send_json(msg)
-            response = await asyncio.wait_for(future, timeout=timeout)
-            return response
-        except asyncio.TimeoutError:
-            if command_type == "create_tab":
+            # Send only to the connection associated with this request.
+            try:
+                await target_ws.send_json(msg)
+                response = await asyncio.wait_for(future, timeout=timeout)
+                return response
+            except asyncio.TimeoutError:
+                if command_type == "create_tab":
+                    async with self.lock:
+                        if self.task_connections.get(task_id) is target_ws:
+                            self.task_connections.pop(task_id, None)
+                raise TimeoutError(f"Extension command '{command_type}' timed out after {timeout}s.")
+            except Exception:
+                if command_type == "create_tab":
+                    async with self.lock:
+                        if self.task_connections.get(task_id) is target_ws:
+                            self.task_connections.pop(task_id, None)
                 async with self.lock:
                     if self.task_connections.get(task_id) is target_ws:
-                        self.task_connections.pop(task_id, None)
-            raise TimeoutError(f"Extension command '{command_type}' timed out after {timeout}s.")
-        except Exception:
-            if command_type == "create_tab":
+                        self.disconnected_tasks.add(task_id)
+                raise
+            finally:
                 async with self.lock:
-                    if self.task_connections.get(task_id) is target_ws:
-                        self.task_connections.pop(task_id, None)
-            raise
-        finally:
-            async with self.lock:
-                self.pending_requests.pop(msg_id, None)
+                    self.pending_requests.pop(msg_id, None)
 
     def get_status(self) -> Dict[str, Any]:
         """Returns connection metrics for API and UI status indicators."""
+        auth_count = (
+            len([ws for ws in self.active_connections if ws in self.connection_tokens])
+            if self.connection_tokens
+            else len(self.active_connections)
+        )
         return {
             "connected": self.is_connected,
-            "client_count": len(self.active_connections),
+            "client_count": auth_count,
             "active_tasks": list(self.task_connections.keys()),
         }
 
@@ -472,28 +573,18 @@ class ExtensionBrowserAdapter:
         data: Dict[str, Any] = {}
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            try:
-                resp = await self.manager.send_command(
-                    task_id=self.task_id,
-                    command_type="inspect_dom",
-                    payload={"show_badges": self.show_badges},
-                    timeout=18.0,
-                )
-            except Exception as exc:
-                reason = f"DOM inspection command error: {exc}"
-                logger.warning("DOM inspection failed for task %s (attempt %s/%s): %s",
-                               self.task_id, attempt, max_attempts, reason)
-                if attempt < max_attempts:
-                    await asyncio.sleep(1.0 * attempt)
-                    continue
-                return self._inspection_failure(reason, attempt)
-
+            resp = await self.manager.send_command(
+                task_id=self.task_id,
+                command_type="inspect_dom",
+                payload={"show_badges": self.show_badges},
+                timeout=18.0,
+            )
             if not resp.get("success"):
                 reason = str(resp.get("error") or "Chrome content script did not return a DOM snapshot.")
                 logger.warning("DOM inspection failed for task %s (attempt %s/%s): %s",
                                self.task_id, attempt, max_attempts, reason)
                 if attempt < max_attempts:
-                    await asyncio.sleep(1.0 * attempt)
+                    await asyncio.sleep(0.8 * attempt)
                     continue
                 return self._inspection_failure(reason, attempt)
 
@@ -678,11 +769,6 @@ class ExtensionBrowserAdapter:
                 payload={"action": action_payload},
                 timeout=cmd_timeout,
             )
-            if os_dialog_task and not os_dialog_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(os_dialog_task), timeout=10.0)
-                except Exception as exc:
-                    logger.debug(f"OS dialog watcher finished or timed out: {exc}")
         finally:
             if os_dialog_task and not os_dialog_task.done():
                 os_dialog_task.cancel()

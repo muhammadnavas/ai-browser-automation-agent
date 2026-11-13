@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 #  Root .gitignore — ai-browser-automation-agent monorepo
 # ============================================================
 
@@ -71,6 +71,9 @@ screenshots/
 *.log
 *.db
 *.sqlite3
+backend/data/
+scratch/
+chrome_extension/background.js.backup
 reports/*.csv
 reports/*.pdf
 reports/*.xlsx

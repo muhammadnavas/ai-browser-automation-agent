@@ -15,6 +15,8 @@ Key Features:
 
 import hmac
 import os
+import getpass
+import logging
 import secrets
 import threading
 import time
@@ -23,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, Set
 from fastapi import Request, HTTPException, status
 from backend.security.audit import audit_logger
+
+logger = logging.getLogger("backend.security.auth")
 
 
 SESSION_COOKIE_NAME = "agent_session"
@@ -110,6 +114,7 @@ def is_origin_allowed(origin: Optional[str], allowed_origins: list) -> bool:
 class SessionData:
     session_id: str
     csrf_token: str
+    user_id: str = "default_user"
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
     client_ip: str = "127.0.0.1"
@@ -158,15 +163,50 @@ class SessionManager:
             return True
         return False
 
-    def create_session(self, client_ip: str = "127.0.0.1") -> SessionData:
+    def create_session(self, client_ip: str = "127.0.0.1", user_id: str = "default_user") -> SessionData:
         """Create a new authenticated session."""
         session_id = secrets.token_urlsafe(32)
         csrf_token = secrets.token_hex(16)
         is_loop = self.is_loopback(client_ip)
 
+        # Precedence:
+        # 1. If an explicit verified user_id is provided (not None / 'default_user'), use it directly.
+        #    APP_USER_ID can NEVER override an explicit authenticated user identity.
+        # 2. In production (ENVIRONMENT=production/prod), never apply developer fallback namespaces.
+        # 3. In local development / non-production, check APP_USER_ID from environment.
+        # 4. If APP_USER_ID is unset in non-production, warn and derive a machine/user fallback
+        #    (dev_<system_user>) to prevent developer data collision on shared Neon database.
+        effective_user = user_id
+        if not user_id or user_id == "default_user":
+            is_prod = os.getenv("ENVIRONMENT", "").strip().lower() in ("production", "prod")
+            if is_prod:
+                effective_user = "default_user"
+            else:
+                env_user = os.getenv("APP_USER_ID", "").strip()
+                if env_user:
+                    effective_user = env_user
+                else:
+                    try:
+                        sys_user = getpass.getuser().strip()
+                    except Exception:
+                        sys_user = os.getenv("USERNAME", os.getenv("USER", "")).strip()
+                    if sys_user and sys_user.lower() not in ("root", "administrator", "system"):
+                        effective_user = f"dev_{sys_user}"
+                        logger.warning(
+                            "APP_USER_ID is not configured in .env; auto-assigned '%s' from local system username to avoid sharing data on hosted database. Please set APP_USER_ID in .env.",
+                            effective_user,
+                        )
+                    else:
+                        effective_user = "dev_local_user"
+                        logger.warning(
+                            "APP_USER_ID is not configured in .env; defaulting to '%s'. Please set APP_USER_ID in .env.",
+                            effective_user,
+                        )
+
         session = SessionData(
             session_id=session_id,
             csrf_token=csrf_token,
+            user_id=effective_user or "default_user",
             created_at=time.time(),
             last_accessed=time.time(),
             client_ip=client_ip,
@@ -176,7 +216,7 @@ class SessionManager:
         audit_logger.record_event(
             event_type="session_created",
             task_id="system",
-            details={"is_loopback": is_loop, "client_ip": client_ip},
+            details={"is_loopback": is_loop, "client_ip": client_ip, "user_id": effective_user},
         )
         return session
 
@@ -327,4 +367,14 @@ def verify_csrf_if_mutating(request: Request, session: SessionData) -> None:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="CSRF validation failed. Missing or invalid X-CSRF-Token.",
             )
+
+
+def get_authenticated_user_id(session: SessionData) -> str:
+    """Derive authenticated user identity from the backend session. Never trust client-supplied user_id."""
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. No valid session active.",
+        )
+    return getattr(session, "user_id", None) or "default_user"
 

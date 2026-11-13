@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Landing from './Landing.jsx';
+import MyContext from './MyContext.jsx';
 import { Activity, AlertCircle, Bot, Check, CheckCircle2, ChevronRight, Circle, ClipboardCheck, Clock3, Code, Copy, CreditCard, Database, Download, ExternalLink, FilePenLine, FileText, Globe, Layers, Lightbulb, LoaderCircle, Paperclip, Pause, Play, RefreshCw, ScanSearch, Search, Send, ShieldCheck, Square, Table, Target, Trash2, X, Zap } from 'lucide-react';
 
 const TERMINAL = ['completed', 'failed', 'cancelled'];
@@ -576,58 +577,30 @@ function ActionCard({ step }) {
   );
 }
 
-function ReportDownloadButton({ task, onError }) {
-  const [downloading, setDownloading] = useState(false);
-  if (!task || !task.task_id || !isTerminal(task.status)) return null;
+function ReportDownloadButton({ task }) {
+  if (!task || !task.task_id) return null;
+  const isFinished = isTerminal(task.status);
+  if (!isFinished) return null;
 
-  async function downloadReport() {
-    if (downloading) return;
-    setDownloading(true);
-    try {
-      const rawPath =
-        task.reports?.pdf ||
-        `/api/reports/${encodeURIComponent(task.task_id)}/download`;
-      // Report URLs in task payloads are API-relative. Apply the configured
-      // backend origin when the frontend and FastAPI are deployed separately.
-      const reportUrl = /^https?:\/\//i.test(rawPath) ? rawPath : api(rawPath.startsWith('/') ? rawPath : `/${rawPath}`);
-      if (!isSafeWebUrl(reportUrl)) throw new Error('The report download address is invalid.');
-
-      const response = await authFetch(reportUrl);
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || `Report download failed (HTTP ${response.status}).`);
-      }
-
-      const blob = await response.blob();
-      if (!blob.size) throw new Error('The generated report is empty.');
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      link.download = `report-${String(task.task_id).replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
-    } catch (error) {
-      onError?.(`Could not download the report: ${error.message}`);
-    } finally {
-      setDownloading(false);
-    }
-  }
+  const rawHref =
+    task.reports?.pdf ||
+    api(`/api/reports/${encodeURIComponent(task.task_id)}/download`);
+  const pdfHref = isSafeWebUrl(rawHref) ? rawHref : '#';
 
   return (
-    <button
+    <a
       className="report-download-btn"
-      type="button"
-      onClick={downloadReport}
-      disabled={downloading}
+      href={pdfHref}
+      download={`report-${task.task_id}.pdf`}
       title="Download complete PDF task report"
       aria-label="Download complete PDF task report"
+      target="_blank"
+      rel="noopener noreferrer"
     >
       <FileText size={15} />
-      <span>{downloading ? 'Preparing report…' : 'Download Report'}</span>
+      <span>Download Report</span>
       <Download size={13} />
-    </button>
+    </a>
   );
 }
 
@@ -1309,6 +1282,7 @@ export default function App() {
   const [launching, setLaunching] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
   const [history, setHistory] = useState([]);
+  const [showMyContext, setShowMyContext] = useState(false);
   const sockets = useRef(new Map());
   const reconnectTimers = useRef(new Map());
   const reconnectAttempts = useRef(new Map());
@@ -1900,17 +1874,35 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="navbar">
-        <a className="brand" href="/" aria-label="Automata dashboard">
+        <a className="brand" href="/" aria-label="AI Browser Agent dashboard">
           <span className="brand-icon">
-            <img src="/automata-mark.svg" alt="" />
+            <Bot size={21} />
           </span>
           <span>
-            <strong className="brand-name">AUTOMATA</strong>
-            <small className="brand-subtitle">YOUR AI BROWSER ASSISTANT</small>
+            <strong className="brand-name">AI Browser Agent</strong>
+            <small className="brand-subtitle">AUTONOMOUS BROWSER AUTOMATION</small>
           </span>
         </a>
 
         <div className="nav-right">
+          <button
+            type="button"
+            className={"nav-stat-chip" + (showMyContext ? " is-active" : "")}
+            onClick={() => setShowMyContext((prev) => !prev)}
+            style={{
+              cursor: 'pointer',
+              background: showMyContext ? 'rgba(10, 40, 24, 0.95)' : 'rgba(6, 78, 59, 0.55)',
+              border: '1px solid var(--accent, #65e6a4)',
+              color: 'var(--accent, #65e6a4)',
+              fontWeight: 600,
+              padding: '6px 14px',
+              borderRadius: '9999px',
+              transition: 'all 0.2s',
+            }}
+            title="Manage My Context: persistent profile, documents, and memories"
+          >
+            My Context
+          </button>
 
           <span
             className={
@@ -1970,7 +1962,11 @@ export default function App() {
           </div>
         )}
 
-        <section className="task-hero-card">
+        {showMyContext ? (
+          <MyContext authFetch={authFetch} api={api} onClose={() => setShowMyContext(false)} />
+        ) : (
+          <>
+            <section className="task-hero-card">
           <div className="hero-top-row">
             <div className="hero-heading">
               <h1>What should the agent do?</h1>
@@ -2077,39 +2073,14 @@ export default function App() {
 
         {!currentTask ? (
           <section className="welcome-state">
-            <div className="welcome-panel">
-              <div className="welcome-copy">
-                <span className="welcome-eyebrow"><Zap size={13} /> YOUR BROWSER, WORKING FOR YOU</span>
-                <h2>Give your browser<br /><em>a little direction.</em></h2>
-                <p>Automata can research websites, gather useful details, and handle repetitive browser steps. Tell it what you need above, then stay in control as it works.</p>
-                <div className="welcome-assurance"><ShieldCheck size={15} /> You stay in control of important actions.</div>
-              </div>
-              <div className="welcome-starters">
-                <div className="welcome-starters-heading">
-                  <span>GET STARTED</span>
-                  <small>Choose an example to fill your task</small>
-                </div>
-                <button type="button" className="starter-card" onClick={() => { setGoal('Research three project management tools and compare their key features and pricing.'); document.querySelector('[aria-label="Task goal"]')?.focus(); }}>
-                  <span className="starter-icon"><Search size={17} /></span>
-                  <span className="starter-copy"><strong>Research & compare</strong><small>Find information across websites and compare options.</small></span>
-                  <ChevronRight size={16} className="starter-arrow" />
-                </button>
-                <button type="button" className="starter-card" onClick={() => { setGoal('Find the official website, contact details, and key information for a company.'); document.querySelector('[aria-label="Task goal"]')?.focus(); }}>
-                  <span className="starter-icon"><Globe size={17} /></span>
-                  <span className="starter-copy"><strong>Explore a website</strong><small>Navigate a site and collect the details that matter.</small></span>
-                  <ChevronRight size={16} className="starter-arrow" />
-                </button>
-                <button type="button" className="starter-card" onClick={() => { setGoal('Open a web form and fill it using the details I provide. Do not submit it without my approval.'); document.querySelector('[aria-label="Task goal"]')?.focus(); }}>
-                  <span className="starter-icon"><FileText size={17} /></span>
-                  <span className="starter-copy"><strong>Handle a routine task</strong><small>Fill in forms and review before anything is submitted.</small></span>
-                  <ChevronRight size={16} className="starter-arrow" />
-                </button>
-              </div>
-            </div>
+            <EmptyState
+              icon={Bot}
+              title="Ready when you are"
+              description="Launch your first task above. Live plans, actions, approvals, and reports will appear here."
+            />
           </section>
         ) : (
           <>
-            <ExecutionInspector task={currentTask} />
             <section className="section-card plan-section">
               <div className="section-heading">
                 <div className="section-icon plan-icon">
@@ -2120,7 +2091,7 @@ export default function App() {
                   <p>{currentTask.goal}</p>
                 </div>
                 <StatusPill task={currentTask} />
-                <ReportDownloadButton task={currentTask} onError={setError} />
+                <ReportDownloadButton task={currentTask} />
               </div>
 
               {metadata && (
@@ -2551,10 +2522,12 @@ export default function App() {
             </div>
           </>
         )}
+          </>
+        )}
       </main>
 
       <footer className="app-footer">
-        <span>Automata · Your intent. Our execution.</span>
+        <span>AI Browser Agent</span>
         <span>
           {pool?.extension_status?.connected
             ? `Chrome Extension connected (${pool?.extension_status?.client_count || 1} client)`
