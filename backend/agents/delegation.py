@@ -263,7 +263,7 @@ async def plan_runtime_subagent_specs(
         })
     history = [
         {"role": str(x.get("role") or "")[:30], "status": str(x.get("status") or "")[:20],
-         "goal": str(x.get("goal") or "")[:160]}
+         "goal": str(x.get("goal") or "")[:160], "url": str(x.get("url") or "")[:700]}
         for x in (recent_history or [])[-8:] if isinstance(x, dict)
     ]
     prompt = f"""You are the runtime master orchestrator for a browser automation agent.
@@ -305,7 +305,8 @@ Rules:
         if not isinstance(rows, list) or len(rows) > 2:
             return []
         completed_roles = {
-            x["role"] for x in history if x.get("status") == "completed"
+            x["role"] for x in history
+            if x.get("status") == "completed" and x.get("url") == url
         }
         specs = []
         seen = set()
