@@ -1268,6 +1268,27 @@ class TaskManager:
                 if self._is_cancelled(task_id):
                     break
 
+                # 3.5. Adaptive runtime delegation: after each meaningful live-page
+                # transition, the master may request bounded read-only evidence
+                # from specialists before choosing the next browser action.
+                # The primary executor remains the sole authority for mutations.
+                try:
+                    await self._delegate_from_live_page(
+                        task_id=task_id,
+                        planner=planner,
+                        goal=req.goal,
+                        page_info=page_info,
+                    )
+                except Exception as delegation_error:
+                    # Specialist failure must never prevent the main agent from
+                    # continuing with its own fresh DOM snapshot and planner.
+                    logger.warning(
+                        "Runtime specialist delegation skipped for task %s: %s",
+                        task_id, delegation_error,
+                    )
+                if self._is_cancelled(task_id):
+                    break
+
                 # 4. Planner decides next action
                 action = await planner.decide_next_action(
                     goal=req.goal,
