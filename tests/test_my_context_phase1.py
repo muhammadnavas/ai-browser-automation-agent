@@ -29,7 +29,9 @@ from backend.db.database import (
     get_ssl_context_for_mode,
     get_asyncpg_connect_args,
 )
-from backend.db.models import Base, UserProfile
+from backend.db.models import Base, UserProfile, GUID
+from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
+import uuid
 from backend.services.profile_service import profile_service
 from backend.security.auth import (
     session_manager,
@@ -461,3 +463,17 @@ class TestContextAPIEndpoints:
                 assert session.user_id.startswith("dev_")
                 assert any("APP_USER_ID is not configured in .env" in record.message for record in caplog.records)
 
+
+
+class TestPostgreSQLModelTypeBindings:
+    def test_guid_keeps_uuid_objects_for_native_postgresql_uuid(self):
+        value = uuid.uuid4()
+        bound = GUID().process_bind_param(value, postgresql_dialect())
+        assert bound == value
+        assert isinstance(bound, uuid.UUID)
+
+    def test_guid_normalizes_string_values_for_native_postgresql_uuid(self):
+        value = uuid.uuid4()
+        bound = GUID().process_bind_param(str(value), postgresql_dialect())
+        assert bound == value
+        assert isinstance(bound, uuid.UUID)
