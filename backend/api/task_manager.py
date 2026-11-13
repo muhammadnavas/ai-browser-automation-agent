@@ -561,7 +561,7 @@ class TaskManager:
             if self._is_cancelled(task_id):
                 attempt["status"] = "cancelled"
                 return
-            batch = await self.run_subagent_batch(task_id, specs, shared_memory={"planner": planner})
+            batch = await self.run_subagent_batch(task_id, specs, shared_memory={"planner": planner, "controller": self.controllers.get(task_id), "observation_lock": asyncio.Lock()})
             attempt["statuses"] = [item.status.value for item in batch.results]
             attempt["status"] = batch.status
             attempt["summary"] = batch.summary
