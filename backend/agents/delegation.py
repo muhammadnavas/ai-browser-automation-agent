@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 _MUTATING_INTENT = re.compile(
     r"\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
-    r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\\b",
+    r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\b",
     re.IGNORECASE,
 )
 _ALLOWED_AUTOMATIC_ROLES = {"navigation", "research", "interaction"}
@@ -34,14 +34,14 @@ def build_automatic_subagent_specs(
     if not url or not text or _MUTATING_INTENT.search(text):
         return []
     if re.search(r"\b(research|find|search|read|summari[sz]e|extract|compare|inspect|"
-                 r"look up|collect|gather|identify)\\b", text, re.I):
+                 r"look up|collect|gather|identify)\b", text, re.I):
         return [SubagentSpec(
             role="research",
             goal=f"Read-only research for the user's task: {text}",
             input={"url": url},
             timeout_seconds=90,
         )]
-    if re.search(r"\b(open|visit|navigate|go to|click|locate|find the)\\b", text, re.I):
+    if re.search(r"\b(open|visit|navigate|go to|click|locate|find the)\b", text, re.I):
         return [SubagentSpec(
             role="interaction",
             goal=f"Identify relevant visible controls for: {text}",
