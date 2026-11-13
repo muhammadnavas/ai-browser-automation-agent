@@ -91,7 +91,18 @@ async def _inspect_observation(ctx: SubagentContext, adapter: ExtensionBrowserAd
         return await adapter.parse_interactive_elements()
     async with lock:
         ctx.raise_if_cancelled()
-        return await adapter.parse_interactive_elements()
+        # Keep reconnaissance side-effect-free for the parent executor: DOM
+        # inspection may refresh the adapter's element index and URL cache.
+        previous_element_map = adapter.element_map
+        previous_url = adapter._current_url
+        previous_badge_setting = adapter.show_badges
+        try:
+            adapter.show_badges = False
+            return await adapter.parse_interactive_elements()
+        finally:
+            adapter.element_map = previous_element_map
+            adapter._current_url = previous_url
+            adapter.show_badges = previous_badge_setting
 
 async def navigation_worker(ctx: SubagentContext) -> Dict[str, Any]:
     """Open a URL in a child-owned tab and return a live DOM observation."""
