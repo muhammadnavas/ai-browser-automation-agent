@@ -16,7 +16,7 @@ from agents.subagents import SubagentSpec
 logger = logging.getLogger(__name__)
 
 _MUTATING_INTENT = re.compile(
-    r"\\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
+    r"\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
     r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\\b",
     re.IGNORECASE,
 )
@@ -33,7 +33,7 @@ def build_automatic_subagent_specs(
     text = (goal or "").strip()
     if not url or not text or _MUTATING_INTENT.search(text):
         return []
-    if re.search(r"\\b(research|find|search|read|summari[sz]e|extract|compare|inspect|"
+    if re.search(r"\b(research|find|search|read|summari[sz]e|extract|compare|inspect|"
                  r"look up|collect|gather|identify)\\b", text, re.I):
         return [SubagentSpec(
             role="research",
@@ -41,7 +41,7 @@ def build_automatic_subagent_specs(
             input={"url": url},
             timeout_seconds=90,
         )]
-    if re.search(r"\\b(open|visit|navigate|go to|click|locate|find the)\\b", text, re.I):
+    if re.search(r"\b(open|visit|navigate|go to|click|locate|find the)\\b", text, re.I):
         return [SubagentSpec(
             role="interaction",
             goal=f"Identify relevant visible controls for: {text}",
@@ -111,7 +111,7 @@ Policy:
                 continue
             if _MUTATING_INTENT.search(subgoal):
                 continue
-            dedupe_key = (role, re.sub(r"\\s+", " ", subgoal).casefold())
+            dedupe_key = (role, re.sub(r"\s+", " ", subgoal).casefold())
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
