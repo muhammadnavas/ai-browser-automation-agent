@@ -113,3 +113,55 @@ def test_interaction_specialist_cannot_be_given_mutating_goal():
         planner, "Inspect the inbox", "https://mail.google.com"
     ))
     assert specs == []
+
+
+
+def test_runtime_master_can_delegate_read_only_specialist_on_live_page():
+    from agents.delegation import plan_runtime_subagent_specs
+
+    planner = FakePlanner(json.dumps({
+        "subtasks": [{
+            "role": "interaction",
+            "goal": "Identify the Spam folder navigation control",
+            "input": {"url": "https://mail.google.com/mail/u/0/#inbox"},
+            "timeout_seconds": 45,
+        }]
+    }))
+    page = {
+        "url": "https://mail.google.com/mail/u/0/#inbox",
+        "title": "Gmail",
+        "headings": ["Inbox"],
+        "elements": [
+            {"tag": "a", "text": "Spam", "aria_label": "Spam", "href": "https://mail.google.com/mail/u/0/#spam"},
+            {"tag": "input", "type": "password", "value": "must-not-be-forwarded"},
+        ],
+    }
+    specs = asyncio.run(plan_runtime_subagent_specs(
+        planner,
+        "Open Gmail spam and delete an unwanted message",
+        "https://mail.google.com/mail/u/0/#inbox",
+        page,
+    ))
+    assert [item.role for item in specs] == ["interaction"]
+    assert specs[0].input["url"] == "https://mail.google.com/mail/u/0/#inbox"
+    assert "must-not-be-forwarded" not in planner.calls[0][0]
+    assert "delete an unwanted message" in planner.calls[0][0]
+
+
+def test_runtime_delegation_rejects_unknown_url_role_and_mutating_subtask():
+    from agents.delegation import plan_runtime_subagent_specs
+
+    planner = FakePlanner(json.dumps({
+        "subtasks": [
+            {"role": "interaction", "goal": "Click delete", "input": {"url": "https://mail.google.com"}},
+            {"role": "research", "goal": "Read another site", "input": {"url": "https://evil.example"}},
+            {"role": "executor", "goal": "Execute browser actions", "input": {"url": "https://mail.google.com"}},
+        ]
+    }))
+    specs = asyncio.run(plan_runtime_subagent_specs(
+        planner,
+        "Delete a message in Gmail",
+        "https://mail.google.com",
+        {"title": "Gmail", "headings": [], "elements": []},
+    ))
+    assert specs == []
