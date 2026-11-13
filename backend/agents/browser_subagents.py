@@ -70,24 +70,48 @@ async def _close_owned_tab(adapter: ExtensionBrowserAdapter) -> None:
     except Exception:
         pass
 
+
+
+async def _observation_adapter(ctx: SubagentContext) -> Tuple[ExtensionBrowserAdapter, bool]:
+    """Return the parent's exact live-tab adapter for read-only workers when supplied."""
+    if ctx.input.get("use_parent_tab"):
+        adapter = ctx.memory.get("controller")
+        if not isinstance(adapter, ExtensionBrowserAdapter):
+            raise RuntimeError("Parent live-tab observation was requested but no parent adapter is available")
+        if adapter.task_id != ctx.parent_task_id:
+            raise RuntimeError("Parent live-tab adapter ownership mismatch")
+        return adapter, False
+    return await _open_owned_tab(ctx), True
+
+
+async def _inspect_observation(ctx: SubagentContext, adapter: ExtensionBrowserAdapter) -> Dict[str, Any]:
+    """Serialize read-only inspections of a shared live tab."""
+    lock = ctx.memory.get("observation_lock") if ctx.input.get("use_parent_tab") else None
+    if lock is None:
+        return await adapter.parse_interactive_elements()
+    async with lock:
+        ctx.raise_if_cancelled()
+        return await adapter.parse_interactive_elements()
+
 async def navigation_worker(ctx: SubagentContext) -> Dict[str, Any]:
     """Open a URL in a child-owned tab and return a live DOM observation."""
-    adapter = await _open_owned_tab(ctx)
+    adapter, owns_adapter = await _observation_adapter(ctx)
     try:
         ctx.raise_if_cancelled()
-        page = await adapter.parse_interactive_elements()
+        page = await _inspect_observation(ctx, adapter)
         if page.get("inspection_error") or not page.get("url"):
             raise RuntimeError("Navigation completed but live DOM inspection failed")
         return {"url": page.get("url"), "title": page.get("title"), "headings": (page.get("headings") or [])[:30], "element_count": len(page.get("elements") or [])}
     finally:
-        await _close_owned_tab(adapter)
+        if owns_adapter:
+            await _close_owned_tab(adapter)
 
 async def research_worker(ctx: SubagentContext) -> Dict[str, Any]:
     """Collect bounded visible-page evidence; does not click or mutate the page."""
-    adapter = await _open_owned_tab(ctx)
+    adapter, owns_adapter = await _observation_adapter(ctx)
     try:
         ctx.raise_if_cancelled()
-        page = await adapter.parse_interactive_elements()
+        page = await _inspect_observation(ctx, adapter)
         if page.get("inspection_error") or not page.get("url"):
             raise RuntimeError("Research worker could not inspect the live page")
         elements = page.get("elements") or []
@@ -98,7 +122,8 @@ async def research_worker(ctx: SubagentContext) -> Dict[str, Any]:
             if len(links) >= 40: break
         return {"url": page.get("url"), "title": page.get("title"), "headings": (page.get("headings") or [])[:40], "page_text": str(page.get("page_text") or "")[:12000], "links": links}
     finally:
-        await _close_owned_tab(adapter)
+        if owns_adapter:
+            await _close_owned_tab(adapter)
 
 async def form_worker(ctx: SubagentContext) -> Dict[str, Any]:
     """Fill only explicitly mapped, visible, editable fields; never submit."""
