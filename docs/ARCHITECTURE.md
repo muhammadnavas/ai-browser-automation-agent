@@ -91,11 +91,19 @@ graph TD
 - **Execution Loop**: Manages the step-by-step loop: DOM snapshotting -> security check -> screenshot capture -> planning -> action execution -> step logging -> WebSocket broadcasting.
 - **Human-in-the-Loop Gating**: Detects security gates (CAPTCHAs/payments), pauses execution, captures full-context screenshots, and resumes execution upon user approval or coordinate click.
 
-### 2.3. AI Planning & Decision Engine (`agents/planner.py`)
+### 2.3. Multi-Agent Delegation
+- **Master orchestrator**: TaskManager remains the parent authority and asks the configured planner for bounded specialist work during preflight and while the live task is executing.
+- **Runtime delegation**: After a successful live DOM snapshot, the master may request up to two read-only specialists for that page. Delegation is deduplicated by URL and visible page structure, capped at six page attempts per task, and skipped on authentication pages.
+- **Specialists**: Navigation, research, and interaction workers inspect a dedicated task tab and return bounded evidence. Recovery diagnoses failures; verification independently checks task outcomes; form workers may populate explicitly mapped fields but never submit.
+- **Shared task evidence**: Sanitized specialist results are added to task context so the primary planner can use them on its next decision.
+- **Mutation authority**: Specialists do not execute browser mutations during automatic runtime delegation. The main TaskManager executor re-inspects the current DOM and remains the only component that chooses and executes the user's browser actions. Existing approval and security gates remain authoritative.
+- **Boundaries**: Runtime delegation uses the current validated URL, drops query parameters, preserves SPA fragments, avoids credentials/form values, and continues the parent task if specialist planning or execution fails.
+
+### 2.4. AI Planning & Decision Engine (`agents/planner.py`) (`agents/planner.py`)
 - **LLM-Driven Mode**: Sends structured prompts to Google Gemini containing the user goal, current DOM elements, headings, recent trajectory history, and plain-text user data. Enforces strict JSON output schema.
 - **Deterministic Heuristic Mode**: Fallback rule engine that requires no external API keys. Handles domain selection, search typing with Enter submission, result extraction, scrolling, and finishing.
 
-### 2.4. Browser Automation Core (`browser/`)
+### 2.5. Browser Automation Core (`browser/`)
 - **`BrowserController`**: Main Playwright browser lifecycle manager supporting Chromium, Firefox, and WebKit in headless or headed/maximized modes.
 - **`browser.actions`**: Low-level interaction primitives (clicks, typing, dropdown selection, checkboxes, radios, drag-and-drop, scrolling).
 - **`browser.tabs` (`TabManager`)**: Multi-tab lifecycle and popup interception (`wait_for_popup`).
@@ -106,12 +114,12 @@ graph TD
 - **`browser.stealth`**: Anti-bot evasion scripts overriding `navigator.webdriver`, plugins, WebGL vendor, and permissions.
 - **`BrowserPool`**: Singleton warm browser instance pool managing isolated contexts and pages for fast ad-hoc extraction and form discovery.
 
-### 2.5. Information Extraction & Form Discovery (`browser/extractor.py`, `extraction/`, `browser/form_discovery.py`)
+### 2.6. Information Extraction & Form Discovery (`browser/extractor.py`, `extraction/`, `browser/form_discovery.py`)
 - **`InfoExtractor`**: Auto-detects content category via multi-signal scoring (URL, metadata, JSON-LD, DOM signals) and delegates to specialized extraction modules (`product`, `news`, `search`, `contact`, `tables`, `images`, `metadata`).
 - **`FormDiscovery`**: Automatically inspects forms, identifies field types, infers human-readable labels via an 8-source priority chain, and fuzzy-maps fields to user data.
 - **`FormFiller`**: Provides zero-config autofill alongside pre-built workflows for login, registration, job applications, and surveys.
 
-### 2.6. Reporting Layer (`reports/generator.py`)
+### 2.7. Reporting Layer (`reports/generator.py`)
 - **`ReportGenerator`**: Transforms extracted task findings into standardized tabular records and writes CSV reports to `reports/report_<task_id>.csv`.
 
 ---
