@@ -537,7 +537,7 @@ class TaskManager:
         try:
             from agents.delegation import plan_runtime_subagent_specs
             prior_history = [
-                {"role": role, "status": status, "goal": goal_text}
+                {"role": role, "status": status, "goal": goal_text, "url": item.get("url")}
                 for item in attempts[:-1] if isinstance(item, dict)
                 for role, status, goal_text in zip(
                     item.get("roles", []),
