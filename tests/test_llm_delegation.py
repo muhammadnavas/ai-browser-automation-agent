@@ -164,3 +164,46 @@ def test_runtime_delegation_rejects_unknown_url_role_and_mutating_subtask():
         {"title": "Gmail", "headings": [], "elements": []},
     ))
     assert specs == []
+
+
+
+def test_runtime_read_only_worker_uses_exact_parent_tab_without_opening_child_tab():
+    from agents.browser_subagents import _observation_adapter
+    from agents.subagents import SubagentContext
+    from browser.extension_adapter import ExtensionBrowserAdapter
+
+    parent = ExtensionBrowserAdapter(task_id="task-parent")
+    ctx = SubagentContext(
+        parent_task_id="task-parent",
+        subagent_id="subagent-child",
+        role="interaction",
+        goal="Inspect controls",
+        input={"use_parent_tab": True, "url": "https://example.com"},
+        memory={"controller": parent},
+    )
+
+    adapter, owns_adapter = asyncio.run(_observation_adapter(ctx))
+    assert adapter is parent
+    assert owns_adapter is False
+
+
+def test_runtime_read_only_worker_fails_closed_on_parent_tab_ownership_mismatch():
+    from agents.browser_subagents import _observation_adapter
+    from agents.subagents import SubagentContext
+    from browser.extension_adapter import ExtensionBrowserAdapter
+
+    other_task_adapter = ExtensionBrowserAdapter(task_id="task-other")
+    ctx = SubagentContext(
+        parent_task_id="task-parent",
+        subagent_id="subagent-child",
+        role="research",
+        goal="Inspect page",
+        input={"use_parent_tab": True},
+        memory={"controller": other_task_adapter},
+    )
+
+    try:
+        asyncio.run(_observation_adapter(ctx))
+        assert False, "Expected ownership mismatch to fail closed"
+    except RuntimeError as exc:
+        assert "ownership mismatch" in str(exc)
