@@ -41,7 +41,14 @@ def build_automatic_subagent_specs(
             input={"url": url},
             timeout_seconds=90,
         )]
-    if re.search(r"\b(open|visit|navigate|go to|click|locate|find the)\b", text, re.I):
+    if re.search(r"\b(open|visit|navigate|go to)\b", text, re.I):
+        return [SubagentSpec(
+            role="navigation",
+            goal=f"Inspect the destination before the main task: {text}",
+            input={"url": url},
+            timeout_seconds=60,
+        )]
+    if re.search(r"\b(click|locate|find the)\b", text, re.I):
         return [SubagentSpec(
             role="interaction",
             goal=f"Identify relevant visible controls for: {text}",
