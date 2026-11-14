@@ -1727,7 +1727,7 @@ class AIAgentPlanner:
                     "reused": True,
                     "version": getattr(cached, "version", "1.0.0"),
                     "key": "session_memory",
-                    "message": f"⚡ Plan Cache HIT (Memory L1): Reused {len(cached.plan)}-step plan from active session",
+                    "message": f"Reused {len(cached.plan)}-step plan from active session",
                     "details": f"Source: {cached.source} (v{cached.version}) • Reused without regeneration latency",
                 }
                 return self._filter_unrequested_report_steps(goal, cached.copy_plan())
@@ -3687,57 +3687,34 @@ Return ONLY this JSON object with a real JSON boolean:
                     and _eft_lower in str(h.get("reasoning", "")).lower()
                 )
 
-                # If we landed in a wrong folder (e.g. /folders/1R75Q2...) after waiting, navigate back to My Drive
+                # If we landed in a wrong folder (e.g. /folders/1R75Q2... which is Activity Points) after waiting,
+                # navigate directly back to My Drive
                 _has_waited_in_folder = any(
                     h.get("action") == "wait" and "folder" in str(h.get("reasoning", "")).lower()
                     for h in trajectory_history
                 )
                 if "folders/" in url_current and _has_waited_in_folder and "loading" not in page_title_current:
-                    my_drive_el = None
-                    for el in elements:
-                        if el.get("disabled") is True or el.get("visible") is False:
-                            continue
-                        el_text = (el.get("text") or "").strip().lower()
-                        el_role = (el.get("role") or "").lower()
-                        if el_text == "my drive" and el_role in ("link", "treeitem", "tab", "button", "div"):
-                            my_drive_el = el
-                            break
-                    if my_drive_el:
+                    return BrowserAction(
+                        action=ActionType.NAVIGATE,
+                        url="https://drive.google.com/drive/u/0/my-drive",
+                        reasoning=f"Navigating back to 'My Drive' because current folder is not '{existing_folder_target}'.",
+                    )
+
+                # If on Drive /home and double-click didn't navigate, switch directly to "My Drive" view
+                if "drive.google.com" in url_current and "/home" in url_current and (_folder_dblclick_attempts >= 1 or _folder_dblclick_failures >= 1):
+                    has_navigated_my_drive = any(
+                        "my drive" in str(h.get("reasoning", "")).lower()
+                        for h in trajectory_history
+                    )
+                    if not has_navigated_my_drive:
                         return BrowserAction(
-                            action=ActionType.CLICK,
-                            element_id=my_drive_el.get("index"),
-                            selector=my_drive_el.get("selector"),
-                            text="My Drive",
-                            reasoning=f"Navigating back to 'My Drive' because current folder is not '{existing_folder_target}'.",
+                            action=ActionType.NAVIGATE,
+                            url="https://drive.google.com/drive/u/0/my-drive",
+                            reasoning="Navigating directly from Home to 'My Drive' view to access folders.",
                         )
 
-                # If on Drive /home and double-click didn't navigate, switch to "My Drive" view
-                if "drive.google.com" in url_current and "/home" in url_current and _folder_dblclick_attempts >= 1:
-                    my_drive_el = None
-                    for el in elements:
-                        if el.get("disabled") is True or el.get("visible") is False:
-                            continue
-                        el_text = (el.get("text") or "").strip().lower()
-                        el_role = (el.get("role") or "").lower()
-                        if el_text == "my drive" and el_role in ("link", "treeitem", "tab", "button", "div"):
-                            my_drive_el = el
-                            break
-                    if my_drive_el:
-                        has_clicked_my_drive = any(
-                            h.get("action") == "click" and "my drive" in str(h.get("reasoning", "")).lower()
-                            for h in trajectory_history
-                        )
-                        if not has_clicked_my_drive:
-                            return BrowserAction(
-                                action=ActionType.CLICK,
-                                element_id=my_drive_el.get("index"),
-                                selector=my_drive_el.get("selector"),
-                                text="My Drive",
-                                reasoning="Navigating from Home to 'My Drive' view to access folders.",
-                            )
-
-                # After 2+ failures, try fallback strategy: use Drive search bar
-                if _folder_dblclick_failures >= 2:
+                # After 2+ attempts/failures, try fallback strategy: use Drive search bar
+                if _folder_dblclick_failures >= 2 or _folder_dblclick_attempts >= 2:
                     # Fallback: type folder name in the Drive search bar and navigate
                     _search_el = None
                     for el in elements:
@@ -3792,6 +3769,14 @@ Return ONLY this JSON object with a real JSON boolean:
                     if el_role == "row" and any(r in el_selector for r in ["s55kne", "bn8jv"]):
                         continue
 
+                    # STRICTLY EXCLUDE 3-dots "More info" / "More actions" buttons!
+                    if any(term in el_aria for term in ["more info", "more actions", "alt +"]):
+                        continue
+                    if any(term in el_text for term in ["more info", "alt +"]):
+                        continue
+                    if any(term in el_acc for term in ["more info", "more actions", "alt +"]):
+                        continue
+
                     score = 0
                     if f"{_eft_lower} folder" in el_acc or f"{_eft_lower} folder" in el_aria or f"{_eft_lower} folder" in el_selector:
                         score += 100
@@ -3804,8 +3789,10 @@ Return ONLY this JSON object with a real JSON boolean:
                     elif el_text.startswith(_eft_lower) and len(el_text) <= len(_eft_lower) + 15:
                         score += 70
 
-                    if el_role in ("gridcell", "treeitem", "link", "button"):
-                        score += 15
+                    if el_role in ("gridcell", "treeitem"):
+                        score += 25
+                    elif el_role in ("link", "button"):
+                        score += 10
 
                     if score > 0:
                         candidates.append((score, el))
@@ -3816,13 +3803,13 @@ Return ONLY this JSON object with a real JSON boolean:
                     folder_el = candidates[0][1]
 
                 if folder_el:
-                    # On retry after failure, prefer element_id only (selectors go stale in Drive SPA)
-                    _use_selector = folder_el.get("selector") if _folder_dblclick_failures == 0 else None
+                    # On retry after attempt/failure, prefer element_id only (selectors go stale in Drive SPA)
+                    _use_selector = folder_el.get("selector") if (_folder_dblclick_failures == 0 and _folder_dblclick_attempts == 0) else None
                     return BrowserAction(
                         action=ActionType.DOUBLE_CLICK,
                         element_id=folder_el.get("index"),
                         selector=_use_selector,
-                        text=folder_el.get("text") or existing_folder_target,
+                        text=existing_folder_target,
                         reasoning=f"Opening '{existing_folder_target}' folder.",
                     )
                 else:

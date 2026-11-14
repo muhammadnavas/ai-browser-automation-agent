@@ -144,3 +144,145 @@ def test_folder_candidate_ranking_ignores_container_row():
     assert "automata" in (best.get("text") or "").lower()
     assert "activity" not in (best.get("text") or "").lower()
 
+
+def test_folder_candidate_ranking_ignores_more_info_button():
+    """Verify that 3-dots 'More info / More actions' buttons are strictly ignored in candidate ranking."""
+    _eft_lower = "automata"
+    elements = [
+        {
+            "index": 10,
+            "tag": "div",
+            "role": "button",
+            "text": "",
+            "accessible_name": "Automata Folder Loading… More info (Alt + →)",
+            "aria_label": "Automata Folder Loading… More info (Alt + →)",
+            "selector": '[aria-label="Automata Folder Loading… More info (Alt + →)"]',
+            "disabled": False,
+            "visible": True,
+        },
+        {
+            "index": 11,
+            "tag": "div",
+            "role": "gridcell",
+            "text": "Automata",
+            "accessible_name": "Automata Folder",
+            "aria_label": "Automata Folder",
+            "selector": '[aria-label="Automata Folder"]',
+            "disabled": False,
+            "visible": True,
+        },
+    ]
+
+    candidates = []
+    for el in elements:
+        if el.get("disabled") is True or el.get("visible") is False:
+            continue
+        el_text = (el.get("text") or "").strip().lower()
+        el_aria = (el.get("aria_label") or "").strip().lower()
+        el_acc = (el.get("accessible_name") or "").strip().lower()
+        el_role = (el.get("role") or "").strip().lower()
+        el_selector = (el.get("selector") or "").lower()
+
+        # Skip multi-folder container rows
+        if len(el_text) > 60 or el_text.count("more actions") > 1:
+            continue
+        if el_role == "row" and any(r in el_selector for r in ["s55kne", "bn8jv"]):
+            continue
+
+        # STRICTLY EXCLUDE 3-dots "More info" / "More actions" buttons!
+        if any(term in el_aria for term in ["more info", "more actions", "alt +"]):
+            continue
+        if any(term in el_text for term in ["more info", "alt +"]):
+            continue
+        if any(term in el_acc for term in ["more info", "more actions", "alt +"]):
+            continue
+
+        score = 0
+        if f"{_eft_lower} folder" in el_acc or f"{_eft_lower} folder" in el_aria or f"{_eft_lower} folder" in el_selector:
+            score += 100
+        elif el_acc == _eft_lower or el_aria == _eft_lower:
+            score += 90
+        if el_text == _eft_lower:
+            score += 85
+        elif el_text in (f"{_eft_lower}more actions", f"{_eft_lower} more actions"):
+            score += 80
+        elif el_text.startswith(_eft_lower) and len(el_text) <= len(_eft_lower) + 15:
+            score += 70
+
+        if el_role in ("gridcell", "treeitem"):
+            score += 25
+        elif el_role in ("link", "button"):
+            score += 10
+
+        if score > 0:
+            candidates.append((score, el))
+
+    assert len(candidates) == 1
+    assert candidates[0][1]["index"] == 11
+    assert candidates[0][1]["accessible_name"] == "Automata Folder"
+
+
+def test_planner_recovers_from_wrong_drive_folder():
+    """Verify that if the browser enters the wrong Drive folder (e.g. Activity Points), planner navigates back to My Drive."""
+    from backend.agents.planner import AIAgentPlanner
+    from backend.models.schemas import ActionType
+
+    planner = AIAgentPlanner()
+    page_info = {
+        "url": "https://drive.google.com/drive/u/0/folders/1R75Q2_KRaHVLbOkt57uaSQcQ9wfw4ngvl",
+        "title": "Activity Points - Google Drive",
+        "headings": ["Activity Points"],
+        "text": "Activity Points Old Age Home School Activity",
+    }
+    trajectory_history = [
+        {"action": "double_click", "reasoning": "Opening 'Automata' folder.", "success": True},
+        {"action": "wait", "reasoning": "Waiting for 'Automata' folder to finish opening.", "success": True},
+    ]
+
+    action = planner._heuristic_decide_action(
+        goal="open gdrive and open a folder called Automata and upload any pdf file from downloads",
+        step_number=3,
+        page_info=page_info,
+        extracted_data=[],
+        trajectory_history=trajectory_history,
+    )
+
+    assert action is not None
+    assert action.action == ActionType.NAVIGATE
+    assert "my-drive" in action.url
+    assert "not 'Automata'" in action.reasoning
+
+
+def test_planner_navigates_to_my_drive_if_home_dblclick_fails():
+    """Verify that if the folder did not open from Drive /home, planner switches directly to My Drive view."""
+    from backend.agents.planner import AIAgentPlanner
+    from backend.models.schemas import ActionType
+
+    planner = AIAgentPlanner()
+    page_info = {
+        "url": "https://drive.google.com/drive/u/0/home",
+        "title": "Home - Google Drive",
+        "headings": ["Welcome to Drive"],
+        "text": "Suggested folders Activity Points Automata New Folder",
+        "elements": [],
+    }
+    trajectory_history = [
+        {"action": "double_click", "reasoning": "Opening 'Automata' folder.", "success": True},
+        {"action": "wait", "reasoning": "Waiting for 'Automata' folder to finish opening.", "success": True},
+    ]
+
+    action = planner._heuristic_decide_action(
+        goal="open gdrive and open a folder called Automata and upload any pdf file from downloads",
+        step_number=3,
+        page_info=page_info,
+        extracted_data=[],
+        trajectory_history=trajectory_history,
+    )
+
+    assert action is not None
+    assert action.action == ActionType.NAVIGATE
+    assert "my-drive" in action.url
+    assert "My Drive" in action.reasoning
+
+
+

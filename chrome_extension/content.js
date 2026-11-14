@@ -652,7 +652,7 @@
       return control || el;
     }
 
-    const actionableSelector = 'button,a,input[type="button"],input[type="submit"],[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="row"],[role="treeitem"],[data-target="item"],[tabindex]:not([tabindex="-1"])';
+    const actionableSelector = 'button,a,input[type="button"],input[type="submit"],[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="gridcell"],[role="treeitem"],[data-target="item"],[role="row"],[tabindex]:not([tabindex="-1"])';
     if (el.matches(actionableSelector)) return el;
     const parent = el.closest(actionableSelector);
     if (parent) return parent;
@@ -702,15 +702,15 @@
 
   // Google Drive uses a virtualized grid. The visible filename is often a
   // nested span inside a row, while the actual click target is the row itself.
-  // Resolve by the live row/container and collapse nested text matches so one
-  // folder does not look like several ambiguous targets.
+  // Resolve by the live folder card/gridcell or row and collapse nested text matches.
+  // Never resolve to a container row that holds multiple folders/files!
   function findGoogleDriveTarget(action, actionKind, wantedText) {
     if (!/drive\.google\.com$/i.test(location.hostname) || !wantedText) return null;
 
     const wanted = normalizeTargetText(wantedText);
     if (!wanted) return null;
     const selectors = [
-      '[role="row"]', '[role="gridcell"]', '[role="treeitem"]',
+      '[role="gridcell"]', '[role="treeitem"]', '[role="row"]',
       '[data-id]', '[data-tooltip]', '[aria-label]', '[title]',
       'button', 'a', '[role="button"]', '[role="link"]', 'span', 'div'
     ].join(",");
@@ -727,6 +727,15 @@
         candidate.innerText || candidate.textContent || ""
       ].filter(Boolean);
       const labels = labelParts.map(normalizeTargetText).filter(Boolean);
+
+      // Exclude 3-dots "More actions" / "More info" / "Alt +" buttons when searching for folder/file
+      const isMoreActionBtn = labels.some((l) =>
+        l.includes("more action") || l.includes("more info") || l.includes("alt +")
+      );
+      if (isMoreActionBtn && !wanted.includes("more action") && !wanted.includes("more info")) {
+        continue;
+      }
+
       const exact = labels.some((label) =>
         label === wanted ||
         label === wanted + " folder" ||
@@ -734,17 +743,30 @@
       );
       if (!exact) continue;
 
-      // Drive's row is the unit that opens a file/folder. Prefer that over
-      // nested filename spans and individual grid cells.
-      const row = candidate.closest('[role="row"],[role="treeitem"],[data-id]') || candidate;
-      if (!isVisibleActionTarget(row)) continue;
-      const actionable = getActionableElement(row, actionKind) || row;
+      // In Google Drive, find the specific item card/cell, NOT a multi-item container row!
+      let item = candidate.closest('[role="gridcell"],[role="treeitem"],[data-target="item"]');
+      if (!item) {
+        const potentialRow = candidate.closest('[role="row"]');
+        if (potentialRow) {
+          // If this row contains multiple gridcells, it is a container row (like Suggested folders on Home), NOT a single item!
+          const cells = potentialRow.querySelectorAll('[role="gridcell"]');
+          if (cells.length <= 1) {
+            item = potentialRow;
+          }
+        }
+      }
+      if (!item) {
+        item = candidate.closest('[data-id]') || candidate;
+      }
+      if (!isVisibleActionTarget(item)) continue;
+      const actionable = getActionableElement(item, actionKind) || item;
       if (!isVisibleActionTarget(actionable)) continue;
 
-      const key = row.getAttribute("data-id") ||
-        row.getAttribute("data-row-id") ||
-        row.getAttribute("aria-label") ||
-        normalizeTargetText(row.innerText || row.textContent || "");
+      const key = item.getAttribute("data-id") ||
+        item.getAttribute("data-row-id") ||
+        item.getAttribute("aria-label") ||
+        item.getAttribute("data-tooltip") ||
+        normalizeTargetText(item.innerText || item.textContent || "");
       if (!key) continue;
       if (!matches.has(key)) matches.set(key, actionable);
     }
@@ -756,7 +778,7 @@
       // 1. If one of them matches action.element_id, pick that
       if (action.element_id !== undefined && action.element_id !== null) {
         for (const el of matches.values()) {
-          if (el.getAttribute("data-ai-element-index") === String(action.element_id) || el.closest(`[data-ai-element-index="${action.element_id}"]`)) {
+          if (el.getAttribute("data-ai-element-index") === String(action.element_id) || el.closest(`[data-ai-element-index="${action.element_id}"]`) || el.querySelector(`[data-ai-element-index="${action.element_id}"]`)) {
             return el;
           }
         }
