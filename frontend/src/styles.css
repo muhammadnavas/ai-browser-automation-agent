@@ -556,6 +556,9 @@ h1 {
 
 .tab-action.pause {
   color: #fcd34d;
+  background: rgba(251, 191, 36, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  font-weight: 800;
 }
 
 .tab-action.pause:hover {
@@ -565,6 +568,9 @@ h1 {
 
 .tab-action.resume {
   color: #6ee7b7;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  font-weight: 800;
 }
 
 .tab-action.resume:hover {
