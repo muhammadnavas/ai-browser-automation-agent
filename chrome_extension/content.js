@@ -2544,6 +2544,17 @@
     }
     if (event.data?.__aiAgentNativeInputCommand) {
       nativeAgentInputActive = Boolean(event.data.enabled);
+      // Forward the scoped permission through nested frames as well.
+      try {
+        document.querySelectorAll("iframe,frame").forEach((frame) => {
+          try {
+            frame.contentWindow?.postMessage({
+              __aiAgentNativeInputCommand: true,
+              enabled: nativeAgentInputActive,
+            }, "*");
+          } catch (e) {}
+        });
+      } catch (e) {}
     }
     if (event.data?.__aiAgentUploadCommand && event.data.action) {
       handleChildFrameUpload(event.data.action);
@@ -2687,10 +2698,14 @@
           // Propagate the short-lived permission to same-origin and cross-origin
           // child frames, where the lock listeners are installed independently.
           try {
-            window.postMessage({
-              __aiAgentNativeInputCommand: true,
-              enabled: nativeAgentInputActive,
-            }, "*");
+            document.querySelectorAll("iframe,frame").forEach((frame) => {
+              try {
+                frame.contentWindow?.postMessage({
+                  __aiAgentNativeInputCommand: true,
+                  enabled: nativeAgentInputActive,
+                }, "*");
+              } catch (e) {}
+            });
           } catch (e) {}
           sendResponse({ success: true, data: { enabled: nativeAgentInputActive } });
         } else if (message.type === "lock_ui") {
