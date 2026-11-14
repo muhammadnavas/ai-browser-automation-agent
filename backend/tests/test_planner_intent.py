@@ -122,3 +122,13 @@ class PlanFormatTests(unittest.TestCase):
             '["one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen", "Inspect the page", "Complete the task", "Verify the result"]'
         )
         self.assertEqual(len(plan[0].split()), MAX_WORDS_PER_MILESTONE)
+
+    def test_adaptive_plan_can_contain_only_remaining_milestones(self):
+        from agents.plan_format import normalize_plan_response
+        self.assertEqual(
+            normalize_plan_response(
+                '["Open the target folder", "Verify the requested folder"]',
+                min_milestones=1,
+            ),
+            ["Open the target folder", "Verify the requested folder"],
+        )
