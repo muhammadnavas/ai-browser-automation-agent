@@ -297,6 +297,66 @@ async function ensureContentScriptInjected(tabId) {
   );
 }
 
+// Dispatch trusted browser input through Chrome DevTools Protocol. This does not
+// synthesize DOM events; Chrome generates trusted pointer events for the page.
+async function dispatchNativePointerClick(tabId, action) {
+  const resolved = await sendContentMessage(tabId, {
+    type: "resolve_native_click_target",
+    action,
+  }, { frameId: 0 });
+
+  if (!resolved?.success || !resolved.data) {
+    throw new Error(resolved?.error || "Could not resolve a unique, unobscured click target.");
+  }
+
+  const { x, y, target, button = "left" } = resolved.data;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error("Native click target returned invalid viewport coordinates.");
+  }
+
+  const debuggee = { tabId };
+  let attachedHere = false;
+  try {
+    try {
+      await chrome.debugger.attach(debuggee, "1.3");
+      attachedHere = true;
+    } catch (attachError) {
+      // A debugger session may already be attached by this extension. Do not
+      // take ownership of or detach a session that we did not create.
+      if (!/already attached|Another debugger is already attached/i.test(attachError.message || "")) {
+        throw new Error("Chrome native input could not attach to the task tab: " + attachError.message);
+      }
+    }
+
+    const clickCount = String(action.action || "").toLowerCase() === "double_click" ? 2 : 1;
+    await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+      type: "mouseMoved", x, y, button: "none",
+    });
+    await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+      type: "mousePressed", x, y, button, clickCount,
+      ...(button === "right" ? { buttons: 2 } : { buttons: 1 }),
+    });
+    await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+      type: "mouseReleased", x, y, button, clickCount, buttons: 0,
+    });
+
+    return {
+      success: true,
+      data: {
+        description: `Native ${clickCount === 2 ? "double-" : ""}${button} click dispatched to ${target || "resolved target"}`,
+        native_input: true,
+        input_method: "chrome-debugger-cdp",
+        target,
+        coordinates: { x, y },
+      },
+    };
+  } finally {
+    if (attachedHere) {
+      await chrome.debugger.detach(debuggee).catch(() => {});
+    }
+  }
+}
+
 async function sendContentMessage(tabId, message, options = { frameId: 0 }) {
   await ensureContentScriptInjected(tabId);
   try {
@@ -890,6 +950,26 @@ async function handleBackendMessage(msg) {
           });
           return;
         }
+      }
+
+      // Use trusted CDP pointer input for pointer actions. The content script
+      // resolves the semantic target; Chrome itself dispatches the pointer events.
+      const pointerAction = String(action.action || "").toLowerCase();
+      if (["click", "double_click", "right_click"].includes(pointerAction)) {
+        const pointerButton = pointerAction === "right_click" ? "right" : "left";
+        const nativeResult = await dispatchNativePointerClick(tabId, {
+          ...action,
+          button: pointerButton,
+        });
+        sendWsMessage({
+          id,
+          task_id,
+          type: "response",
+          success: nativeResult.success,
+          data: nativeResult.data,
+          error: nativeResult.error,
+        });
+        return;
       }
 
       // Capture pre-action tab URL to verify whether genuine navigation occurred

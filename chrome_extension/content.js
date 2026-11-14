@@ -31,74 +31,54 @@
   function inferLabel(el) {
     if (!el) return "";
 
-    // 1. Explicit <label for="id">
-    if (el.id) {
-      try {
-        const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-        if (lbl && lbl.innerText.trim()) return lbl.innerText.trim();
-      } catch (e) {}
-    }
+    // Accessible names can reference multiple nodes, not just one ID.
+    const labelledBy = String(el.getAttribute("aria-labelledby") || "")
+      .split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((node) => (node.innerText || node.textContent || "").trim())
+      .filter(Boolean);
+    if (labelledBy.length) return labelledBy.join(" ").replace(/\s+/g, " ").trim();
 
-    // 2. aria-label attribute
     const ariaLabel = el.getAttribute("aria-label");
     if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
 
-    // 3. aria-labelledby attribute
-    const ariaLabelledBy = el.getAttribute("aria-labelledby");
-    if (ariaLabelledBy) {
-      try {
-        const lbl = document.getElementById(ariaLabelledBy);
-        if (lbl && lbl.innerText.trim()) return lbl.innerText.trim();
-      } catch (e) {}
+    if (el.labels && el.labels.length) {
+      const labels = Array.from(el.labels)
+        .map((label) => (label.innerText || label.textContent || "").trim())
+        .filter(Boolean);
+      if (labels.length) return labels.join(" ").replace(/\s+/g, " ").trim();
     }
 
-    // 4. Wrapping <label>
     const parentLabel = el.closest("label");
     if (parentLabel) {
       const clone = parentLabel.cloneNode(true);
-      clone.querySelectorAll("input, select, textarea, button").forEach((c) => c.remove());
-      const txt = clone.innerText.trim();
-      if (txt) return txt;
+      clone.querySelectorAll("input, select, textarea, button").forEach((child) => child.remove());
+      const text = (clone.innerText || clone.textContent || "").trim();
+      if (text) return text.replace(/\s+/g, " ");
     }
 
-    // 5. Preceding sibling <label>
-    let prev = el.previousElementSibling;
-    while (prev) {
-      if (prev.tagName === "LABEL" && prev.innerText.trim()) {
-        return prev.innerText.trim();
-      }
-      prev = prev.previousElementSibling;
-    }
-
-    // 6. Placeholder / Title / Alt attribute
-    const placeholder = el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt");
+    const placeholder = el.getAttribute("placeholder");
     if (placeholder && placeholder.trim()) return placeholder.trim();
 
-    // 7. Button or submit fallback
-    if (el.tagName === "BUTTON" || el.type === "submit" || el.type === "button") {
-      return (el.innerText || el.value || "").trim();
-    }
+    const title = el.getAttribute("title");
+    if (title && title.trim()) return title.trim();
 
-    // 8. Google Forms: resolve the title from the nearest question card only.
-    // A broad ancestor search can accidentally borrow the previous/next
-    // question title and cause values to be written into the wrong field.
+    // Google Forms and similar custom forms often expose the question only
+    // through a nearby card heading.
     const questionCard = el.closest('.Qr7Oae,[role="listitem"],[data-params]');
     if (questionCard) {
-      const title = questionCard.querySelector(
+      const titleNode = questionCard.querySelector(
         '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
       );
-      const titleText = String(title?.innerText || title?.textContent || "")
-        .replace(/\s+/g, " ").replace(/\s*\*\s*$/, "").trim();
+      const titleText = String(titleNode?.innerText || titleNode?.textContent || "")
+        .replace(/\s+/g, " ").replace(/\s*\\*\s*$/, "").trim();
       if (titleText) return titleText;
     }
 
-    // 9. Generic fallback is intentionally restricted to the immediate
-    // parent. Searching several ancestors can cross question boundaries.
-    const parent = el.parentElement;
-    if (parent) {
-      const heading = parent.querySelector(':scope > [role="heading"],:scope > [class*="Title"],:scope > [class*="label"]');
-      const text = String(heading?.innerText || heading?.textContent || "").trim();
-      if (text) return text;
+    if (el.tagName === "BUTTON" || el.tagName === "A" ||
+        el.getAttribute("role") === "button" || el.getAttribute("role") === "link") {
+      return String(el.innerText || el.textContent || el.value || "").replace(/\s+/g, " ").trim();
     }
     return "";
   }
@@ -203,33 +183,41 @@
     document.querySelectorAll(".ai-agent-badge").forEach((e) => e.remove());
 
     const interactiveSelectors =
-      "button, a, input, textarea, select, li, " +
-      '[role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="combobox"], [role="menuitem"], ' +
-      '[role="row"], [role="treeitem"], [role="option"], [data-target="item"], c-wiz[data-target], [data-id], ' +
-      '[tabindex]:not([tabindex="-1"])';
+      "button, a, input, textarea, select, li, summary, " +
+      '[role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"], ' +
+      '[role="combobox"], [role="searchbox"], [role="menuitem"], [role="menuitemcheckbox"], ' +
+      '[role="menuitemradio"], [role="tab"], [role="row"], [role="gridcell"], ' +
+      '[role="treeitem"], [role="option"], [data-target="item"], c-wiz[data-target], [data-id], ' +
+      '[contenteditable="true"], [tabindex]:not([tabindex="-1"])';
 
     const rawElements = Array.from(document.querySelectorAll(interactiveSelectors));
 
-    // Prioritize active menus, popups, and modal dialogs so their items appear at the front of results
+    // Keep the current interactive context first, then controls in the viewport.
+    // Off-screen controls remain observable so the agent can scroll to them instead
+    // of assuming that only the first viewport exists.
     rawElements.sort((a, b) => {
       const aMenu = a.closest('[role="menu"], [role="dialog"], [aria-modal="true"], .modal, ul.aqdrmf-E, [role="listbox"]') ? 1 : 0;
       const bMenu = b.closest('[role="menu"], [role="dialog"], [aria-modal="true"], .modal, ul.aqdrmf-E, [role="listbox"]') ? 1 : 0;
-      return bMenu - aMenu;
+      if (aMenu !== bMenu) return bMenu - aMenu;
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      const aInView = ar.bottom > 0 && ar.top < window.innerHeight ? 1 : 0;
+      const bInView = br.bottom > 0 && br.top < window.innerHeight ? 1 : 0;
+      if (aInView !== bInView) return bInView - aInView;
+      return Math.abs(ar.top) - Math.abs(br.top);
     });
+    // Bound work on pages with thousands of generic tabindex/data-id nodes.
+    // A fresh inspection after scrolling promotes newly visible controls.
+    if (rawElements.length > 800) rawElements.length = 800;
 
     const results = [];
     let index = 1;
 
     rawElements.forEach((el) => {
       const rect = el.getBoundingClientRect();
-      if (
-        rect.width === 0 ||
-        rect.height === 0 ||
-        rect.top < -50 ||
-        rect.top > (window.innerHeight || document.documentElement.clientHeight) + 100
-      ) {
-        return;
-      }
+      // Do not discard controls merely because they are below the fold or
+      // above the current viewport. Scrollable pages are part of the same task.
+      if (rect.width <= 0 || rect.height <= 0) return;
       const cs = window.getComputedStyle(el);
       if (cs.visibility === "hidden" || cs.display === "none" || cs.opacity === "0") {
         return;
@@ -280,10 +268,12 @@
 
       const midX = Math.round(rect.left + rect.width / 2);
       const midY = Math.round(rect.top + rect.height / 2);
-      const centerElement = document.elementFromPoint(
+      const inViewport = rect.bottom > 0 && rect.top < window.innerHeight &&
+        rect.right > 0 && rect.left < window.innerWidth;
+      const centerElement = inViewport ? document.elementFromPoint(
         Math.min(Math.max(midX, 0), Math.max(0, window.innerWidth - 1)),
         Math.min(Math.max(midY, 0), Math.max(0, window.innerHeight - 1))
-      );
+      ) : null;
       const centerHit = Boolean(
         centerElement && (
           centerElement === el ||
@@ -311,8 +301,10 @@
         role: role,
         text: text.substring(0, 160),
         label: labelText.substring(0, 160),
+        accessible_name: getAccessibleName(el).substring(0, 200),
         aria_label: el.getAttribute("aria-label") || "",
         title: el.getAttribute("title") || "",
+        in_viewport: inViewport,
         alt: el.getAttribute("alt") || "",
         id: elId,
         name: el.getAttribute("name") || "",
@@ -429,7 +421,7 @@
     return {
       title: document.title,
       url: window.location.href,
-      elements: results.slice(0, 200),
+      elements: results.slice(0, 400),
       page_text: pageTextParts.slice(0, 60).join(" | "),
       form_questions: formQuestions,
       headings: Array.from(document.querySelectorAll("h1,h2,h3,[role=\"heading\"]"))
@@ -508,6 +500,15 @@
       el.getAttribute("aria-disabled") !== "true";
   }
 
+  function isCenterHitTarget(el) {
+    if (!isVisibleActionTarget(el)) return false;
+    const rect = el.getBoundingClientRect();
+    const x = Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(0, window.innerWidth - 1));
+    const y = Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(0, window.innerHeight - 1));
+    const hit = document.elementFromPoint(x, y);
+    return Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el)));
+  }
+
   function findGmailTarget(action) {
     if (location.hostname !== "mail.google.com") return null;
     const kind = String(action.action || "").toLowerCase();
@@ -582,214 +583,251 @@
     return null;
   }
 
+  function normalizeTargetText(value) {
+    return String(value || "")
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[＊*]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  function getAccessibleName(el) {
+    if (!el) return "";
+    const labelledBy = String(el.getAttribute("aria-labelledby") || "")
+      .split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((node) => node.innerText || node.textContent || "")
+      .join(" ");
+    const labelText = el.labels
+      ? Array.from(el.labels).map((label) => label.innerText || label.textContent || "").join(" ")
+      : "";
+    const questionCard = el.closest('.Qr7Oae,[role="listitem"],[data-params],[role="row"],[data-target="item"]');
+    const cardHeading = questionCard?.querySelector('[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]');
+    return [
+      el.getAttribute("aria-label"),
+      labelledBy,
+      labelText,
+      inferLabel(el),
+      cardHeading?.innerText || cardHeading?.textContent || "",
+      el.getAttribute("placeholder"),
+      el.getAttribute("title"),
+      el.getAttribute("name"),
+      el.getAttribute("data-tooltip"),
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  function isVisibleActionTarget(el) {
+    if (!el || !el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 &&
+      style.display !== "none" && style.visibility !== "hidden" &&
+      style.opacity !== "0" && !el.disabled &&
+      el.getAttribute("aria-disabled") !== "true";
+  }
+
+  function getActionableElement(el, actionKind) {
+    if (!el) return null;
+    const kind = String(actionKind || "").toLowerCase();
+    if (["fill", "fill_field", "type_text", "select", "select_option", "check", "check_box", "uncheck", "radio_button"].includes(kind)) {
+      const control = el.matches('input:not([type="hidden"]),textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"],[role="checkbox"],[role="radio"]')
+        ? el
+        : el.querySelector('input:not([type="hidden"]),textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"],[role="checkbox"],[role="radio"]');
+      return control || el;
+    }
+
+    const actionableSelector = 'button,a,input[type="button"],input[type="submit"],[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="row"],[role="treeitem"],[data-target="item"],[tabindex]:not([tabindex="-1"])';
+    if (el.matches(actionableSelector)) return el;
+    const parent = el.closest(actionableSelector);
+    if (parent) return parent;
+    return el;
+  }
+
+  function findBestSemanticMatch(candidates, wantedText, actionKind, fieldMode) {
+    const wanted = normalizeTargetText(wantedText);
+    if (!wanted) return { element: null, ambiguous: false, score: 0 };
+    const wantedWords = wanted.split(" ").filter((word) => word.length > 1);
+    const scored = [];
+    const seen = new Set();
+
+    for (const candidate of candidates) {
+      if (!isVisibleActionTarget(candidate)) continue;
+      const target = getActionableElement(candidate, actionKind);
+      if (!target || !isVisibleActionTarget(target) || seen.has(target)) continue;
+      seen.add(target);
+
+      const name = normalizeTargetText(getAccessibleName(candidate));
+      const targetName = normalizeTargetText(getAccessibleName(target));
+      const visibleText = normalizeTargetText(candidate.innerText || candidate.textContent || "");
+      const targetText = normalizeTargetText(target.innerText || target.textContent || "");
+      const combined = [name, targetName, visibleText, targetText].filter(Boolean);
+      let score = 0;
+
+      if (combined.includes(wanted)) score = 100;
+      else if (combined.some((value) => value.startsWith(wanted + " ") || value.startsWith(wanted + ","))) score = 92;
+      else if (fieldMode && combined.some((value) => value.includes(wanted) || wanted.includes(value))) score = 84;
+      else if (!fieldMode && combined.some((value) => value === wanted)) score = 100;
+      else if (fieldMode && wantedWords.length > 0) {
+        const bestOverlap = Math.max(0, ...combined.map((value) =>
+          wantedWords.filter((word) => value.includes(word)).length / wantedWords.length
+        ));
+        if (bestOverlap === 1) score = 80;
+      }
+
+      if (score > 0) scored.push({ element: target, score });
+    }
+
+    if (!scored.length) return { element: null, ambiguous: false, score: 0 };
+    const bestScore = Math.max(...scored.map((item) => item.score));
+    const best = scored.filter((item) => item.score === bestScore);
+    if (best.length !== 1) return { element: null, ambiguous: true, score: bestScore };
+    return { element: best[0].element, ambiguous: false, score: bestScore };
+  }
+
   function findTargetElement(action) {
-    // Resolve form fields by semantic label before trusting a snapshot index.
-    // Google Forms rebuilds question cards as sections expand and upload controls load.
     const actionKind = String(action.action || "").toLowerCase();
+    const isFieldAction = ["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind);
     const reasoning = String(action.reasoning || "");
     const quotedField = reasoning.match(/(?:the\s+)?['"“]([^'"”]+)['"”]\s+(?:field|question|input)/i);
     const describedField = reasoning.match(/(?:fill|enter|type|populate|update)\s+(?:in\s+)?(?:the\s+)?["'“]?([^"'”]+?)["'”]?\s+(?:field|question|input)\b/i);
-    // Function scope is intentional: the Google Forms safety guard below uses it too.
-    // It was previously declared inside a nested block, causing ReferenceError.
     const fieldLabel = String(
       action.field_label || action.label ||
       (quotedField && quotedField[1]) ||
       (describedField && describedField[1]) || ""
-    ).trim().toLowerCase();
+    ).trim();
 
-    if (["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind) && fieldLabel) {
-      const normalize = (value) => String(value || "")
-        .toLowerCase().replace(/[＊*]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
-      const wanted = normalize(fieldLabel);
-      if (wanted) {
-        const controls = Array.from(document.querySelectorAll(
-          'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]'
-        )).filter(isVisibleActionTarget);
-
-        const getLabels = (control) => {
-          const card = control.closest('.Qr7Oae,[role="listitem"],[data-params]');
-          const cardTitle = card?.querySelector(
-            '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
-          );
-          const cardLabel = normalize(cardTitle?.innerText || cardTitle?.textContent);
-          const accessibleNames = [
-            control.getAttribute("aria-label"),
-            control.getAttribute("placeholder"),
-            control.labels ? Array.from(control.labels).map((label) => label.innerText).join(" ") : "",
-          ].map(normalize).filter(Boolean);
-          return { cardLabel, accessibleNames };
-        };
-
-        // 1. Exact match on question title or accessible name
-        const exactMatches = controls.filter((control) => {
-          const { cardLabel, accessibleNames } = getLabels(control);
-          return cardLabel === wanted || accessibleNames.includes(wanted);
-        });
-        if (exactMatches.length === 1) return exactMatches[0];
-
-        // 2. Substring / token-overlap match (e.g. "cgpa" matches "cgpa till current semester")
-        const wantedWords = wanted.split(/\s+/).filter(Boolean);
-        const fuzzyMatches = controls.filter((control) => {
-          const { cardLabel, accessibleNames } = getLabels(control);
-          if (cardLabel && (cardLabel.includes(wanted) || wanted.includes(cardLabel))) return true;
-          if (cardLabel && wantedWords.length > 0 && wantedWords.every((w) => cardLabel.includes(w))) return true;
-          return accessibleNames.some((name) =>
-            name.includes(wanted) || wanted.includes(name) ||
-            (wantedWords.length > 0 && wantedWords.every((w) => name.includes(w)))
-          );
-        });
-        if (fuzzyMatches.length === 1) return fuzzyMatches[0];
-        if (fuzzyMatches.length > 1) {
-          const sorted = [...fuzzyMatches].sort((a, b) => {
-            const lA = getLabels(a).cardLabel.length;
-            const lB = getLabels(b).cardLabel.length;
-            return Math.abs(lA - wanted.length) - Math.abs(lB - wanted.length);
-          });
-          return sorted[0];
-        }
+    // Form controls are grounded by their accessible name and nearest question
+    // heading before any snapshot index or CSS selector is considered.
+    if (isFieldAction && fieldLabel) {
+      const controls = Array.from(document.querySelectorAll(
+        'input:not([type="hidden"]),textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]'
+      )).filter(isVisibleActionTarget);
+      const matches = findBestSemanticMatch(
+        controls, fieldLabel, actionKind, true
+      );
+      if (matches.ambiguous) {
+        console.warn("AI Agent: refusing ambiguous form-field match", { fieldLabel, score: matches.score });
+        return null;
       }
+      if (matches.element && matches.score >= 80) return matches.element;
     }
 
-    // Prefer live Gmail compose controls over stale snapshot indexes/selectors.
+    // Preserve the Gmail-specific resolver for its virtualized compose controls.
     const gmailTarget = findGmailTarget(action);
     if (gmailTarget) return gmailTarget;
 
-    // If the planner explicitly intended Compose but Gmail's current DOM did
-    // not expose a matching control, never fall back to a stale index.
     const gmailClickContext = [
       action.reasoning, action.label, action.field_label, action.text,
       action.selector, action.goal
     ].filter(Boolean).join(" ").toLowerCase();
     if (
       location.hostname === "mail.google.com" &&
-      String(action.action || "").toLowerCase() === "click" &&
+      actionKind === "click" &&
       /compose/.test(gmailClickContext)
     ) return null;
 
-    // The planner sometimes serializes an inspected numeric element index as
-    // "selector": "10" or "selector": 10 instead of "element_id": 10.
-    const isNumericSelector = (typeof action.selector === "string" && /^\d+$/.test(action.selector.trim()))
-      || typeof action.selector === "number";
-    const numericSelector = isNumericSelector ? String(action.selector).trim() : null;
-    if (numericSelector !== null) {
-      const byNumericIndex = document.querySelector(`[data-ai-element-index="${numericSelector}"]`);
-      if (byNumericIndex) return byNumericIndex;
+    // For text-targeted actions, rank semantic candidates and reject ties.
+    // Never choose an arbitrary first match from a list of similarly named items.
+    const textTarget = isFieldAction ? "" : String(action.text || action.select_label || "").trim();
+    if (textTarget && ["click", "double_click", "right_click", "scroll_to", "focus"].includes(actionKind)) {
+      const candidates = Array.from(document.querySelectorAll(
+        'button,a,[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="row"],[role="treeitem"],[data-target="item"],[data-id],[tabindex]:not([tabindex="-1"]),li,span,div'
+      ));
+      const match = findBestSemanticMatch(candidates, textTarget, actionKind, false);
+      if (match.ambiguous) {
+        console.warn("AI Agent: refusing ambiguous text target", { textTarget, score: match.score });
+        return null;
+      }
+      if (match.element && match.score >= 92) return match.element;
+      // Text is the requested target for a text-directed click. Do not silently
+      // fall back to a numeric index when the text could not be grounded.
+      return null;
     }
 
-    // 1. By Element ID (Index from inspection)
+    // If the planner supplied a field label but it did not match a unique live
+    // control, allow only a unique stable form-control locator. Never fall back
+    // to a snapshot index for an unresolved semantic field intent.
+    if (isFieldAction && fieldLabel) {
+      const selector = String(action.selector || "");
+      const stableSelector = selector.startsWith("#") ||
+        /\[(?:name|data-testid|data-test|aria-label|placeholder)=/.test(selector);
+      if (stableSelector) {
+        try {
+          const matches = document.querySelectorAll(selector);
+          if (matches.length === 1 && isVisibleActionTarget(matches[0]) &&
+              matches[0].matches('input:not([type="hidden"]),textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')) {
+            return matches[0];
+          }
+        } catch (error) {}
+      }
+      return null;
+    }
+
+    // Numeric selectors are supported for planner compatibility, but are only
+    // accepted when the current snapshot marker still points to a live element.
+    const numericSelector = (typeof action.selector === "string" && /^\d+$/.test(action.selector.trim()))
+      ? action.selector.trim()
+      : (typeof action.selector === "number" ? String(action.selector) : null);
+    if (numericSelector !== null) {
+      const indexed = document.querySelector(`[data-ai-element-index="${numericSelector}"]`);
+      if (isVisibleActionTarget(indexed)) return indexed;
+    }
+
     if (action.element_id !== undefined && action.element_id !== null) {
       const byIndex = document.querySelector(`[data-ai-element-index="${action.element_id}"]`);
-      if (byIndex) return byIndex;
+      if (isVisibleActionTarget(byIndex)) return byIndex;
     }
 
-    // 2. By Selector
-    if (action.selector && !isNumericSelector) {
+    // A CSS locator must resolve to exactly one live, visible element. querySelector
+    // alone silently picks the first duplicate and can interact with the wrong row.
+    if (action.selector && numericSelector === null) {
       try {
-        const bySel = document.querySelector(action.selector);
-        if (bySel) return bySel;
-      } catch (e) {}
+        const matches = document.querySelectorAll(action.selector);
+        if (matches.length === 1 && isVisibleActionTarget(matches[0])) {
+          return getActionableElement(matches[0], actionKind);
+        }
+        if (matches.length > 1) {
+          console.warn("AI Agent: refusing non-unique CSS locator", action.selector, matches.length);
+          return null;
+        }
+      } catch (error) {
+        console.debug("AI Agent: invalid CSS locator", error);
+      }
 
-      // Self-healing for Google Forms: extract the targeted question card index (.Qr7Oae)
+      // Google Forms card recovery is allowed only when the requested card
+      // resolves to a single visible editable control.
       if (action.selector.includes(".Qr7Oae")) {
         const nthMatch = action.selector.match(/\.Qr7Oae(?::nth-of-type\((\d+)\))?/);
         if (nthMatch) {
-          const cards = Array.from(document.querySelectorAll('.Qr7Oae'));
+          const cards = Array.from(document.querySelectorAll(".Qr7Oae"));
           const idx = nthMatch[1] ? parseInt(nthMatch[1], 10) - 1 : 0;
           if (cards[idx]) {
-            const input = cards[idx].querySelector('input.whsOnd, input:not([type="hidden"]), textarea, select, [contenteditable="true"]');
-            if (input && isVisibleActionTarget(input)) return input;
+            const inputs = Array.from(cards[idx].querySelectorAll(
+              'input:not([type="hidden"]),textarea,select,[contenteditable="true"]'
+            )).filter(isVisibleActionTarget);
+            if (inputs.length === 1) return inputs[0];
           }
         }
       }
     }
 
-    // 3. By Target Selector (for drag/drop)
     if (action.target_selector) {
       try {
-        const byTarget = document.querySelector(action.target_selector);
-        if (byTarget) return byTarget;
-      } catch (e) {}
+        const targets = document.querySelectorAll(action.target_selector);
+        if (targets.length === 1 && isVisibleActionTarget(targets[0])) return targets[0];
+      } catch (error) {}
     }
 
-    // 4. By Radio Name + Value
     if (action.radio_name) {
       try {
-        const valSel = action.value ? `[value="${CSS.escape(action.value)}"]` : "";
-        const radio = document.querySelector(`input[type="radio"][name="${CSS.escape(action.radio_name)}"]${valSel}`);
-        if (radio) return radio;
-      } catch (e) {}
-    }
-
-    // 5. Resolve accessible form-field labels (Gmail and other dynamic SPAs).
-    // Prefer editable controls and exact accessible-name matches over broad text matches.
-    const textTarget = action.text || action.select_label;
-    if (textTarget) {
-      const wanted = textTarget.toLowerCase().trim();
-      const editable = Array.from(document.querySelectorAll(
-        'input:not([type="hidden"]), textarea, [contenteditable="true"], [role="textbox"]'
-      ));
-      for (const el of editable) {
-        const names = [
-          el.getAttribute("aria-label"),
-          el.getAttribute("placeholder"),
-          el.getAttribute("name"),
-          el.getAttribute("data-tooltip"),
-          el.getAttribute("autocomplete"),
-          el.labels ? Array.from(el.labels).map((label) => label.innerText).join(" ") : "",
-        ].filter(Boolean).map((value) => value.toLowerCase().trim());
-        if (names.some((name) => name === wanted || name.includes(wanted) || wanted.includes(name))) {
-          return el;
-        }
-      }
-    }
-
-    // 6. By Text Content or Label (Precise search prioritizing exact leaf matches and Google Drive row items)
-    if (textTarget) {
-      const lower = textTarget.toLowerCase().trim();
-
-      // Pass 5A: Exact aria-label or title matching
-      const ariaElements = Array.from(document.querySelectorAll('[role="row"], [role="option"], [data-target="item"], [aria-label], [title], [data-id]'));
-      for (const el of ariaElements) {
-        const aria = (el.getAttribute("aria-label") || el.getAttribute("title") || "").toLowerCase().trim();
-        if (aria === lower || aria.startsWith(lower + ",") || aria.startsWith(lower + " ") || aria.includes(lower)) {
-          return el;
-        }
-      }
-
-      // Pass 5B: Search leaf elements in reverse document order (most specific children first)
-      const allCandidates = Array.from(document.querySelectorAll("span, div, a, p, [role=\"row\"], [role=\"button\"]"));
-      for (let i = allCandidates.length - 1; i >= 0; i--) {
-        const el = allCandidates[i];
-        if (el.children.length === 0) {
-          const t = (el.innerText || el.textContent || "").trim().toLowerCase();
-          if (t === lower) {
-            const rowParent = el.closest('[role="row"], [data-target="item"], [data-id]');
-            return rowParent || el;
-          }
-        }
-      }
-
-      // Pass 5C: Any element whose trimmed text strictly equals target
-      for (let i = allCandidates.length - 1; i >= 0; i--) {
-        const el = allCandidates[i];
-        const t = (el.innerText || el.textContent || "").trim().toLowerCase();
-        if (t === lower) {
-          const rowParent = el.closest('[role="row"], [data-target="item"], [data-id]');
-          return rowParent || el;
-        }
-      }
-
-      // Pass 5D: Substring match on leaf elements only (avoiding huge parent containers)
-      for (let i = allCandidates.length - 1; i >= 0; i--) {
-        const el = allCandidates[i];
-        if (el.children.length === 0) {
-          const t = (el.innerText || el.textContent || "").trim().toLowerCase();
-          if (t.includes(lower) && t.length <= lower.length + 15) {
-            const rowParent = el.closest('[role="row"], [data-target="item"], [data-id]');
-            return rowParent || el;
-          }
-        }
-      }
+        const valSel = action.value ? `[value="${CSS.escape(String(action.value))}"]` : "";
+        const radios = document.querySelectorAll(
+          `input[type="radio"][name="${CSS.escape(String(action.radio_name))}"]${valSel}`
+        );
+        if (radios.length === 1 && isVisibleActionTarget(radios[0])) return radios[0];
+      } catch (error) {}
     }
 
     return null;
@@ -1324,7 +1362,8 @@
     }
 
     if (actType === "scroll_to") {
-      const el = findTargetElement(action);
+      const resolvedElement = findTargetElement(action);
+      const el = resolvedElement ? getActionableElement(resolvedElement, actType) : null;
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
         await new Promise((r) => setTimeout(r, 400));
@@ -1392,7 +1431,8 @@
       Boolean(action.file_base64)
     );
 
-    const el = findTargetElement(action);
+    const resolvedElement = findTargetElement(action);
+    const el = resolvedElement ? getActionableElement(resolvedElement, actType) : null;
     if (!el && actType !== "press" && actType !== "press_key" && actType !== "finish" && !isUploadAction) {
       return {
         success: false,
@@ -1425,6 +1465,16 @@
         return {
           success: true,
           description: "Gmail Compose is already open; skipped duplicate Compose click and kept the existing draft window.",
+        };
+      }
+
+      // A visible DOM node can still be covered by a modal, sticky header, or
+      // another overlay. Refuse the click rather than dispatching it to a
+      // target that the user could not actually hit at its center.
+      if (!isCenterHitTarget(el)) {
+        return {
+          success: false,
+          error: "Target is visible but its center is obscured by another element; re-inspect the page and choose an unobstructed target.",
         };
       }
 
@@ -2496,6 +2546,41 @@
         } else if (message.type === "clear_badges") {
           clearBadges();
           sendResponse({ success: true });
+        } else if (message.type === "resolve_native_click_target") {
+          const nativeAction = message.action || {};
+          const rawTarget = findTargetElement(nativeAction);
+          const target = rawTarget ? getActionableElement(rawTarget, String(nativeAction.action || "click").toLowerCase()) : null;
+          if (!target || !isVisibleActionTarget(target)) {
+            sendResponse({ success: false, error: "Could not resolve a unique visible target for native pointer input." });
+            return;
+          }
+
+          // Bring the target into the viewport, then re-check its live geometry
+          // and hit-test after layout/scroll settling to avoid clicking overlays.
+          target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          if (!isCenterHitTarget(target)) {
+            sendResponse({ success: false, error: "Native click target is obscured or its center is not hit-testable." });
+            return;
+          }
+
+          const rect = target.getBoundingClientRect();
+          const x = Math.round(rect.left + rect.width / 2);
+          const y = Math.round(rect.top + rect.height / 2);
+          if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) {
+            sendResponse({ success: false, error: "Native click target is outside the visible viewport." });
+            return;
+          }
+
+          const accessibleName = getAccessibleName(target) || target.innerText?.trim() || target.getAttribute("title") || "";
+          sendResponse({
+            success: true,
+            data: {
+              x, y,
+              target: String(accessibleName).slice(0, 160),
+              button: nativeAction.button === "right" ? "right" : "left",
+            },
+          });
         } else if (message.type === "execute_action") {
           const result = await executeAction(message.action || {});
           sendResponse(result);

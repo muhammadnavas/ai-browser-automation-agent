@@ -1391,8 +1391,8 @@ class TaskManager:
                 # Whitelist DOM metadata. Never persist input values, raw attributes,
                 # or arbitrary extension payload fields in the inspector trace.
                 safe_element_fields = (
-                    "index", "tag", "role", "text", "aria_label", "label",
-                    "placeholder", "title", "selector", "disabled", "visible",
+                    "index", "tag", "role", "text", "aria_label", "accessible_name", "label",
+                    "placeholder", "title", "selector", "disabled", "visible", "in_viewport", "center_hit",
                 )
                 trace_elements = []
                 for element in (page_info.get("elements") or [])[:50]:
