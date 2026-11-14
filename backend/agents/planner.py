@@ -3661,8 +3661,38 @@ Return ONLY this JSON object with a real JSON boolean:
                         is_inside_target_folder = True
 
             if existing_folder_target and not is_inside_target_folder:
-                # If we are currently inside the WRONG folder (e.g. /folders/1R75Q2...), navigate back to My Drive
-                if "folders/" in url_current:
+                last_step = trajectory_history[-1] if trajectory_history else {}
+                # Right after clicking/double-clicking to open a folder, ALWAYS wait for it to open and load
+                if (
+                    last_step.get("action") in ("click", "double_click")
+                    and _is_successful_step(last_step)
+                    and _eft_lower in str(last_step.get("reasoning", "")).lower()
+                ):
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=2500,
+                        reasoning=f"Waiting for '{existing_folder_target}' folder to finish opening.",
+                    )
+
+                # Count consecutive DOUBLE_CLICK failures on the folder target
+                _folder_dblclick_failures = sum(
+                    1 for h in trajectory_history
+                    if h.get("action") == "double_click"
+                    and not _is_successful_step(h)
+                    and _eft_lower in str(h.get("reasoning", "")).lower()
+                )
+                _folder_dblclick_attempts = sum(
+                    1 for h in trajectory_history
+                    if h.get("action") == "double_click"
+                    and _eft_lower in str(h.get("reasoning", "")).lower()
+                )
+
+                # If we landed in a wrong folder (e.g. /folders/1R75Q2...) after waiting, navigate back to My Drive
+                _has_waited_in_folder = any(
+                    h.get("action") == "wait" and "folder" in str(h.get("reasoning", "")).lower()
+                    for h in trajectory_history
+                )
+                if "folders/" in url_current and _has_waited_in_folder and "loading" not in page_title_current:
                     my_drive_el = None
                     for el in elements:
                         if el.get("disabled") is True or el.get("visible") is False:
@@ -3680,32 +3710,6 @@ Return ONLY this JSON object with a real JSON boolean:
                             text="My Drive",
                             reasoning=f"Navigating back to 'My Drive' because current folder is not '{existing_folder_target}'.",
                         )
-
-                # Count consecutive DOUBLE_CLICK failures on the folder target
-                _folder_dblclick_failures = sum(
-                    1 for h in trajectory_history
-                    if h.get("action") == "double_click"
-                    and not _is_successful_step(h)
-                    and _eft_lower in str(h.get("reasoning", "")).lower()
-                )
-                _folder_dblclick_attempts = sum(
-                    1 for h in trajectory_history
-                    if h.get("action") == "double_click"
-                    and _eft_lower in str(h.get("reasoning", "")).lower()
-                )
-
-                last_step = trajectory_history[-1] if trajectory_history else {}
-                # Only wait after a truly SUCCESSFUL click/double_click (not after a failed one)
-                if (
-                    last_step.get("action") in ("click", "double_click")
-                    and _is_successful_step(last_step)
-                    and _eft_lower in str(last_step.get("reasoning", "")).lower()
-                ):
-                    return BrowserAction(
-                        action=ActionType.WAIT,
-                        scroll_amount=2000,
-                        reasoning=f"Waiting for '{existing_folder_target}' folder to finish opening.",
-                    )
 
                 # If on Drive /home and double-click didn't navigate, switch to "My Drive" view
                 if "drive.google.com" in url_current and "/home" in url_current and _folder_dblclick_attempts >= 1:

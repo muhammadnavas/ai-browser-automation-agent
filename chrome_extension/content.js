@@ -1875,39 +1875,6 @@
       }
       window.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
 
-      // If on Google Drive, look for direct folder URL or data-id to ensure navigation
-      if (window.location.href.includes("drive.google.com")) {
-        const folderLink = (
-          (el.tagName === "A" && el.href && el.href.includes("/folders/")) ? el : null
-          || el.querySelector?.("a[href*='/folders/']")
-          || el.closest?.("a[href*='/folders/']")
-          || el.closest?.("[data-id]")?.querySelector?.("a[href*='/folders/']")
-        );
-        if (folderLink && folderLink.href) {
-          console.log("Automata: Found folder link, navigating directly:", folderLink.href);
-          window.location.href = folderLink.href;
-          await new Promise((r) => setTimeout(r, 400));
-        } else {
-          const folderId = (
-            el.getAttribute?.("data-id")
-            || el.closest?.("[data-id]")?.getAttribute?.("data-id")
-            || el.querySelector?.("[data-id]")?.getAttribute?.("data-id")
-            || el.getAttribute?.("data-target-id")
-            || el.closest?.("[data-target-id]")?.getAttribute?.("data-target-id")
-            || el.getAttribute?.("data-folder-id")
-            || el.closest?.("[data-folder-id]")?.getAttribute?.("data-folder-id")
-          );
-          if (folderId && !window.location.href.includes(folderId)) {
-            const uMatch = window.location.pathname.match(/\/u\/\d+/);
-            const uPrefix = uMatch ? uMatch[0] : "";
-            const targetUrl = window.location.origin + "/drive" + uPrefix + "/folders/" + folderId;
-            console.log("Automata: Navigating directly to folder URL:", targetUrl);
-            window.location.href = targetUrl;
-            await new Promise((r) => setTimeout(r, 400));
-          }
-        }
-      }
-
       return { success: true, description: `Double clicked on [${action.selector || action.element_id || action.text || el.tagName}]` };
     }
 
