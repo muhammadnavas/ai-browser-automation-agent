@@ -686,6 +686,62 @@
     return { element: best[0].element, ambiguous: false, score: bestScore };
   }
 
+  // Google Drive uses a virtualized grid. The visible filename is often a
+  // nested span inside a row, while the actual click target is the row itself.
+  // Resolve by the live row/container and collapse nested text matches so one
+  // folder does not look like several ambiguous targets.
+  function findGoogleDriveTarget(action, actionKind, wantedText) {
+    if (!/drive\.google\.com$/i.test(location.hostname) || !wantedText) return null;
+
+    const wanted = normalizeTargetText(wantedText);
+    if (!wanted) return null;
+    const selectors = [
+      '[role="row"]', '[role="gridcell"]', '[role="treeitem"]',
+      '[data-id]', '[data-tooltip]', '[aria-label]', '[title]',
+      'button', 'a', '[role="button"]', '[role="link"]', 'span', 'div'
+    ].join(",");
+    const candidates = Array.from(document.querySelectorAll(selectors));
+    const matches = new Map();
+
+    for (const candidate of candidates) {
+      if (!isVisibleActionTarget(candidate)) continue;
+      const labelParts = [
+        getAccessibleName(candidate),
+        candidate.getAttribute("aria-label"),
+        candidate.getAttribute("data-tooltip"),
+        candidate.getAttribute("title"),
+        candidate.innerText || candidate.textContent || ""
+      ].filter(Boolean);
+      const labels = labelParts.map(normalizeTargetText).filter(Boolean);
+      const exact = labels.some((label) =>
+        label === wanted ||
+        label === wanted + " folder" ||
+        label.startsWith(wanted + " ")
+      );
+      if (!exact) continue;
+
+      // Drive's row is the unit that opens a file/folder. Prefer that over
+      // nested filename spans and individual grid cells.
+      const row = candidate.closest('[role="row"],[role="treeitem"],[data-id]') || candidate;
+      if (!isVisibleActionTarget(row)) continue;
+      const actionable = getActionableElement(row, actionKind) || row;
+      if (!isVisibleActionTarget(actionable)) continue;
+
+      const key = row.getAttribute("data-id") ||
+        row.getAttribute("data-row-id") ||
+        row.getAttribute("aria-label") ||
+        normalizeTargetText(row.innerText || row.textContent || "");
+      if (!key) continue;
+      if (!matches.has(key)) matches.set(key, actionable);
+    }
+
+    if (matches.size === 1) return matches.values().next().value;
+    if (matches.size > 1) {
+      console.warn("AI Agent: multiple Google Drive rows match target", wanted, Array.from(matches.keys()).slice(0, 5));
+    }
+    return null;
+  }
+
   function findTargetElement(action) {
     const actionKind = String(action.action || "").toLowerCase();
     const isFieldAction = ["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind);
@@ -732,6 +788,11 @@
     // Never choose an arbitrary first match from a list of similarly named items.
     const textTarget = isFieldAction ? "" : String(action.text || action.select_label || "").trim();
     if (textTarget && ["click", "double_click", "right_click", "scroll_to", "focus"].includes(actionKind)) {
+      // Google Drive virtualizes rows and nests the filename inside multiple
+      // presentation elements. Resolve the unique live row before generic matching.
+      const driveTarget = findGoogleDriveTarget(action, actionKind, textTarget);
+      if (driveTarget) return driveTarget;
+
       const candidates = Array.from(document.querySelectorAll(
         'button,a,[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="row"],[role="treeitem"],[data-target="item"],[data-id],[tabindex]:not([tabindex="-1"]),li,span,div'
       ));
