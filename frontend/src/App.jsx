@@ -452,11 +452,11 @@ function TaskTab({ task, selected, onSelect, onPause, onResume, onCancel, onDism
         <>
           {task.status === 'paused' ? (
             <button type="button" className="tab-action resume" title="Resume task" aria-label="Resume task" onClick={onResume}>
-              <Play size={11} />
+              <Play size={13} strokeWidth={3} />
             </button>
           ) : task.status === 'running' ? (
             <button type="button" className="tab-action pause" title="Pause task" aria-label="Pause task" onClick={onPause}>
-              <Pause size={11} />
+              <Pause size={13} strokeWidth={3} />
             </button>
           ) : null}
           <button type="button" className="tab-action stop" title="Stop task" aria-label="Stop task" onClick={onCancel}>
