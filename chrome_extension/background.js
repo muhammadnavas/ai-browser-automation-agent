@@ -954,22 +954,30 @@ async function handleBackendMessage(msg) {
 
       // Use trusted CDP pointer input for pointer actions. The content script
       // resolves the semantic target; Chrome itself dispatches the pointer events.
+      // If CDP pointer input fails (e.g. target obscured, center not hit-testable,
+      // or target could not be resolved for CDP), fall back to DOM action execution.
       const pointerAction = String(action.action || "").toLowerCase();
       if (["click", "double_click", "right_click"].includes(pointerAction)) {
         const pointerButton = pointerAction === "right_click" ? "right" : "left";
-        const nativeResult = await dispatchNativePointerClick(tabId, {
-          ...action,
-          button: pointerButton,
-        });
-        sendWsMessage({
-          id,
-          task_id,
-          type: "response",
-          success: nativeResult.success,
-          data: nativeResult.data,
-          error: nativeResult.error,
-        });
-        return;
+        try {
+          const nativeResult = await dispatchNativePointerClick(tabId, {
+            ...action,
+            button: pointerButton,
+          });
+          if (nativeResult?.success) {
+            sendWsMessage({
+              id,
+              task_id,
+              type: "response",
+              success: true,
+              data: nativeResult.data,
+            });
+            return;
+          }
+        } catch (nativeErr) {
+          console.warn("Automata: CDP native pointer click failed, falling back to content script DOM action:", nativeErr.message);
+          // Fall through to sendContentMessage({ type: "execute_action", action }) below!
+        }
       }
 
       // Capture pre-action tab URL to verify whether genuine navigation occurred

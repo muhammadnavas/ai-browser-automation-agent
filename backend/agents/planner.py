@@ -1097,8 +1097,6 @@ class AIAgentPlanner:
 
             if el.get("in_viewport") is not None:
                 item["in_viewport"] = bool(el.get("in_viewport"))
-            if el.get("center_hit") is not None:
-                item["center_hit"] = bool(el.get("center_hit"))
             if el.get("checked") is not None:
                 item["checked"] = bool(el.get("checked"))
             if el.get("disabled"):

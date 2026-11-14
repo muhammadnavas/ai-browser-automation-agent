@@ -506,7 +506,21 @@
     const x = Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(0, window.innerWidth - 1));
     const y = Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(0, window.innerHeight - 1));
     const hit = document.elementFromPoint(x, y);
-    return Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el)));
+    if (Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el)))) return true;
+
+    // Check additional hit points (e.g. left-center, right-center) in case center is overlayed by an icon or pseudo-element
+    const points = [
+      [rect.left + Math.min(20, rect.width / 4), rect.top + rect.height / 2],
+      [rect.left + rect.width * 0.25, rect.top + rect.height / 2],
+      [rect.left + rect.width * 0.75, rect.top + rect.height / 2],
+    ];
+    for (const [px, py] of points) {
+      if (px >= 0 && px < window.innerWidth && py >= 0 && py < window.innerHeight) {
+        const h = document.elementFromPoint(px, py);
+        if (h && (h === el || el.contains(h) || h.contains(el))) return true;
+      }
+    }
+    return false;
   }
 
   function findGmailTarget(action) {
@@ -738,6 +752,23 @@
     if (matches.size === 1) return matches.values().next().value;
     if (matches.size > 1) {
       console.warn("AI Agent: multiple Google Drive rows match target", wanted, Array.from(matches.keys()).slice(0, 5));
+      // Disambiguate:
+      // 1. If one of them matches action.element_id, pick that
+      if (action.element_id !== undefined && action.element_id !== null) {
+        for (const el of matches.values()) {
+          if (el.getAttribute("data-ai-element-index") === String(action.element_id) || el.closest(`[data-ai-element-index="${action.element_id}"]`)) {
+            return el;
+          }
+        }
+      }
+      // 2. Prefer explicit folder cards/rows over generic text matches
+      const folderCandidate = Array.from(matches.values()).find((el) => {
+        const desc = ((el.getAttribute("aria-label") || "") + " " + (el.getAttribute("data-tooltip") || "")).toLowerCase();
+        return desc.includes("folder");
+      });
+      if (folderCandidate) return folderCandidate;
+      // 3. Return the first visible match from the main drive area
+      return matches.values().next().value;
     }
     return null;
   }
@@ -802,8 +833,20 @@
         return null;
       }
       if (match.element && match.score >= 92) return match.element;
-      // Text is the requested target for a text-directed click. Do not silently
-      // fall back to a numeric index when the text could not be grounded.
+      // If text matching did not produce a unique >= 92 score match,
+      // allow fallback to the planner's explicit element_id or selector if provided.
+      if (action.element_id !== undefined && action.element_id !== null) {
+        const byIndex = document.querySelector(`[data-ai-element-index="${action.element_id}"]`);
+        if (isVisibleActionTarget(byIndex)) return getActionableElement(byIndex, actionKind);
+      }
+      if (action.selector) {
+        try {
+          const selMatches = document.querySelectorAll(action.selector);
+          if (selMatches.length === 1 && isVisibleActionTarget(selMatches[0])) {
+            return getActionableElement(selMatches[0], actionKind);
+          }
+        } catch (e) {}
+      }
       return null;
     }
 
