@@ -33,6 +33,7 @@ warnings.filterwarnings(
 
 from models.schemas import BrowserAction, ActionType, ApprovalType
 from agents.action_registry import get_action_catalog_prompt, validate_action_payload
+from agents.plan_format import normalize_plan_response
 from agents.plan_cache import PlanCache, default_plan_cache
 from services.cache_service import CacheService, default_cache_service
 
@@ -1841,11 +1842,13 @@ Guidelines:
 2. Do NOT add reports, CSV files, summaries, exports, downloads, screenshots, or other artifacts unless the user explicitly asks for them or they are essential to the stated goal.
 3. Do NOT infer extra deliverables from the available tools or examples. Do not turn a normal form submission into a report-generation task.
 4. Do NOT write generic mouse actions (e.g. avoid "Click button" or "Type in input"). Use high-level intent.
-5. Keep the plan between 3 and 8 concise steps (max 15 words per step).
-6. Output ONLY a valid JSON array of strings.
+5. Return 3 to 8 ordered milestones. Each milestone must be a concise, outcome-oriented sentence (maximum 18 words).
+6. Include prerequisites before dependent actions. Include verification as the final milestone.
+7. Do not include numbering, status fields, nested objects, explanations, or markdown.
+8. Output ONLY a valid JSON array of strings.
 
 Output format example:
-["Open the target page", "Inspect the form and identify required fields", "Fill the requested information", "Review values with the user", "Submit and verify the confirmation message"]
+["Open the target page", "Inspect the page and identify the required controls", "Complete the requested interaction", "Verify the resulting page state and requested outcome"]
 """
             try:
                 raw = await asyncio.to_thread(self._call_llm, prompt, "application/json")
@@ -1860,33 +1863,7 @@ Output format example:
                         lines = lines[:-1]
                     raw = "\n".join(lines).strip()
 
-                def _extract_text(item: Any) -> str:
-                    if isinstance(item, str):
-                        return item.strip()
-                    if isinstance(item, dict):
-                        return (
-                            item.get("description")
-                            or item.get("milestone")
-                            or item.get("title")
-                            or item.get("step")
-                            or item.get("action")
-                            or item.get("name")
-                            or str(item)
-                        ).strip()
-                    return str(item).strip()
-
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    steps = [_extract_text(s) for s in data if _extract_text(s)]
-                    if steps:
-                        plan = steps[:10]
-                elif isinstance(data, dict):
-                    for k in ("plan", "steps", "milestones", "execution_plan", "tasks"):
-                        if k in data and isinstance(data[k], list):
-                            steps = [_extract_text(s) for s in data[k] if _extract_text(s)]
-                            if steps:
-                                plan = steps[:10]
-                                break
+                plan = normalize_plan_response(raw)
             except Exception as e:
                 logger.error(f"generate_plan error: {e}")
 
@@ -2148,59 +2125,12 @@ Keep dependencies in execution order: prerequisites must appear before dependent
 Do not suggest bypassing authentication, CAPTCHA, security checks, or human approval.
 Do not submit forms, send messages, make purchases, delete data, or perform other
 irreversible actions without the existing human-approval gate.
-Return ONLY a JSON array of 2 to 6 concise remaining milestone strings.
-If the task is already complete, return ["Verify the requested outcome and finish"].
+Return ONLY a JSON array of 3 to 8 concise remaining milestone strings.
+If the original goal is already complete, return ["Verify the requested outcome and finish"].
 """
         raw = await asyncio.to_thread(self._call_llm, prompt, "application/json")
-        raw = (raw or "").strip()
-        if raw.startswith("```"):
-            raw_lines = raw.splitlines()
-            if raw_lines and raw_lines[0].strip().startswith("```"):
-                raw_lines = raw_lines[1:]
-            if raw_lines and raw_lines[-1].strip().startswith("```"):
-                raw_lines = raw_lines[:-1]
-            raw = "\n".join(raw_lines).strip()
+        revised = normalize_plan_response(raw, allow_completion_marker=True)
 
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            parsed = (
-                parsed.get("plan")
-                or parsed.get("steps")
-                or parsed.get("remaining_steps")
-                or parsed.get("milestones")
-                or parsed.get("execution_plan")
-            )
-        if not isinstance(parsed, list):
-            raise ValueError("Adaptive planner did not return a JSON list.")
-
-        revised = [
-            str(
-                item.get("description")
-                or item.get("milestone")
-                or item.get("step")
-                or item.get("title")
-                or item.get("action")
-                or ""
-            ).strip()
-            if isinstance(item, dict) else str(item).strip()
-            for item in parsed
-        ]
-        revised = [item for item in revised if item][:6]
-
-        # A single verification milestone is valid only when the model explicitly
-        # reports that the original goal is already complete. The caller still
-        # has to execute FINISH and independently verify the outcome.
-        completion_only = (
-            len(revised) == 1
-            and any(
-                phrase in revised[0].lower()
-                for phrase in ("verify the requested outcome and finish", "verify completion and finish")
-            )
-        )
-        if not 2 <= len(revised) <= 6 and not completion_only:
-            raise ValueError(
-                "Adaptive planner must return 2 to 6 milestones, or one explicit completion-verification milestone."
-            )
         logger.info("Adaptive replan generated %s remaining milestones using %s.", len(revised), self.last_llm_provider)
         return revised
 
