@@ -472,42 +472,37 @@ def find_matching_element(elements: List[Dict[str, Any]], click_target: str) -> 
     noise = {"link", "button", "btn", "the", "a", "an", "on", "to", "tab", "menu", "page"}
     meaningful_words = target_words - noise or target_words
 
-    best_match = None
+    best_matches: List[Dict[str, Any]] = []
     highest_score = 0
 
     for el in elements:
-        tag = el.get("tag", "").lower()
-        el_text = (
-            el.get("text")
-            or el.get("aria_label")
-            or el.get("name")
-            or el.get("title")
-            or el.get("value")
-            or ""
-        ).lower().strip()
+        tag = str(el.get("tag") or "").lower()
+        candidate_texts = [
+            str(el.get(key) or "").lower().strip()
+            for key in ("accessible_name", "aria_label", "label", "text", "title", "name", "value")
+            if str(el.get(key) or "").strip()
+        ]
+        el_text = " ".join(dict.fromkeys(candidate_texts))
         el_words = set(re.findall(r'\w+', el_text))
 
         score = 0
-        if not el_text:
-            if el.get("selector") and target_clean in el.get("selector", "").lower():
+        if not candidate_texts:
+            if el.get("selector") and target_clean in str(el.get("selector", "")).lower():
                 score += 30
             else:
                 continue
 
-        # Exact match (ignoring trailing punctuation/whitespace)
-        if el_text == target_clean or el_text.rstrip(". ") == target_clean.rstrip(". "):
+        # Exact semantic name is stronger than a partial text coincidence.
+        if any(value == target_clean or value.rstrip(". ") == target_clean.rstrip(". ") for value in candidate_texts):
             score += 100
-        # Substring containment
-        elif target_clean in el_text or el_text in target_clean:
+        elif any(target_clean in value or value in target_clean for value in candidate_texts):
             score += 65
-        # Common semantic synonyms: 'more information' / 'more info' <-> 'learn more'
         elif (
             ("learn more" in target_clean and ("more info" in el_text or "information" in el_text))
             or ("more info" in target_clean and ("learn more" in el_text or "more information" in el_text))
             or ("more information" in target_clean and "learn more" in el_text)
         ):
             score += 60
-        # Meaningful word subset/overlap
         elif meaningful_words and meaningful_words.issubset(el_words):
             score += 50
         elif meaningful_words and (meaningful_words & el_words):
@@ -537,10 +532,16 @@ def find_matching_element(elements: List[Dict[str, Any]], click_target: str) -> 
 
         if score > highest_score:
             highest_score = score
-            best_match = el
+            best_matches = [el]
+        elif score == highest_score and score > 0:
+            best_matches.append(el)
 
-    if highest_score >= 30:
-        return best_match
+    # Tied top candidates are ambiguous. Returning the first DOM match can
+    # silently click the wrong row or button on dense web applications.
+    if highest_score >= 30 and len(best_matches) == 1:
+        return best_matches[0]
+    if highest_score >= 30 and len(best_matches) > 1:
+        return None
 
     # If generic reference like 'the link' or 'the button' and exactly one candidate exists:
     if target_clean in ("link", "button", "the link", "the button", "item") and elements:
@@ -602,10 +603,13 @@ IMPORTANT RULES:
     2. NEVER request approval more than once. If RECENT ACTION HISTORY shows approval was already requested or granted ("User granted approval"), DO NOT call "request_approval" again! Proceed directly to click the Submit button.
     3. Never submit a form without first using request_approval (unless already approved in recent history).
   • MANDATORY FILE UPLOADS: If a form contains any file upload field or question (e.g. "Add file", "Upload Photograph", "Upload Resume", "Attach file", or any question marked with * for file/photo upload), you MUST fulfill it by clicking the "Add file" button or emitting an upload action BEFORE requesting approval and BEFORE submitting. Submitting a form with unfilled mandatory file upload fields causes Google Forms and web forms to fail with validation errors.
-  • Map fields intelligently based on label, name, placeholder, ID, ARIA, and context.
+  • Ground targets using accessible_name first, then role, label, ARIA, visible text, and nearby row/question context.
+  • Treat element IDs and selectors as belonging ONLY to the latest DOM snapshot; never reuse them after navigation or a page re-render.
+  • If multiple visible elements have the same or similarly matching name, do NOT guess. Inspect more context, open the relevant menu, or scroll until the intended target is uniquely identifiable.
+  • Before clicking, ensure the chosen element is enabled and unobscured. If it is off-screen, scroll it into view and inspect again.
   • Use "scroll" to reveal off-screen fields before interacting with them.
-  • Always use the "label" field of an element (if provided) to understand what a field is for.
-  • Prefer element_id over selector when both are available.
+  • Always use the "label" or "accessible_name" field of an element (if provided) to understand what a field is for.
+  • Prefer element_id over selector only when it identifies the intended element unambiguously in the latest snapshot.
   • NAVIGATION INTENT: When the user goal asks to open, visit, browse, or navigate to a specific URL or domain (e.g., "Open https://example.com", "Navigate to https://example.com", "Open example.com", "Go to github.com"), if the browser is currently on a search engine or blank page and initial navigation has NOT yet occurred in RECENT ACTION HISTORY, you MUST output a "navigate" action with "text": "<full_url>" (e.g. "https://example.com") instead of typing the URL into a search box.
   • MONOTONIC MULTI-ACTION PROGRESSION: If the user goal contains multiple sequential actions (for example: "Open <url> and click <link/button>", "Navigate to <url> and search for <term>", "Go to <url> and fill the form"):
     1. First execute the navigation to the target site.
@@ -1046,7 +1050,7 @@ class AIAgentPlanner:
         return domains_match(url1, url2)
 
     @staticmethod
-    def compact_interactive_elements(elements: List[Dict[str, Any]], limit: int = 40) -> List[Dict[str, Any]]:
+    def compact_interactive_elements(elements: List[Dict[str, Any]], limit: int = 60) -> List[Dict[str, Any]]:
         """
         Compact interactive elements to essential attributes for LLM reasoning.
         Removes redundant geometry (rect, screen coordinates, center_hit) and empty fields,
@@ -1077,6 +1081,7 @@ class AIAgentPlanner:
                 item["role"] = role
 
             for key, max_len in [
+                ("accessible_name", 160),
                 ("text", 120),
                 ("aria_label", 120),
                 ("label", 120),
@@ -1090,6 +1095,10 @@ class AIAgentPlanner:
                     if val_str:
                         item[key] = val_str[:max_len]
 
+            if el.get("in_viewport") is not None:
+                item["in_viewport"] = bool(el.get("in_viewport"))
+            if el.get("center_hit") is not None:
+                item["center_hit"] = bool(el.get("center_hit"))
             if el.get("checked") is not None:
                 item["checked"] = bool(el.get("checked"))
             if el.get("disabled"):
@@ -2835,7 +2844,7 @@ If the original goal is already complete, return ["Verify the requested outcome 
         """Uses Grok vision when available and constrains the action to the active milestone."""
 
         # ── Build context strings ────────────────────────────────────────
-        compact_elements = self.compact_interactive_elements(page_info.get("elements", []), limit=40)
+        compact_elements = self.compact_interactive_elements(page_info.get("elements", []), limit=60)
         elements_str = json.dumps(compact_elements, separators=(',', ':'))
         page_text    = page_info.get("page_text", "")
         form_qs      = page_info.get("form_questions", [])
