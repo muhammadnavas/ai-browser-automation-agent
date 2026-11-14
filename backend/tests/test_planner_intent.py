@@ -209,6 +209,6 @@ class LivePagePlanningTests(unittest.IsolatedAsyncioTestCase):
                 ],
             },
         )
-        self.assertTrue(any("2 observed form fields" in item for item in plan))
+        self.assertTrue(any("Full name" in item and "Course" in item for item in plan))
         self.assertTrue(any("verified user data" in item for item in plan))
         self.assertFalse(any("rating" in item.lower() for item in plan))
