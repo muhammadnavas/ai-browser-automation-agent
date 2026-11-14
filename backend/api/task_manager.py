@@ -836,6 +836,7 @@ class TaskManager:
             task.plan_metadata.setdefault("last_successful_action", None)
             task.plan_metadata.setdefault("plan_version", 1)
             task.plan_metadata.setdefault("adaptive_replan_count", 0)
+            task.plan_metadata.setdefault("replan_count", 0)
             task.plan_metadata["requires_live_inspection"] = bool(
                 getattr(planner, "last_plan_requires_inspection", False)
             )
@@ -1108,7 +1109,7 @@ class TaskManager:
                                 "milestones": list(observed_plan),
                             })
                             plan_meta["plan_version"] = next_version
-                            plan_meta["adaptive_replan_count"] = int(plan_meta.get("adaptive_replan_count", 0) or 0) + 1
+                            plan_meta["replan_count"] = int(plan_meta.get("replan_count", 0) or 0) + 1
                             plan_meta["replan_reason"] = "live_page_inspection"
                             plan_meta["inspection_plan_generated"] = True
                             plan_meta["requires_live_inspection"] = False
@@ -2739,8 +2740,9 @@ class TaskManager:
                                 if revised_plan:
                                     metadata.setdefault("original_plan", list(task.initial_plan or []))
                                     versions = metadata.setdefault("plan_versions", [])
+                                    next_plan_version = int(metadata.get("plan_version", 1) or 1) + 1
                                     versions.append({
-                                        "version": replan_count + 2,
+                                        "version": next_plan_version,
                                         "reason": "recoverable_action_failure",
                                         "failed_step": step_num,
                                         "failed_action": action.action.value,
@@ -2748,7 +2750,8 @@ class TaskManager:
                                         "milestones": list(revised_plan),
                                     })
                                     metadata["adaptive_replan_count"] = replan_count + 1
-                                    metadata["plan_version"] = replan_count + 2
+                                    metadata["replan_count"] = int(metadata.get("replan_count", 0) or 0) + 1
+                                    metadata["plan_version"] = next_plan_version
                                     metadata["replan_reason"] = "recoverable_action_failure"
                                     metadata["plan"] = list(revised_plan)
                                     task.plan_metadata = metadata
@@ -2782,7 +2785,7 @@ class TaskManager:
                                     task.updated_at = time.time()
                                     logger.info(
                                         "Task %s adaptively replanned to version %s after failed step %s.",
-                                        task_id, replan_count + 2, step_num,
+                                        task_id, next_plan_version, step_num,
                                     )
                                     await self.broadcast_task_update(task_id)
                                     await self._save_cached_task_state(task_id)
