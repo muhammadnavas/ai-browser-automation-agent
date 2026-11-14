@@ -1920,7 +1920,7 @@ Output format example:
                 "source": source,
                 "reused": False,
                 "key": redis_key or "",
-                "message": f"⚡ Plan Cache MISS: Generated fresh {len(plan or [])}-step plan via {source.upper()} and cached to Redis",
+                "message": f"Generated fresh {len(plan or [])}-step plan via {source.upper()} and cached to Redis",
                 "details": f"Cached in Redis (Key: {redis_key or 'agent_cache:plan:...'}) for instant future reuse",
             }
 
