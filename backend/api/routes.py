@@ -10,8 +10,6 @@ these endpoints.
 """
 
 import os
-import 
-
 import re
 import logging
 import ipaddress
