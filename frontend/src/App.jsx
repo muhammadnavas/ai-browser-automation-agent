@@ -600,8 +600,6 @@ function ReportDownloadButton({ task }) {
       const reportUrl = isAbsoluteReportUrl
         ? reportPath
         : api(reportPath.startsWith('/') ? reportPath : `/${reportPath}`);
-        ? reportPath
-        : api(reportPath.startsWith('/') ? reportPath : `/${reportPath}`);
 
       const response = await authFetch(reportUrl, {
         method: 'GET',
