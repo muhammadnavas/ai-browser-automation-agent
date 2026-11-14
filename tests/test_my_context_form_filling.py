@@ -505,3 +505,53 @@ def test_unknown_form_values_are_never_fabricated():
     )
     assert result.value == ""
     assert "Needs user input" in result.source
+
+
+def test_heuristic_skips_field_already_containing_requested_value(user_a_retrieved_context, test_form_elements):
+    """A rerendered form must not cause the planner to refill the same populated field."""
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    elements = [dict(item) for item in test_form_elements]
+    elements[0]["value"] = "Jane Developer"
+    page_info = {
+        "url": "https://docs.google.com/forms/d/e/example/viewform",
+        "title": "Feedback Form",
+        "elements": elements,
+    }
+    action = planner._heuristic_decide_action(
+        goal="Fill this form with my data from My Context. Do not submit.",
+        step_number=2,
+        page_info=page_info,
+        extracted_data=[],
+        trajectory_history=[],
+        task_context={"retrieved_context": user_a_retrieved_context},
+    )
+    assert action.action == ActionType.FILL
+    assert action.selector == "#email"
+    assert action.value == "jane.developer@example.com"
+
+
+def test_heuristic_skips_checkbox_already_in_desired_state(user_a_retrieved_context, test_form_elements):
+    """A checkbox already matching the desired state is not toggled again."""
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    elements = [dict(item) for item in test_form_elements]
+    elements[0]["value"] = "Jane Developer"
+    elements[1]["value"] = "jane.developer@example.com"
+    elements[2]["value"] = "+1-555-0199"
+    elements[3]["value"] = "San Francisco, CA"
+    elements[4]["value"] = "B.Tech Computer Science"
+    elements[5]["value"] = "Python, TypeScript, React, PostgreSQL"
+    elements[6]["checked"] = True
+    page_info = {
+        "url": "http://127.0.0.1:8000/test-form",
+        "title": "Practice Registration Form",
+        "elements": elements,
+    }
+    action = planner._heuristic_decide_action(
+        goal="Fill the registration form from My Context. Do not submit.",
+        step_number=8,
+        page_info=page_info,
+        extracted_data=[],
+        trajectory_history=[],
+        task_context={"retrieved_context": user_a_retrieved_context},
+    )
+    assert action.action == ActionType.FINISH
