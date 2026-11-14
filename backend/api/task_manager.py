@@ -2330,13 +2330,18 @@ class TaskManager:
                             # milestone has already been verified against live page evidence.
                             all_ids = {node.get("id") for node in graph}
                             if not all_ids.issubset(completed_ids):
-                                action_success = False
-                                exec_description = (
-                                    "Final goal verification was not accepted because one or more "
+                                task.status = TaskStatus.FAILED
+                                task.plan_status = "failed"
+                                task.error = (
+                                    "Final goal verification was rejected because one or more "
                                     "plan milestones lack independent completion evidence."
                                 )
-                            else:
-                                task.current_plan_step = max(0, len(task.initial_plan) - 1)
+                                logger.error(
+                                    "Task %s attempted FINISH with unverified milestones: %s",
+                                    task_id, sorted(all_ids - completed_ids),
+                                )
+                                break
+                            task.current_plan_step = max(0, len(task.initial_plan) - 1)
                         elif action.milestone_id:
                             active_node = next(
                                 (node for node in graph if node.get("id") == action.milestone_id),
