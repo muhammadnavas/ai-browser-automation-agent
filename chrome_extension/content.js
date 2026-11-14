@@ -493,6 +493,15 @@
       el.getAttribute("aria-disabled") !== "true";
   }
 
+  function isCenterHitTarget(el) {
+    if (!isVisibleActionTarget(el)) return false;
+    const rect = el.getBoundingClientRect();
+    const x = Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(0, window.innerWidth - 1));
+    const y = Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(0, window.innerHeight - 1));
+    const hit = document.elementFromPoint(x, y);
+    return Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el)));
+  }
+
   function findGmailTarget(action) {
     if (location.hostname !== "mail.google.com") return null;
     const kind = String(action.action || "").toLowerCase();
@@ -1426,6 +1435,16 @@
         return {
           success: true,
           description: "Gmail Compose is already open; skipped duplicate Compose click and kept the existing draft window.",
+        };
+      }
+
+      // A visible DOM node can still be covered by a modal, sticky header, or
+      // another overlay. Refuse the click rather than dispatching it to a
+      // target that the user could not actually hit at its center.
+      if (!isCenterHitTarget(el)) {
+        return {
+          success: false,
+          error: "Target is visible but its center is obscured by another element; re-inspect the page and choose an unobstructed target.",
         };
       }
 
