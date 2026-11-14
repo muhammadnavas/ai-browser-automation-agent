@@ -2725,7 +2725,10 @@ class TaskManager:
                                     self._refresh_milestone_graph(task)
                                     metadata["plan"] = list(task.initial_plan)
                                     metadata["initial_plan"] = list(task.initial_plan)
-                                    task.current_plan_step = max(0, len(preserved_prefix) - 1)
+                                    task.current_plan_step = min(
+                                        len(preserved_prefix),
+                                        max(0, len(combined_plan) - 1),
+                                    )
                                     task.plan_status = "executing"
                                     task.updated_at = time.time()
                                     logger.info(
