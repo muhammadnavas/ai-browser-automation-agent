@@ -303,6 +303,7 @@ class ReportGenerator:
                     "initial_plan": "Initial plan",
                     "live_page_inspection": "Refined after live page inspection",
                     "adaptive_replan": "Adaptive replan during execution",
+                    "recoverable_action_failure": "Replanned after a recoverable action failure",
                     "recovery": "Recovery replan",
                 }
 
