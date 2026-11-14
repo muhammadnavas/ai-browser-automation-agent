@@ -632,6 +632,8 @@ class ExtensionBrowserAdapter:
                     item["text"] = redact_text(str(item["text"]), mask_tier3=True, preserve_public_contacts=True)
                 if item.get("aria_label"):
                     item["aria_label"] = redact_text(str(item["aria_label"]), mask_tier3=True, preserve_public_contacts=True)
+                if item.get("accessible_name"):
+                    item["accessible_name"] = redact_text(str(item["accessible_name"]), mask_tier3=True, preserve_public_contacts=True)
                 if item.get("title"):
                     item["title"] = redact_text(str(item["title"]), mask_tier3=True, preserve_public_contacts=True)
 
