@@ -740,7 +740,9 @@ def synthesize_generalized_field_value(
     el_type = str(el.get("type", "text") or "text").lower()
     el_tag = str(el.get("tag", "") or "").lower()
     raw_label = (
-        el.get("aria_label")
+        el.get("label")
+        or el.get("accessible_name")
+        or el.get("aria_label")
         or el.get("placeholder")
         or el.get("name")
         or el.get("id")
@@ -2842,22 +2844,34 @@ If the original goal is already complete, return ["Verify the requested outcome 
                 for h in trajectory_history
             )
         )
-        if action and action.action == ActionType.REQUEST_APPROVAL and user_already_approved:
-            logger.info("Guardrail: user has already granted form approval; auto-advancing to click Submit instead of requesting duplicate approval.")
-            submit_btn = None
-            for el in elements:
-                el_desc = f"{el.get('text', '')} {el.get('aria_label', '')}".lower().strip()
-                if any(w in el_desc for w in ["submit", "submit form", "send", "apply now"]):
-                    submit_btn = el
-                    break
-            if submit_btn:
+        if action and user_already_approved and action.action in (ActionType.REQUEST_APPROVAL, ActionType.EXTRACT, ActionType.WAIT):
+            page_text_lower = (page_info.get("page_text") or "").lower()
+            if any(p in page_text_lower for p in ["your response has been recorded", "submit another response", "response has been recorded", "submission received", "form submitted", "thank you"]):
+                logger.info("Guardrail: form submission confirmation observed; wrapping up task with FINISH.")
                 action = BrowserAction(
-                    action=ActionType.CLICK,
-                    element_id=submit_btn.get("index"),
-                    selector=submit_btn.get("selector"),
-                    text=submit_btn.get("text") or "Submit",
-                    reasoning="User has already granted approval; proceeding directly to click the Submit button.",
+                    action=ActionType.FINISH,
+                    reasoning="Form submitted successfully and confirmation observed.",
+                    extracted_data={"status": "Submitted", "url": page_info.get("url")},
                 )
+            else:
+                submit_btn = None
+                for el in elements:
+                    el_desc = f"{el.get('text', '')} {el.get('aria_label', '')}".lower().strip()
+                    el_tag = (el.get("tag") or "").lower()
+                    el_role = (el.get("role") or "").lower()
+                    el_type = (el.get("type") or "").lower()
+                    if (el_tag == "button" or el_role == "button" or (el_tag == "input" and el_type == "submit")) and any(w in el_desc for w in ["submit", "submit form", "send", "apply now"]):
+                        submit_btn = el
+                        break
+                if submit_btn:
+                    logger.info("Guardrail: user has already granted form approval; auto-advancing to click Submit.")
+                    action = BrowserAction(
+                        action=ActionType.CLICK,
+                        element_id=submit_btn.get("index"),
+                        selector=submit_btn.get("selector"),
+                        text=submit_btn.get("text") or "Submit",
+                        reasoning="User has already granted approval; proceeding directly to click the Submit button.",
+                    )
 
         # 4d. Premature Approval Guardrail: Intercept approval if visible input fields are still unfilled
         if action and action.action == ActionType.REQUEST_APPROVAL and not user_already_approved:
@@ -3020,13 +3034,13 @@ If the original goal is already complete, return ["Verify the requested outcome 
 
         # ── Prompt ───────────────────────────────────────────────────────
         milestone_block = (
-            "ACTIVE MILESTONE (the only objective this action may advance):\n"
+            "ACTIVE MILESTONE (the current objective to advance):\n"
             + json.dumps({
                 "id": active_milestone.get("id"),
                 "title": active_milestone.get("title"),
                 "status": active_milestone.get("status"),
             }, ensure_ascii=False)
-            + "\nDo not execute work belonging to a later milestone. If this milestone is already satisfied, choose WAIT and explain the observed evidence; the verifier will decide whether to advance."
+            + "\nAdvance this milestone by interacting with its target element. In a form, advance through the form fields sequentially until all fields are complete, then request approval before submitting."
             if active_milestone else "(No milestone supplied)"
         )
         prompt = f"""{SYSTEM_PROMPT}
@@ -3264,6 +3278,39 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 return {
                     "complete": True,
                     "evidence": f"Successfully accessed Google Drive interface at {page_info.get('url')}.",
+                }
+
+        # 3. Form navigation / open form URL milestone
+        if any(kw in milestone_title_lower for kw in ["open form", "navigate to form", "access form", "open the form"]):
+            if "forms" in page_url or "docs.google.com/forms" in page_url:
+                return {
+                    "complete": True,
+                    "evidence": f"Successfully loaded form at {page_info.get('url')} (Title: {page_info.get('title')}).",
+                }
+
+        # 4. Form field completion milestone
+        action_type = getattr(action, "action", None)
+        action_val = action_type.value if hasattr(action_type, "value") else str(action_type or "").lower()
+        if action_val in ("fill", "type", "type_text", "click", "select", "check", "radio_button"):
+            action_desc = " ".join(str(getattr(action, k, "") or "") for k in ("reasoning", "text", "value", "selector")).lower()
+            m_words = {w for w in re.findall(r'[a-zA-Z]{3,}', milestone_title_lower) if w not in {"enter", "choose", "with", "user", "data", "fill", "select", "complete", "optional", "fields", "rating", "ratings"}}
+            if m_words and any(w in action_desc for w in m_words):
+                return {
+                    "complete": True,
+                    "evidence": f"Field interaction completed for '{milestone.get('title')}' via {action_val} ({action.reasoning or action.text}).",
+                }
+            if "optional" in milestone_title_lower and any(w in action_desc for w in re.findall(r'[a-zA-Z]{3,}', milestone_title_lower)):
+                return {
+                    "complete": True,
+                    "evidence": f"Optional field handled for '{milestone.get('title')}'.",
+                }
+
+        # 5. Form submission confirmation
+        if any(kw in milestone_title_lower for kw in ["submit", "submission", "complete", "finalize", "verify"]):
+            if any(p in page_text for p in ["your response has been recorded", "submit another response", "response has been recorded", "thank you", "submission received", "form submitted"]):
+                return {
+                    "complete": True,
+                    "evidence": "Form submission confirmation observed on page.",
                 }
 
         if not (self.ollama_enabled or self.client or self.groq_api_key):

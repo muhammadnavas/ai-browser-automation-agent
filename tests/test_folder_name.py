@@ -361,5 +361,64 @@ def test_verify_milestone_completion_drive_access():
     assert "Google Drive" in result["evidence"]
 
 
+def test_synthesize_generalized_field_value_reads_element_label():
+    """Verify that synthesize_generalized_field_value reads el.get('label') and extracts user name."""
+    from backend.agents.planner import synthesize_generalized_field_value
+
+    el = {
+        "tag": "input",
+        "type": "text",
+        "label": "Full Name (Optional)",
+        "name": "entry.123456789",
+    }
+    context = {
+        "personal_details": {
+            "full_name": "Muhammad Navas",
+            "email": "navasns0409@gmail.com",
+        }
+    }
+    res = synthesize_generalized_field_value(el, goal="fill this form with my data", retrieved_context=context)
+    assert res.val == "Muhammad Navas"
+    assert "full_name" in res.source
+
+
+def test_verify_milestone_completion_form_field():
+    """Verify that verify_milestone_completion verifies form field milestones."""
+    import asyncio
+    from backend.agents.planner import AIAgentPlanner
+    from backend.models.schemas import ActionType, BrowserAction
+
+    planner = AIAgentPlanner.__new__(AIAgentPlanner)
+    planner.ollama_enabled = False
+    planner.client = None
+    planner.groq_api_key = ""
+
+    page_info = {
+        "url": "https://docs.google.com/forms/d/e/1FAIpQLSdYQrpqz7VQU_TrcRwru35eZgLd-CZp4-Btc2l_vF0K0J12cA/viewform",
+        "title": "Feedback Form",
+        "page_text": "Full Name Course Rating",
+        "elements": [],
+    }
+    action = BrowserAction(
+        action=ActionType.FILL,
+        text="Muhammad Navas",
+        reasoning="Entering Full Name in form.",
+        milestone_id="m2",
+    )
+    milestone = {"id": "m2", "title": "Enter Full Name (Optional) with user data"}
+
+    result = asyncio.run(planner.verify_milestone_completion(
+        goal="fill this form with my data",
+        milestone=milestone,
+        action=action,
+        page_info=page_info,
+        trajectory_history=[],
+    ))
+
+    assert result["complete"] is True
+    assert "Full Name" in result["evidence"]
+
+
+
 
 

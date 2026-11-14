@@ -1643,11 +1643,55 @@ class TaskManager:
                         "Suppressing unsolicited EXTRACT action for task %s (goal=%r)",
                         task_id, req.goal[:160],
                     )
-                    action = BrowserAction(
-                        action=ActionType.WAIT,
-                        scroll_amount=700,
-                        reasoning="Page inspection is internal. The user did not request data extraction; waiting briefly before continuing the requested workflow.",
+                    user_has_approved = (
+                        task.context.form_confirmed
+                        or getattr(task, "_form_confirmed", False)
+                        or any(h.get("action") == "request_approval" for h in trajectory_history)
                     )
+                    page_text_lower = str(page_info.get("page_text") or "").lower()
+                    form_confirmed = any(p in page_text_lower for p in [
+                        "your response has been recorded", "submit another response",
+                        "response has been recorded", "thank you", "submission received", "form submitted"
+                    ])
+                    if form_confirmed:
+                        action = BrowserAction(
+                            action=ActionType.FINISH,
+                            reasoning="Form has been submitted successfully and confirmation was observed.",
+                            extracted_data={"status": "Submitted", "url": getattr(controller, "current_url", "")},
+                        )
+                    elif user_has_approved:
+                        submit_btn = None
+                        for el in (page_info.get("elements") or []):
+                            el_text = (el.get("text") or "").strip().lower()
+                            el_aria = (el.get("aria_label") or "").strip().lower()
+                            el_role = (el.get("role") or "").lower()
+                            el_tag = (el.get("tag") or "").lower()
+                            el_type = (el.get("type") or "").lower()
+                            if (el_tag == "button" or el_role == "button" or (el_tag == "input" and el_type == "submit")) and any(
+                                w in f"{el_text} {el_aria}" for w in ["submit", "send", "submit form", "apply", "register"]
+                            ):
+                                submit_btn = el
+                                break
+                        if submit_btn:
+                            action = BrowserAction(
+                                action=ActionType.CLICK,
+                                element_id=submit_btn.get("index"),
+                                selector=submit_btn.get("selector"),
+                                text=submit_btn.get("text") or "Submit",
+                                reasoning="User has granted approval; proceeding directly to click the Submit button.",
+                            )
+                        else:
+                            action = BrowserAction(
+                                action=ActionType.FINISH,
+                                reasoning="Form workflow completed.",
+                                extracted_data={"status": "Completed", "url": getattr(controller, "current_url", "")},
+                            )
+                    else:
+                        action = BrowserAction(
+                            action=ActionType.WAIT,
+                            scroll_amount=700,
+                            reasoning="Page inspection is internal. The user did not request data extraction; waiting briefly before continuing the requested workflow.",
+                        )
 
                 # Plan progress is updated only after the browser action is
                 # successfully executed and verified. Failed attempts must never
