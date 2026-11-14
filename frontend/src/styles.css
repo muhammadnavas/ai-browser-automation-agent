@@ -751,12 +751,23 @@ h1 {
   border-color: rgba(52, 211, 153, 0.25);
 }
 
+.plan-heading-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.plan-heading-title-row h2 {
+  margin: 0;
+}
+
 .plan-version-strip {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 0;
   color: #9ca3af;
   font-size: 0.72rem;
 }
