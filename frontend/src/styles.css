@@ -1137,34 +1137,37 @@ h1 {
 .cache-summary,
 .cache-summary-compact {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   margin-top: 12px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
   font-size: 0.78rem;
+  min-width: 0;
 }
 
 .cache-summary-compact .status-tag,
 .cache-summary .status-tag {
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .cache-summary-text {
-  flex: 1;
+  flex: 1 1 180px;
   min-width: 0;
   color: #9ca3af;
   font-size: 0.76rem;
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .cache-summary-duration {
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  margin-left: auto;
   font-size: 0.74rem;
   color: #6ee7b7;
   font-weight: 600;
