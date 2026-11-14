@@ -107,7 +107,7 @@ def validate_action_payload(action_name: Any, payload: Any) -> Tuple[bool, str]:
         if not has_target:
             return False, f"{action_name} requires an element_id, selector, or resolvable text target"
     if action_name in _VALUE_ACTIONS and not any(
-        payload.get(key) not in (None, "") for key in ("text", "value", "select_label")
+        payload.get(key) not in (None, "") for key in ("text", "value", "select_label", "select_index")
     ):
         return False, f"{action_name} requires text, value, or select_label"
     if action_name in {"press", "press_key"} and not (payload.get("key") or payload.get("text")):
