@@ -1351,6 +1351,13 @@ class TaskManager:
                     break
 
                 # 4. Planner decides next action
+                milestone_metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+                milestone_graph = milestone_metadata.get("milestone_graph") or self._build_milestone_graph(task.initial_plan or [])
+                completed_milestone_ids = set(milestone_metadata.get("completed_milestone_ids") or [])
+                active_milestone = next(
+                    (node for node in milestone_graph if node.get("id") not in completed_milestone_ids),
+                    None,
+                )
                 action = await planner.decide_next_action(
                     goal=req.goal,
                     step_number=step_num,
@@ -1362,7 +1369,20 @@ class TaskManager:
                     user_approval_input=user_approval_input,
                     task_context=task.context,
                     screenshot_path=screenshot_path,
+                    active_milestone=active_milestone,
                 )
+                if action and active_milestone:
+                    action.milestone_id = active_milestone.get("id")
+                if action and action.action == ActionType.FINISH and active_milestone:
+                    action = BrowserAction(
+                        action=ActionType.WAIT,
+                        milestone_id=active_milestone.get("id"),
+                        reasoning=(
+                            f"Cannot finish while milestone {active_milestone.get('id')} "
+                            f"('{active_milestone.get('title')}') is not independently verified. "
+                            "Continue working on the active milestone."
+                        ),
+                    )
                 # Capture the exact page evidence and structured planner decision for inspection.
                 # Never persist raw input values from form fields; the security redactor masks them.
                 # Whitelist DOM metadata. Never persist input values, raw attributes,
@@ -2301,29 +2321,79 @@ class TaskManager:
 
                 if action_success:
                     if task.initial_plan:
+                        metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+                        graph = metadata.get("milestone_graph") or self._build_milestone_graph(task.initial_plan)
+                        completed_ids = set(metadata.get("completed_milestone_ids") or [])
                         if action.action == ActionType.FINISH:
-                            # FINISH is accepted only after the planner's independent
-                            # outcome verifier succeeds. This is the sole current
-                            # completion boundary; ordinary action success is not
-                            # evidence that a high-level milestone is complete.
-                            metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
-                            graph = metadata.get("milestone_graph") or self._build_milestone_graph(task.initial_plan)
-                            metadata["completed_milestone_ids"] = [node["id"] for node in graph]
-                            task.plan_metadata = metadata
-                            task.current_plan_step = max(0, len(task.initial_plan) - 1)
-                        else:
-                            # This index is a UI hint for the active milestone only.
-                            # Never derive completed milestones from action keywords
-                            # or the number of low-level browser steps.
-                            active_plan_idx = planner.determine_active_plan_step(
-                                initial_plan=task.initial_plan,
-                                current_action=action,
-                                trajectory_history=trajectory_history,
-                                page_info=page_info,
-                                step_number=step_num,
-                                max_steps=req.max_steps,
+                            # Global goal verification is not a substitute for the individual
+                            # milestone verifications. FINISH is accepted only after every
+                            # milestone has already been verified against live page evidence.
+                            all_ids = {node.get("id") for node in graph}
+                            if not all_ids.issubset(completed_ids):
+                                action_success = False
+                                exec_description = (
+                                    "Final goal verification was not accepted because one or more "
+                                    "plan milestones lack independent completion evidence."
+                                )
+                            else:
+                                task.current_plan_step = max(0, len(task.initial_plan) - 1)
+                        elif action.milestone_id:
+                            active_node = next(
+                                (node for node in graph if node.get("id") == action.milestone_id),
+                                None,
                             )
-                            task.current_plan_step = max(0, min(active_plan_idx, len(task.initial_plan) - 1))
+                            if active_node and active_node.get("id") not in completed_ids:
+                                try:
+                                    milestone_page = await controller.parse_interactive_elements()
+                                    if not isinstance(milestone_page, dict):
+                                        milestone_page = {}
+                                    verification = await planner.verify_milestone_completion(
+                                        goal=req.goal,
+                                        milestone=active_node,
+                                        action=action,
+                                        page_info=milestone_page,
+                                        trajectory_history=trajectory_history + [{
+                                            "step": step_num,
+                                            "action": action.action.value,
+                                            "description": exec_description,
+                                            "reasoning": action.reasoning,
+                                            "url": getattr(controller, "current_url", "") or "",
+                                        }],
+                                    )
+                                except Exception as verify_error:
+                                    logger.warning(
+                                        "Milestone verification failed for task %s milestone %s: %s",
+                                        task_id, action.milestone_id, verify_error,
+                                    )
+                                    verification = {"complete": False, "evidence": "Live-page verification failed."}
+                                active_node["last_verification"] = {
+                                    "complete": bool(verification.get("complete")),
+                                    "evidence": str(verification.get("evidence") or "")[:500],
+                                    "action_step": step_num,
+                                    "verified_at": time.time(),
+                                }
+                                if verification.get("complete") is True:
+                                    completed_ids.add(active_node["id"])
+                                    active_node["status"] = "completed"
+                                    active_node["completion_evidence"] = str(verification.get("evidence") or "")[:500]
+                                    logger.info(
+                                        "Task %s milestone %s completed with evidence: %s",
+                                        task_id, active_node["id"], active_node["completion_evidence"],
+                                    )
+                            metadata["completed_milestone_ids"] = sorted(
+                                completed_ids,
+                                key=lambda value: int(str(value).lstrip("m") or 0),
+                            )
+                            next_node = next(
+                                (node for node in graph if node.get("id") not in completed_ids),
+                                None,
+                            )
+                            task.current_plan_step = (
+                                int(next_node.get("index", 0))
+                                if next_node else max(0, len(task.initial_plan) - 1)
+                            )
+                        metadata["milestone_graph"] = graph
+                        task.plan_metadata = metadata
                         self._refresh_milestone_graph(task)
                     consecutive_failures = 0
                     if recovery_log:
@@ -2359,6 +2429,7 @@ class TaskManager:
                     } if isinstance(raw_result_action, dict) else str(action)
                     self._record_execution_trace(task, "action_result", step_num, {
                         "action": safe_result_action,
+                        "milestone_id": action.milestone_id,
                         "description": str(exec_description or "")[:1000],
                         "success": bool(action_success),
                         "error": None if action_success else exec_description,
@@ -2374,6 +2445,7 @@ class TaskManager:
                         action=action.action,
                         description=exec_description,
                         reasoning=action.reasoning,
+                        milestone_id=action.milestone_id,
                         screenshot_path=screenshot_path,
                         screenshot_url=screenshot_url,
                         url=controller.current_url,
@@ -2425,6 +2497,7 @@ class TaskManager:
                     trajectory_history.append({
                         "step": step_num,
                         "action": action.action.value,
+                        "milestone_id": action.milestone_id,
                         "description": exec_description,
                         "reasoning": action.reasoning,
                         "url": getattr(controller, "current_url", "") or "",
