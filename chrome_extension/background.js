@@ -952,10 +952,44 @@ async function handleBackendMessage(msg) {
         }
       }
 
-      // Actions (click, double_click, fill, type, wait, etc.) are executed directly
-      // by the content script with full DOM fidelity and sub-millisecond responsiveness.
-      // Avoiding CDP debugger attach/detach prevents tab focus loss, popup menu dismissals,
-      // and background-tab debugger attach timeouts.
+      // Pointer actions must use trusted browser input. DOM-dispatched MouseEvents and
+      // HTMLElement.click() are synthetic (isTrusted=false) and are ignored by some
+      // application controls. Keep DOM for target resolution, but let Chrome deliver input.
+      const pointerAction = ["click", "double_click", "right_click"].includes(
+        String(action.action || "").toLowerCase()
+      );
+      if (pointerAction) {
+        // The task-tab interaction guard normally blocks trusted user input. Temporarily
+        // permit input for this tab while CDP dispatches the agent's pointer sequence.
+        await sendContentMessage(tabId, {
+          type: "native_input_state",
+          enabled: true,
+        });
+        try {
+          const nativeResult = await dispatchNativePointerClick(tabId, action);
+          if (!nativeResult?.success) {
+            throw new Error(nativeResult?.error || "Native pointer input failed.");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          sendWsMessage({
+            id,
+            task_id,
+            type: "response",
+            success: true,
+            data: {
+              ...nativeResult.data,
+              description: nativeResult.data.description + "; page state must be re-inspected before the next action",
+              details: { postcondition: "input_dispatched_unverified" },
+            },
+          });
+          return;
+        } finally {
+          await sendContentMessage(tabId, {
+            type: "native_input_state",
+            enabled: false,
+          }).catch(() => {});
+        }
+      }
 
       // Capture pre-action tab URL to verify whether genuine navigation occurred
       const preActionTab = await chrome.tabs.get(tabId).catch(() => null);
