@@ -659,6 +659,29 @@
     return el;
   }
 
+  function getElementVisualCenter(element) {
+    if (!element) return { x: 0, y: 0 };
+    const rect = element.getBoundingClientRect();
+
+    // Check if element has an inner visible text span, icon, or labeled child
+    // that represents the actual visible core of the button/control.
+    const textOrIcon = element.querySelector('span, svg, [class*="text" i], [class*="label" i], div');
+    if (textOrIcon && isVisibleActionTarget(textOrIcon)) {
+      const childRect = textOrIcon.getBoundingClientRect();
+      if (childRect.width > 0 && childRect.height > 0 && childRect.width <= rect.width) {
+        return {
+          x: Math.round(childRect.left + childRect.width / 2),
+          y: Math.round(childRect.top + childRect.height / 2),
+        };
+      }
+    }
+
+    return {
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    };
+  }
+
   function findBestSemanticMatch(candidates, wantedText, actionKind, fieldMode) {
     const wanted = normalizeTargetText(wantedText);
     if (!wanted) return { element: null, ambiguous: false, score: 0 };
@@ -1649,12 +1672,12 @@
       animateVirtualCursor(el);
       
       // -- Inject visual ripple marker --
+      const visualCenter = getElementVisualCenter(el);
       try {
-        const rect = el.getBoundingClientRect();
         const marker = document.createElement("div");
         marker.style.position = "fixed";
-        marker.style.left = (rect.left + rect.width / 2) + "px";
-        marker.style.top = (rect.top + rect.height / 2) + "px";
+        marker.style.left = visualCenter.x + "px";
+        marker.style.top = visualCenter.y + "px";
         marker.style.width = "20px";
         marker.style.height = "20px";
         marker.style.backgroundColor = "rgba(255, 50, 50, 0.7)";
@@ -1685,23 +1708,26 @@
       window.addEventListener("pagehide", onNavigationInitiated, { once: true });
       window.addEventListener("beforeunload", onNavigationInitiated, { once: true });
 
-      const opts = { bubbles: true, cancelable: true, view: window };
-      try {
-        const rect = el.getBoundingClientRect();
-        opts.clientX = rect.left + rect.width / 2;
-        opts.clientY = rect.top + rect.height / 2;
-      } catch (e) {}
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: visualCenter.x,
+        clientY: visualCenter.y,
+      };
 
-      el.dispatchEvent(new MouseEvent("mouseover", opts));
-      el.dispatchEvent(new MouseEvent("mouseenter", opts));
-      el.dispatchEvent(new MouseEvent("pointerdown", opts));
-      el.dispatchEvent(new MouseEvent("mousedown", opts));
-      el.dispatchEvent(new MouseEvent("pointerup", opts));
-      el.dispatchEvent(new MouseEvent("mouseup", opts));
-      if (typeof el.click === "function") {
+      const innerTarget = el.querySelector('span, svg, [class*="text" i], [class*="label" i]') || el;
+      innerTarget.dispatchEvent(new MouseEvent("mouseover", opts));
+      innerTarget.dispatchEvent(new MouseEvent("mouseenter", opts));
+      innerTarget.dispatchEvent(new MouseEvent("pointerdown", opts));
+      innerTarget.dispatchEvent(new MouseEvent("mousedown", opts));
+      innerTarget.dispatchEvent(new MouseEvent("pointerup", opts));
+      innerTarget.dispatchEvent(new MouseEvent("mouseup", opts));
+      if (typeof innerTarget.click === "function") {
+        innerTarget.click();
+      }
+      if (typeof el.click === "function" && el !== innerTarget) {
         el.click();
-      } else {
-        el.dispatchEvent(new MouseEvent("click", opts));
       }
 
       // A Google Drive "+ New" button click opens a dynamic menu: wait briefly for the menu to mount
@@ -1836,12 +1862,12 @@
       animateVirtualCursor(el);
       
       // -- Inject visual ripple marker --
+      const visualCenter = getElementVisualCenter(el);
       try {
-        const rect = el.getBoundingClientRect();
         const marker = document.createElement("div");
         marker.style.position = "fixed";
-        marker.style.left = (rect.left + rect.width / 2) + "px";
-        marker.style.top = (rect.top + rect.height / 2) + "px";
+        marker.style.left = visualCenter.x + "px";
+        marker.style.top = visualCenter.y + "px";
         marker.style.width = "20px";
         marker.style.height = "20px";
         marker.style.backgroundColor = "rgba(50, 50, 255, 0.7)"; // Blue for double click
@@ -1863,28 +1889,24 @@
       } catch (e) {}
       // ---------------------------------
 
-      const opts1 = { bubbles: true, cancelable: true, view: window, detail: 1 };
-      const opts2 = { bubbles: true, cancelable: true, view: window, detail: 2 };
-      try {
-        const rect = el.getBoundingClientRect();
-        opts1.clientX = rect.left + rect.width / 2;
-        opts1.clientY = rect.top + rect.height / 2;
-        opts2.clientX = opts1.clientX;
-        opts2.clientY = opts1.clientY;
-      } catch (e) {}
+      const opts1 = { bubbles: true, cancelable: true, view: window, detail: 1, clientX: visualCenter.x, clientY: visualCenter.y };
+      const opts2 = { bubbles: true, cancelable: true, view: window, detail: 2, clientX: visualCenter.x, clientY: visualCenter.y };
 
-      el.dispatchEvent(new MouseEvent("mousedown", opts1));
-      el.dispatchEvent(new MouseEvent("mouseup", opts1));
-      el.dispatchEvent(new MouseEvent("click", opts1));
-      el.click();
+      const innerTarget = el.querySelector('span, svg, [class*="text" i], [class*="label" i]') || el;
+      innerTarget.dispatchEvent(new MouseEvent("mousedown", opts1));
+      innerTarget.dispatchEvent(new MouseEvent("mouseup", opts1));
+      innerTarget.dispatchEvent(new MouseEvent("click", opts1));
+      if (typeof innerTarget.click === "function") innerTarget.click();
+      if (typeof el.click === "function" && el !== innerTarget) el.click();
 
       await new Promise((r) => setTimeout(r, 60));
 
-      el.dispatchEvent(new MouseEvent("mousedown", opts2));
-      el.dispatchEvent(new MouseEvent("mouseup", opts2));
-      el.dispatchEvent(new MouseEvent("click", opts2));
-      el.dispatchEvent(new MouseEvent("dblclick", opts2));
-      el.click();
+      innerTarget.dispatchEvent(new MouseEvent("mousedown", opts2));
+      innerTarget.dispatchEvent(new MouseEvent("mouseup", opts2));
+      innerTarget.dispatchEvent(new MouseEvent("click", opts2));
+      innerTarget.dispatchEvent(new MouseEvent("dblclick", opts2));
+      if (typeof innerTarget.click === "function") innerTarget.click();
+      if (typeof el.click === "function" && el !== innerTarget) el.click();
 
       // Dispatch Enter keypress on the focused row to open folder in Google Drive
       await new Promise((r) => setTimeout(r, 120));
@@ -2662,9 +2684,9 @@
             return;
           }
 
-          const rect = target.getBoundingClientRect();
-          const x = Math.round(rect.left + rect.width / 2);
-          const y = Math.round(rect.top + rect.height / 2);
+          const center = getElementVisualCenter(target);
+          const x = center.x;
+          const y = center.y;
           if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) {
             sendResponse({ success: false, error: "Native click target is outside the visible viewport." });
             return;

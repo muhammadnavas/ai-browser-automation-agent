@@ -3970,6 +3970,35 @@ Return ONLY this JSON object with a real JSON boolean:
                                 reasoning="Re-clicking 'New' button to ensure menu opens.",
                             )
 
+                    # If the New button menu didn't open after waiting, try alternative menu triggers in Google Drive:
+                    # 1. Folder title in breadcrumb (e.g. "Automata ▾")
+                    # 2. Empty-state "'New' button" link
+                    alt_trigger = None
+                    for el in elements:
+                        if el.get("disabled") is True or el.get("visible") is False:
+                            continue
+                        el_text = (el.get("text") or "").strip().lower()
+                        el_aria = (el.get("aria_label") or "").strip().lower()
+                        el_role = (el.get("role") or "").lower()
+                        el_tag = el.get("tag", "").lower()
+                        # Match folder header in breadcrumb (e.g. "Automata" dropdown button)
+                        if _eft_lower and (el_text == _eft_lower or el_aria == _eft_lower) and (el_role in ("button", "link") or el_tag in ("button", "a")):
+                            alt_trigger = el
+                            break
+                        # Match empty-state "use the 'New' button" link
+                        if el_text in ("'new'", "new") and el_tag in ("a", "span", "button"):
+                            alt_trigger = el
+                            break
+
+                    if alt_trigger:
+                        return BrowserAction(
+                            action=ActionType.CLICK,
+                            element_id=alt_trigger.get("index"),
+                            selector=alt_trigger.get("selector"),
+                            text=alt_trigger.get("text") or "New",
+                            reasoning="Opening folder options menu via header dropdown.",
+                        )
+
                     return BrowserAction(
                         action=ActionType.WAIT,
                         scroll_amount=1500,
