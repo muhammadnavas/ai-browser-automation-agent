@@ -738,6 +738,28 @@
         return null;
       }
       if (match.element && match.score >= 92) return match.element;
+      // Text is the requested target for a text-directed click. Do not silently
+      // fall back to a numeric index when the text could not be grounded.
+      return null;
+    }
+
+    // If the planner supplied a field label but it did not match a unique live
+    // control, allow only a unique stable form-control locator. Never fall back
+    // to a snapshot index for an unresolved semantic field intent.
+    if (isFieldAction && fieldLabel) {
+      const selector = String(action.selector || "");
+      const stableSelector = selector.startsWith("#") ||
+        /\\[(?:name|data-testid|data-test|aria-label|placeholder)=/.test(selector);
+      if (stableSelector) {
+        try {
+          const matches = document.querySelectorAll(selector);
+          if (matches.length === 1 && isVisibleActionTarget(matches[0]) &&
+              matches[0].matches('input:not([type="hidden"]),textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')) {
+            return matches[0];
+          }
+        } catch (error) {}
+      }
+      return null;
     }
 
     // Numeric selectors are supported for planner compatibility, but are only
@@ -1338,7 +1360,7 @@
 
     if (actType === "scroll_to") {
       const resolvedElement = findTargetElement(action);
-    const el = resolvedElement ? getActionableElement(resolvedElement, actType) : null;
+      const el = resolvedElement ? getActionableElement(resolvedElement, actType) : null;
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
         await new Promise((r) => setTimeout(r, 400));
@@ -1406,7 +1428,8 @@
       Boolean(action.file_base64)
     );
 
-    const el = findTargetElement(action);
+    const resolvedElement = findTargetElement(action);
+    const el = resolvedElement ? getActionableElement(resolvedElement, actType) : null;
     if (!el && actType !== "press" && actType !== "press_key" && actType !== "finish" && !isUploadAction) {
       return {
         success: false,
