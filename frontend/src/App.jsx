@@ -841,13 +841,30 @@ function CellValue({ col, val }) {
   return <span className="cell-value">{str}</span>;
 }
 
+function stripAgentInternalFields(value) {
+  if (Array.isArray(value)) return value.map(stripAgentInternalFields);
+  if (!value || typeof value !== 'object') return value;
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, entry]) => {
+        const normalizedKey = key.toLowerCase().replaceAll('-', '_');
+        if (/subagents?|specialists?|agent_team|recovery_agent|followup_delegation|independent_verification|delegation/.test(normalizedKey)) return false;
+        if (normalizedKey === 'source' && String(entry).toLowerCase() === 'runtime_subagent_batch') return false;
+        return true;
+      })
+      .map(([key, entry]) => [key, stripAgentInternalFields(entry)])
+  );
+}
+
 function ExtractedResultsViewer({ data, compact = false }) {
   const [viewMode, setViewMode] = useState('table');
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [filterText, setFilterText] = useState('');
 
-  const parsed = useMemo(() => parseExtractedData(data), [data]);
+  const displayData = useMemo(() => stripAgentInternalFields(data), [data]);
+  const parsed = useMemo(() => parseExtractedData(displayData), [displayData]);
   const { type, summary = {}, sections = [], data: kvData, items = [], text = '', raw } = parsed;
 
   const currentSection = sections[activeTab] || sections[0] || null;
@@ -870,7 +887,7 @@ function ExtractedResultsViewer({ data, compact = false }) {
 
   const copyToClipboard = () => {
     try {
-      navigator.clipboard.writeText(JSON.stringify(raw ?? data, null, 2));
+      navigator.clipboard.writeText(JSON.stringify(raw ?? displayData, null, 2));
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -1003,7 +1020,7 @@ function ExtractedResultsViewer({ data, compact = false }) {
 
       <div className="results-body">
         {viewMode === 'json' ? (
-          <pre className="json-preview">{JSON.stringify(raw ?? data, null, 2)}</pre>
+          <pre className="json-preview">{JSON.stringify(raw ?? displayData, null, 2)}</pre>
         ) : type === 'text' ? (
           <div className="results-text-card">{text}</div>
         ) : type === 'list' ? (
@@ -2251,107 +2268,6 @@ export default function App() {
                 </div>
               )}
             </section>
-
-            {(() => {
-              const agentMetadata = currentTask.plan_metadata || {};
-              const delegation = agentMetadata.delegation || {};
-              const followup = agentMetadata.followup_delegation || null;
-              const recovery = agentMetadata.recovery_agent || null;
-              const verification = agentMetadata.independent_verification || null;
-              const agentResults = (currentTask.context?.extracted_snippets || [])
-                .filter((item) => item?.source === 'subagent');
-              const selectedRoles = Array.isArray(delegation.selected_roles)
-                ? delegation.selected_roles
-                : [];
-              const hasAgentActivity = selectedRoles.length || agentResults.length || followup || recovery || verification;
-              if (!hasAgentActivity) return null;
-
-              const statusLabel = (status) => String(status || 'pending').replaceAll('_', ' ');
-              const resultSummary = (item) => {
-                const output = item?.output;
-                if (typeof output === 'string') return output.slice(0, 220);
-                if (!output || typeof output !== 'object') return item?.error || 'No result returned.';
-                return output.title || output.diagnosis || output.strategy || output.reason ||
-                  output.page_text?.slice(0, 220) ||
-                  (typeof output.verified === 'boolean' ? (output.verified ? 'Goal evidence verified.' : 'Goal evidence not confirmed.') : '') ||
-                  item?.error || 'Specialist completed its task.';
-              };
-
-              return (
-                <section className="section-card agent-team-section">
-                  <div className="section-heading">
-                    <div className="section-icon memory-icon">
-                      <Bot size={18} />
-                    </div>
-                    <div className="section-heading-copy">
-                      <h2>Agent team</h2>
-                      <p>Master orchestration and specialist activity</p>
-                    </div>
-                    <span className="meta-chip">
-                      {delegation.mode === 'llm_automatic' ? 'LLM coordinated' : delegation.mode || 'Specialist activity'}
-                    </span>
-                  </div>
-
-                  {selectedRoles.length > 0 && (
-                    <div className="agent-role-list">
-                      {selectedRoles.map((role) => (
-                        <span className="agent-role-chip" key={role}>
-                          <Bot size={13} />
-                          {String(role).replaceAll('_', ' ')}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {agentResults.length > 0 && (
-                    <div className="agent-result-list">
-                      {agentResults.map((item, index) => (
-                        <div className="agent-result-row" key={item.subagent_id || index}>
-                          <div className="agent-result-icon">
-                            {item.status === 'completed' ? <CheckCircle2 size={16} /> :
-                              item.status === 'failed' || item.status === 'timed_out' ? <AlertCircle size={16} /> :
-                                <LoaderCircle size={16} className={isActive(currentTask.status) ? 'spin' : ''} />}
-                          </div>
-                          <div className="agent-result-copy">
-                            <strong>{String(item.role || 'Specialist').replaceAll('_', ' ')}</strong>
-                            <span>{resultSummary(item)}</span>
-                          </div>
-                          <span className={'status-tag ' + (item.status === 'completed' ? 'status-ok' : item.status === 'failed' || item.status === 'timed_out' ? 'status-warn' : '')}>
-                            {statusLabel(item.status)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {(followup || recovery || verification) && (
-                    <div className="agent-checkpoints">
-                      {followup && (
-                        <div className="agent-checkpoint">
-                          <span>Master follow-up</span>
-                          <strong>{statusLabel(followup.status || 'planned')}</strong>
-                          <small>{(followup.selected_roles || []).join(', ') || 'No additional agents selected'}</small>
-                        </div>
-                      )}
-                      {recovery && (
-                        <div className="agent-checkpoint">
-                          <span>Recovery Agent</span>
-                          <strong>{statusLabel(recovery.status)}</strong>
-                          <small>{recovery.diagnosis || recovery.strategy || 'No recovery diagnosis available.'}</small>
-                        </div>
-                      )}
-                      {verification && (
-                        <div className="agent-checkpoint">
-                          <span>Independent verification</span>
-                          <strong>{verification.verified === true ? 'Verified' : verification.verified === false ? 'Not confirmed' : statusLabel(verification.status)}</strong>
-                          <small>{verification.reason || verification.evidence || 'Secondary verification result unavailable.'}</small>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </section>
-              );
-            })()}
 
             {currentTask.steps?.some((step) => {
               const action = typeof step?.action === 'string' ? step.action : step?.action?.action;
