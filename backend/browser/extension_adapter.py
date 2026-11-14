@@ -482,7 +482,7 @@ class ExtensionBrowserAdapter:
             task_id=self.task_id,
             command_type="create_tab",
             payload={"url": initial_url or "about:blank"},
-            timeout=15.0,
+            timeout=30.0,
         )
         if not resp.get("success"):
             raise RuntimeError(resp.get("error", "Failed to create Chrome task tab"))
