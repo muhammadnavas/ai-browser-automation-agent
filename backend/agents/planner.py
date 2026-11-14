@@ -3538,6 +3538,12 @@ Return ONLY this JSON object with a real JSON boolean:
                 status = str(h.get("status") or "").lower()
                 if status in ("failed", "error") or "fail" in status:
                     return False
+                desc = str(h.get("description") or "").lower()
+                if desc.startswith("failed:") or "failed" in desc or "error" in desc or "unverified" in desc:
+                    return False
+                reason = str(h.get("reasoning") or "").lower()
+                if "error recovery needed" in reason or "action execution failed" in reason:
+                    return False
                 return True
 
             def _extract_folder_name(target_goal: str) -> str:
@@ -3658,7 +3664,7 @@ Return ONLY this JSON object with a real JSON boolean:
                 _folder_dblclick_failures = sum(
                     1 for h in trajectory_history
                     if h.get("action") == "double_click"
-                    and h.get("success") is False
+                    and not _is_successful_step(h)
                     and _eft_lower in str(h.get("reasoning", "")).lower()
                 )
                 _folder_dblclick_attempts = sum(
@@ -3668,10 +3674,10 @@ Return ONLY this JSON object with a real JSON boolean:
                 )
 
                 last_step = trajectory_history[-1] if trajectory_history else {}
-                # Only wait after a SUCCESSFUL click/double_click (not after a failed one)
+                # Only wait after a truly SUCCESSFUL click/double_click (not after a failed one)
                 if (
                     last_step.get("action") in ("click", "double_click")
-                    and last_step.get("success") is not False
+                    and _is_successful_step(last_step)
                     and _eft_lower in str(last_step.get("reasoning", "")).lower()
                 ):
                     return BrowserAction(
@@ -3679,6 +3685,31 @@ Return ONLY this JSON object with a real JSON boolean:
                         scroll_amount=2000,
                         reasoning=f"Waiting for '{existing_folder_target}' folder to finish opening.",
                     )
+
+                # If on Drive /home and double-click didn't navigate, switch to "My Drive" view
+                if "drive.google.com" in url_current and "/home" in url_current and _folder_dblclick_attempts >= 1:
+                    my_drive_el = None
+                    for el in elements:
+                        if el.get("disabled") is True or el.get("visible") is False:
+                            continue
+                        el_text = (el.get("text") or "").strip().lower()
+                        el_role = (el.get("role") or "").lower()
+                        if el_text == "my drive" and el_role in ("link", "treeitem", "tab", "button", "div"):
+                            my_drive_el = el
+                            break
+                    if my_drive_el:
+                        has_clicked_my_drive = any(
+                            h.get("action") == "click" and "my drive" in str(h.get("reasoning", "")).lower()
+                            for h in trajectory_history
+                        )
+                        if not has_clicked_my_drive:
+                            return BrowserAction(
+                                action=ActionType.CLICK,
+                                element_id=my_drive_el.get("index"),
+                                selector=my_drive_el.get("selector"),
+                                text="My Drive",
+                                reasoning="Navigating from Home to 'My Drive' view to access folders.",
+                            )
 
                 # After 2+ failures, try fallback strategy: use Drive search bar
                 if _folder_dblclick_failures >= 2:
@@ -3703,17 +3734,18 @@ Return ONLY this JSON object with a real JSON boolean:
                     if _search_el:
                         # Check if we already typed into the search bar for this folder
                         _already_searched = any(
-                            h.get("action") == "type"
+                            h.get("action") in ("type", "type_text")
                             and "search" in str(h.get("reasoning", "")).lower()
                             and _eft_lower in str(h.get("text", "")).lower()
                             for h in trajectory_history
                         )
                         if not _already_searched:
                             return BrowserAction(
-                                action=ActionType.TYPE,
+                                action=ActionType.TYPE_TEXT,
                                 element_id=_search_el.get("index"),
                                 selector=_search_el.get("selector"),
                                 text=existing_folder_target,
+                                press_enter=True,
                                 reasoning=f"Using search bar to find '{existing_folder_target}' folder after direct navigation failed.",
                             )
 

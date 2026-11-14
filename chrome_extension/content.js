@@ -1716,17 +1716,36 @@
       }
       window.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
 
-      // If this element or its parent has a Google Drive data-id (folder ID),
-      // verify or navigate directly to the folder URL
-      const folderId = el.getAttribute("data-id") || el.closest("[data-id]")?.getAttribute("data-id");
-      if (folderId && window.location.href.includes("drive.google.com")) {
-        await new Promise((r) => setTimeout(r, 300));
-        if (!window.location.href.includes(folderId)) {
-          const uMatch = window.location.pathname.match(/\/u\/\d+/);
-          const uPrefix = uMatch ? uMatch[0] : "";
-          const targetUrl = window.location.origin + "/drive" + uPrefix + "/folders/" + folderId;
-          console.log("AI Agent: Navigating directly to folder URL:", targetUrl);
-          window.location.href = targetUrl;
+      // If on Google Drive, look for direct folder URL or data-id to ensure navigation
+      if (window.location.href.includes("drive.google.com")) {
+        const folderLink = (
+          (el.tagName === "A" && el.href && el.href.includes("/folders/")) ? el : null
+          || el.querySelector?.("a[href*='/folders/']")
+          || el.closest?.("a[href*='/folders/']")
+          || el.closest?.("[data-id]")?.querySelector?.("a[href*='/folders/']")
+        );
+        if (folderLink && folderLink.href) {
+          console.log("Automata: Found folder link, navigating directly:", folderLink.href);
+          window.location.href = folderLink.href;
+          await new Promise((r) => setTimeout(r, 400));
+        } else {
+          const folderId = (
+            el.getAttribute?.("data-id")
+            || el.closest?.("[data-id]")?.getAttribute?.("data-id")
+            || el.querySelector?.("[data-id]")?.getAttribute?.("data-id")
+            || el.getAttribute?.("data-target-id")
+            || el.closest?.("[data-target-id]")?.getAttribute?.("data-target-id")
+            || el.getAttribute?.("data-folder-id")
+            || el.closest?.("[data-folder-id]")?.getAttribute?.("data-folder-id")
+          );
+          if (folderId && !window.location.href.includes(folderId)) {
+            const uMatch = window.location.pathname.match(/\/u\/\d+/);
+            const uPrefix = uMatch ? uMatch[0] : "";
+            const targetUrl = window.location.origin + "/drive" + uPrefix + "/folders/" + folderId;
+            console.log("Automata: Navigating directly to folder URL:", targetUrl);
+            window.location.href = targetUrl;
+            await new Promise((r) => setTimeout(r, 400));
+          }
         }
       }
 
@@ -1889,6 +1908,21 @@
         if (action.press_enter || actType === "type_text") {
           target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
           target.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+
+          // On Google Drive (e.g. "New folder" dialog), also click the "Create" button directly
+          if (location.hostname.includes("drive.google.com")) {
+            const dialog = target.closest('[role="dialog"], dialog, .modal-dialog') || document.querySelector('[role="dialog"]');
+            if (dialog) {
+              const createBtn = Array.from(dialog.querySelectorAll('button, div[role="button"], span[role="button"]')).find(b => {
+                const t = (b.innerText || b.getAttribute("aria-label") || "").trim().toLowerCase();
+                return t === "create" || t === "ok" || t === "save";
+              });
+              if (createBtn) {
+                console.log("Automata: Clicking dialog Create button:", createBtn);
+                setTimeout(() => createBtn.click(), 120);
+              }
+            }
+          }
         }
 
         return {
