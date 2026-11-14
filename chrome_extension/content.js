@@ -265,10 +265,12 @@
 
       const midX = Math.round(rect.left + rect.width / 2);
       const midY = Math.round(rect.top + rect.height / 2);
-      const centerElement = document.elementFromPoint(
+      const inViewport = rect.bottom > 0 && rect.top < window.innerHeight &&
+        rect.right > 0 && rect.left < window.innerWidth;
+      const centerElement = inViewport ? document.elementFromPoint(
         Math.min(Math.max(midX, 0), Math.max(0, window.innerWidth - 1)),
         Math.min(Math.max(midY, 0), Math.max(0, window.innerHeight - 1))
-      );
+      ) : null;
       const centerHit = Boolean(
         centerElement && (
           centerElement === el ||
@@ -296,8 +298,10 @@
         role: role,
         text: text.substring(0, 160),
         label: labelText.substring(0, 160),
+        accessible_name: getAccessibleName(el).substring(0, 200),
         aria_label: el.getAttribute("aria-label") || "",
         title: el.getAttribute("title") || "",
+        in_viewport: inViewport,
         alt: el.getAttribute("alt") || "",
         id: elId,
         name: el.getAttribute("name") || "",
