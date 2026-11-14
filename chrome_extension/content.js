@@ -33,12 +33,12 @@
 
     // Accessible names can reference multiple nodes, not just one ID.
     const labelledBy = String(el.getAttribute("aria-labelledby") || "")
-      .split(/\\s+/).filter(Boolean)
+      .split(/\s+/).filter(Boolean)
       .map((id) => document.getElementById(id))
       .filter(Boolean)
       .map((node) => (node.innerText || node.textContent || "").trim())
       .filter(Boolean);
-    if (labelledBy.length) return labelledBy.join(" ").replace(/\\s+/g, " ").trim();
+    if (labelledBy.length) return labelledBy.join(" ").replace(/\s+/g, " ").trim();
 
     const ariaLabel = el.getAttribute("aria-label");
     if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
@@ -47,7 +47,7 @@
       const labels = Array.from(el.labels)
         .map((label) => (label.innerText || label.textContent || "").trim())
         .filter(Boolean);
-      if (labels.length) return labels.join(" ").replace(/\\s+/g, " ").trim();
+      if (labels.length) return labels.join(" ").replace(/\s+/g, " ").trim();
     }
 
     const parentLabel = el.closest("label");
@@ -55,7 +55,7 @@
       const clone = parentLabel.cloneNode(true);
       clone.querySelectorAll("input, select, textarea, button").forEach((child) => child.remove());
       const text = (clone.innerText || clone.textContent || "").trim();
-      if (text) return text.replace(/\\s+/g, " ");
+      if (text) return text.replace(/\s+/g, " ");
     }
 
     const placeholder = el.getAttribute("placeholder");
@@ -72,13 +72,13 @@
         '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
       );
       const titleText = String(titleNode?.innerText || titleNode?.textContent || "")
-        .replace(/\\s+/g, " ").replace(/\\s*\\*\\s*$/, "").trim();
+        .replace(/\s+/g, " ").replace(/\s*\\*\s*$/, "").trim();
       if (titleText) return titleText;
     }
 
     if (el.tagName === "BUTTON" || el.tagName === "A" ||
         el.getAttribute("role") === "button" || el.getAttribute("role") === "link") {
-      return String(el.innerText || el.textContent || el.value || "").replace(/\\s+/g, " ").trim();
+      return String(el.innerText || el.textContent || el.value || "").replace(/\s+/g, " ").trim();
     }
     return "";
   }
