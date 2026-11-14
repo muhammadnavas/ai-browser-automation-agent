@@ -3622,47 +3622,132 @@ Return ONLY this JSON object with a real JSON boolean:
             # If user wants to upload into an existing folder, navigate into it before clicking New
             url_current = (page_info.get("url") or "").lower()
             headings_current = [(h or "").lower() for h in page_info.get("headings", [])]
-            is_inside_target_folder = bool(
-                existing_folder_target
-                and (
-                    "folders/" in url_current
-                    or any(existing_folder_target.lower() in h for h in headings_current)
-                )
-            )
+            page_title_current = (page_info.get("title") or "").lower()
+            page_text_current = (page_info.get("text") or "").lower()
+            _eft_lower = existing_folder_target.lower() if existing_folder_target else ""
+
+            # Broader detection: check URL for /folders/, headings, page title,
+            # or if the page text prominently features the folder name near the top.
+            is_inside_target_folder = False
+            if existing_folder_target:
+                if "folders/" in url_current:
+                    is_inside_target_folder = True
+                elif any(_eft_lower in h for h in headings_current):
+                    is_inside_target_folder = True
+                elif _eft_lower in page_title_current:
+                    is_inside_target_folder = True
+                elif f"my drive > {_eft_lower}" in page_text_current or f"my drive › {_eft_lower}" in page_text_current:
+                    is_inside_target_folder = True
+                else:
+                    # After a successful double-click on the folder, if the URL
+                    # has changed from the initial home/my-drive URL, consider
+                    # navigation successful.
+                    _folder_dblclick_ok = [
+                        h for h in trajectory_history
+                        if h.get("action") == "double_click"
+                        and h.get("success") is True
+                        and _eft_lower in str(h.get("reasoning", "")).lower()
+                    ]
+                    if _folder_dblclick_ok:
+                        _initial_url = (trajectory_history[0].get("url") or "").lower() if trajectory_history else ""
+                        if url_current and url_current != _initial_url:
+                            is_inside_target_folder = True
 
             if existing_folder_target and not is_inside_target_folder:
+                # Count consecutive DOUBLE_CLICK failures on the folder target
+                _folder_dblclick_failures = sum(
+                    1 for h in trajectory_history
+                    if h.get("action") == "double_click"
+                    and h.get("success") is False
+                    and _eft_lower in str(h.get("reasoning", "")).lower()
+                )
+                _folder_dblclick_attempts = sum(
+                    1 for h in trajectory_history
+                    if h.get("action") == "double_click"
+                    and _eft_lower in str(h.get("reasoning", "")).lower()
+                )
+
                 last_step = trajectory_history[-1] if trajectory_history else {}
-                if last_step.get("action") in ("click", "double_click") and existing_folder_target.lower() in str(last_step.get("reasoning", "")).lower():
+                # Only wait after a SUCCESSFUL click/double_click (not after a failed one)
+                if (
+                    last_step.get("action") in ("click", "double_click")
+                    and last_step.get("success") is not False
+                    and _eft_lower in str(last_step.get("reasoning", "")).lower()
+                ):
                     return BrowserAction(
                         action=ActionType.WAIT,
                         scroll_amount=2000,
                         reasoning=f"Waiting for '{existing_folder_target}' folder to finish opening.",
                     )
 
-                folder_el = None
-                for el in elements:
-                    if el.get("disabled") is True or el.get("visible") is False:
-                        continue
-                    el_text = (el.get("text") or "").strip().lower()
-                    el_aria = (el.get("aria_label") or "").strip().lower()
-                    if existing_folder_target.lower() in el_text or (existing_folder_target.lower() in el_aria and "folder" in el_aria):
-                        folder_el = el
-                        break
+                # After 2+ failures, try fallback strategy: use Drive search bar
+                if _folder_dblclick_failures >= 2:
+                    # Fallback: type folder name in the Drive search bar and navigate
+                    _search_el = None
+                    for el in elements:
+                        if el.get("disabled") is True or el.get("visible") is False:
+                            continue
+                        el_tag = (el.get("tag") or "").lower()
+                        el_role = (el.get("role") or "").lower()
+                        el_aria = (el.get("aria_label") or "").strip().lower()
+                        el_placeholder = (el.get("placeholder") or "").strip().lower()
+                        if el_tag == "input" and (
+                            el_role in ("combobox", "searchbox")
+                            or "search" in el_aria
+                            or "search" in el_placeholder
+                            or "get answers from drive" in el_placeholder
+                            or "get answers from drive" in el_aria
+                        ):
+                            _search_el = el
+                            break
+                    if _search_el:
+                        # Check if we already typed into the search bar for this folder
+                        _already_searched = any(
+                            h.get("action") == "type"
+                            and "search" in str(h.get("reasoning", "")).lower()
+                            and _eft_lower in str(h.get("text", "")).lower()
+                            for h in trajectory_history
+                        )
+                        if not _already_searched:
+                            return BrowserAction(
+                                action=ActionType.TYPE,
+                                element_id=_search_el.get("index"),
+                                selector=_search_el.get("selector"),
+                                text=existing_folder_target,
+                                reasoning=f"Using search bar to find '{existing_folder_target}' folder after direct navigation failed.",
+                            )
 
-                if folder_el:
-                    return BrowserAction(
-                        action=ActionType.DOUBLE_CLICK,
-                        element_id=folder_el.get("index"),
-                        selector=folder_el.get("selector"),
-                        text=folder_el.get("text") or existing_folder_target,
-                        reasoning=f"Opening '{existing_folder_target}' folder.",
-                    )
+                # After 4+ total attempts (mix of failures and retries), give up on
+                # double-click and fall through to the New button / LLM fallback
+                if _folder_dblclick_attempts >= 4:
+                    pass  # Fall through; don't block on folder nav forever
                 else:
-                    return BrowserAction(
-                        action=ActionType.WAIT,
-                        scroll_amount=1500,
-                        reasoning=f"Looking for '{existing_folder_target}' folder in Google Drive.",
-                    )
+                    folder_el = None
+                    for el in elements:
+                        if el.get("disabled") is True or el.get("visible") is False:
+                            continue
+                        el_text = (el.get("text") or "").strip().lower()
+                        el_aria = (el.get("aria_label") or "").strip().lower()
+                        if _eft_lower in el_text or (_eft_lower in el_aria and "folder" in el_aria):
+                            folder_el = el
+                            break
+
+                    if folder_el:
+                        # On retry after failure, prefer element_id only (selectors go stale in Drive SPA)
+                        _use_selector = folder_el.get("selector") if _folder_dblclick_failures == 0 else None
+                        return BrowserAction(
+                            action=ActionType.DOUBLE_CLICK,
+                            element_id=folder_el.get("index"),
+                            selector=_use_selector,
+                            text=folder_el.get("text") or existing_folder_target,
+                            reasoning=f"Opening '{existing_folder_target}' folder.",
+                        )
+                    else:
+                        return BrowserAction(
+                            action=ActionType.WAIT,
+                            scroll_amount=1500,
+                            reasoning=f"Looking for '{existing_folder_target}' folder in Google Drive.",
+                        )
 
             if existing_folder_target and is_inside_target_folder:
                 has_waited_in_target_folder = any(

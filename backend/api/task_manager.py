@@ -1050,7 +1050,7 @@ class TaskManager:
                         task.plan_status = "failed"
                         task.error = (
                             f"Could not inspect the live Chrome task tab{detail}. No browser action was attempted. "
-                            "Check that the AI Browser Agent extension is reloaded and connected, then retry."
+                            "Check that the Automata extension is reloaded and connected, then retry."
                         )
                         task.updated_at = time.time()
                         await self.broadcast_task_update(task_id)
@@ -2482,6 +2482,8 @@ class TaskManager:
                         "description": exec_description,
                         "reasoning": action.reasoning,
                         "url": getattr(controller, "current_url", "") or "",
+                        "success": True,
+                        "status": "success",
                     })
                     await self.broadcast_task_update(task_id)
                     await self._save_cached_task_state(task_id)
@@ -2531,6 +2533,8 @@ class TaskManager:
                         "description": f"FAILED: {exec_description}",
                         "reasoning": f"{action.reasoning}. Error recovery needed: previous attempt failed after {policy.max_retries} retries/fallbacks ({recovery_summary}). Adapt by choosing an alternative element, scrolling to reveal content, or navigating.",
                         "url": getattr(controller, "current_url", "") or "",
+                        "success": False,
+                        "status": "failed",
                     })
                     await self.broadcast_task_update(task_id)
                     await self._save_cached_task_state(task_id)
@@ -3298,6 +3302,12 @@ class TaskManager:
             )
             if changed:
                 return True, "Click produced an observable page or target-state change."
+            # For double-clicks (opening folders, files, or desktop items),
+            # the action dispatches DOM mouse and keyboard events that trigger
+            # asynchronous navigation/loading. Do not fail double-clicks simply
+            # because the target DOM hasn't finished re-rendering in the first 50ms.
+            if action_type == ActionType.DOUBLE_CLICK:
+                return True, "Double-click dispatched to target; awaiting asynchronous view update."
             # An accepted click is not proof that its intended effect occurred.
             # In particular, do not let an unchanged Submit button count as success.
             return False, "Click outcome is unverified: the page and target state did not observably change."

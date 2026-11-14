@@ -1462,7 +1462,7 @@ export default function MyContext({ authFetch, api, onClose }) {
                     rows={3}
                     value={editFormData.projects || ''}
                     onChange={(e) => setEditFormData({ ...editFormData, projects: e.target.value })}
-                    placeholder="e.g. Autonomous Browser Automation Agent, Fullstack E-Commerce"
+                    placeholder="e.g. Automata AI Browser Assistant"
                     style={{ width: '100%', padding: '10px 12px', background: '#070f0b', border: '1px solid var(--border)', borderRadius: '8px', color: '#fff', resize: 'vertical' }}
                   />
                 </div>
