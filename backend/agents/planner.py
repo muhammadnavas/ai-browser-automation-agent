@@ -1990,8 +1990,15 @@ Return only a JSON array of strings."""
 
         goal_lower = (goal or "").lower()
         if safe_fields and any(word in goal_lower for word in ("fill", "form", "register", "survey", "submit")):
+            observed_labels = [
+                str(field.get("label") or field.get("name") or "Unlabeled field")
+                for field in safe_fields[:5]
+            ]
+            field_summary = ", ".join(observed_labels)
+            if len(safe_fields) > 5:
+                field_summary += f", and {len(safe_fields) - 5} more"
             return [
-                f"Map the {len(safe_fields)} observed form fields to matching verified user data",
+                f"Map the observed fields ({field_summary}) to matching verified user data",
                 "Populate only fields with a confirmed value; leave unknown fields unchanged",
                 "Review entered values and resolve missing required information",
                 "Request approval before submission and verify the confirmation",
