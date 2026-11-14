@@ -2896,13 +2896,13 @@ If the original goal is already complete, return ["Verify the requested outcome 
 
         # ── Prompt ───────────────────────────────────────────────────────
         milestone_block = (
-            "ACTIVE MILESTONE (the only objective this action may advance):\\n"
+            "ACTIVE MILESTONE (the only objective this action may advance):\n"
             + json.dumps({
                 "id": active_milestone.get("id"),
                 "title": active_milestone.get("title"),
                 "status": active_milestone.get("status"),
             }, ensure_ascii=False)
-            + "\\nDo not execute work belonging to a later milestone. If this milestone is already satisfied, choose WAIT and explain the observed evidence; the verifier will decide whether to advance."
+            + "\nDo not execute work belonging to a later milestone. If this milestone is already satisfied, choose WAIT and explain the observed evidence; the verifier will decide whether to advance."
             if active_milestone else "(No milestone supplied)"
         )
         prompt = f"""{SYSTEM_PROMPT}
