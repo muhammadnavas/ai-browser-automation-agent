@@ -691,7 +691,7 @@
   // Resolve by the live row/container and collapse nested text matches so one
   // folder does not look like several ambiguous targets.
   function findGoogleDriveTarget(action, actionKind, wantedText) {
-    if (!/drive\\.google\\.com$/i.test(location.hostname) || !wantedText) return null;
+    if (!/drive\.google\.com$/i.test(location.hostname) || !wantedText) return null;
 
     const wanted = normalizeTargetText(wantedText);
     if (!wanted) return null;
