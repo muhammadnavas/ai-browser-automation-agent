@@ -43,3 +43,32 @@ class PlannerIntentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActionRegistryTests(unittest.TestCase):
+    def test_catalog_contains_supported_browser_actions(self):
+        from agents.action_registry import get_action_catalog_prompt
+        catalog = get_action_catalog_prompt()
+        self.assertIn("- click:", catalog)
+        self.assertIn("- navigate:", catalog)
+        self.assertIn("- finish:", catalog)
+
+    def test_validates_required_navigation_arguments(self):
+        from agents.action_registry import validate_action_payload
+        self.assertFalse(validate_action_payload("navigate", {"action": "navigate"})[0])
+        self.assertTrue(validate_action_payload("navigate", {"action": "navigate", "url": "https://example.com"})[0])
+
+    def test_rejects_unknown_and_internal_actions(self):
+        from agents.action_registry import validate_action_payload
+        self.assertFalse(validate_action_payload("run_shell", {})[0])
+        self.assertFalse(validate_action_payload("plan_cache", {})[0])
+
+    def test_rejects_target_action_without_target(self):
+        from agents.action_registry import validate_action_payload
+        self.assertFalse(validate_action_payload("click", {"action": "click"})[0])
+        self.assertTrue(validate_action_payload("click", {"action": "click", "element_id": 3})[0])
+
+    def test_validates_drag_drop_pair(self):
+        from agents.action_registry import validate_action_payload
+        self.assertFalse(validate_action_payload("drag_drop", {"action": "drag_drop", "source_selector": "#a"})[0])
+        self.assertTrue(validate_action_payload("drag_drop", {"action": "drag_drop", "source_selector": "#a", "target_selector": "#b"})[0])
