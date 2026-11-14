@@ -556,7 +556,7 @@ function ActionCard({ step }) {
         )
       )}
 
-      {step.extracted_data != null && (
+      {String(typeof step.action === 'string' ? step.action : step.action?.action || '').toLowerCase() === 'extract' && step.extracted_data != null && (
         <details className="data-details">
           <summary>Extracted data</summary>
           <ExtractedResultsViewer data={step.extracted_data} compact />
@@ -1591,6 +1591,11 @@ export default function App() {
   );
   const steps = currentTask?.steps || [];
   const context = currentTask?.context;
+  const hasExtractionAction = steps.some((step) => {
+    const action = typeof step?.action === 'string' ? step.action : step?.action?.action;
+    return String(action || '').trim().toLowerCase() === 'extract';
+  });
+  const hasCurrentTaskExtraction = hasExtractionAction && (currentTask?.extracted_data?.length || 0) > 0;
   const metadata = currentTask?.plan_metadata;
   const cache = metadata?.cache_details;
 
@@ -2435,7 +2440,7 @@ export default function App() {
                   </div>
                 )}
 
-                {context?.extracted_snippets?.length > 0 && (
+                {hasCurrentTaskExtraction && context?.extracted_snippets?.length > 0 && (
                   <div className="context-group">
                     <h3>Latest extracted snippet</h3>
                     <ExtractedResultsViewer
