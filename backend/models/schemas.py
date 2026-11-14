@@ -166,6 +166,9 @@ class BrowserAction(BaseModel):
     wait_state: Optional[str] = "visible"
     wait_timeout: Optional[int] = 10000
 
+    # Planner-to-plan traceability: the milestone this action is intended to advance.
+    milestone_id: Optional[str] = None
+
     # Metadata
     reasoning: Optional[str] = None
     extracted_data: Optional[Dict[str, Any]] = None
@@ -182,6 +185,7 @@ class AgentStep(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     action: ActionType
     description: str
+    milestone_id: Optional[str] = None
     reasoning: Optional[str] = None
     screenshot_path: Optional[str] = None
     screenshot_url: Optional[str] = None
