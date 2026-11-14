@@ -696,15 +696,12 @@ def synthesize_generalized_field_value(
     exclusive_my_context: bool = False,
 ) -> FieldValueResult:
     """
-    Dynamically and realistically infer the appropriate input value for ANY form field.
-    Completely generalized:
-    1. Extracts matching fields exclusively from user's My Context (Profile, Memories, Documents)
-       when requested or when My Context data is available.
-    2. Extracts explicit user-provided key-values from the goal (e.g. "name: Jane", "email: x@y.com").
-    3. Dynamically pulls data from user's CSV data files if present in the workspace.
-    4. Derives value dynamically using HTML5 field types, constraints (min, max, step),
-       placeholders, and generalized semantic categories.
-    5. Leaves unavailable fields blank when exclusive My Context retrieval is instructed.
+    Resolve a form value only from verified sources:
+    1. Matching fields from the user's My Context (Profile, Memories, Documents).
+    2. Explicit key-values supplied in the task goal or context text.
+    3. Matching values from an available workspace CSV.
+    Never invent placeholder identity, contact, academic, rating, or other personal data.
+    Leave unavailable fields blank so the agent can request clarification or skip optional fields.
     """
     el_type = str(el.get("type", "text") or "text").lower()
     el_tag = str(el.get("tag", "") or "").lower()
