@@ -2274,11 +2274,14 @@
     "keydown", "keypress", "keyup", "beforeinput", "input", "paste", "cut"
   ];
   let agentUiLocked = false;
+  // CDP input is trusted browser input. Permit it only during the short window
+  // explicitly opened by background.js for an agent pointer action.
+  let nativeAgentInputActive = false;
   let lockObserver = null;
   let originalOverflow = null;
 
   function handleAgentLockEvent(event) {
-    if (!agentUiLocked || !event.isTrusted) return;
+    if (!agentUiLocked || !event.isTrusted || nativeAgentInputActive) return;
 
     // Emergency escape hatch if the extension disconnects while the page is locked.
     if (event.type === "keydown" && event.key === "Escape" && event.altKey && event.shiftKey) {
@@ -2539,6 +2542,9 @@
       if (event.data.command === "lock_ui") lockUI();
       else if (event.data.command === "unlock_ui") unlockUI();
     }
+    if (event.data?.__aiAgentNativeInputCommand) {
+      nativeAgentInputActive = Boolean(event.data.enabled);
+    }
     if (event.data?.__aiAgentUploadCommand && event.data.action) {
       handleChildFrameUpload(event.data.action);
     }
@@ -2676,6 +2682,17 @@
         } else if (message.type === "execute_action") {
           const result = await executeAction(message.action || {});
           sendResponse(result);
+        } else if (message.type === "native_input_state") {
+          nativeAgentInputActive = Boolean(message.enabled);
+          // Propagate the short-lived permission to same-origin and cross-origin
+          // child frames, where the lock listeners are installed independently.
+          try {
+            window.postMessage({
+              __aiAgentNativeInputCommand: true,
+              enabled: nativeAgentInputActive,
+            }, "*");
+          } catch (e) {}
+          sendResponse({ success: true, data: { enabled: nativeAgentInputActive } });
         } else if (message.type === "lock_ui") {
           const locked = lockUI();
           sendResponse({
