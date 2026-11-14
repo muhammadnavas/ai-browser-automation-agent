@@ -2206,7 +2206,7 @@ export default function App() {
                       }
                     >
                       <Database size={13} />
-                      Redis plan {cache.hit ? 'hit' : 'miss'}
+                      {cache.tier === 'Live page discovery' ? 'Live page discovery' : `Redis plan ${cache.hit ? 'hit' : 'miss'}`}
                       {cache.duration_ms != null
                         ? ' · ' + formatDuration(cache.duration_ms)
                         : ''}
@@ -2422,7 +2422,7 @@ export default function App() {
                         'status-tag ' + (cache.hit ? 'status-ok' : 'status-warn')
                       }
                     >
-                      Plan cache {cache.hit ? 'hit' : 'miss'}
+                      {cache.tier === 'Live page discovery' ? 'Page-aware planning' : `Plan cache ${cache.hit ? 'hit' : 'miss'}`}
                     </span>
                     <span className="cache-summary-text">
                       {cache.message ||
