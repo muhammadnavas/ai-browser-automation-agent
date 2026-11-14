@@ -1688,7 +1688,9 @@ class AIAgentPlanner:
         # initial plan deliberately short, then refine it from the live DOM.
         explicit_url = bool(
             (start_url or "").strip()
-            or re.search(r"https?://|www\\.|\\b[a-z0-9.-]+\\.(?:com|org|net|io|ai|dev|app|in|co)(?:/|\\b)", goal, re.I)
+            or "http://" in (goal or "").lower()
+            or "https://" in (goal or "").lower()
+            or "www." in (goal or "").lower()
         )
         action_intent = _has_keyword(goal, [
             "fill", "upload", "attach", "delete", "move", "create", "submit",
