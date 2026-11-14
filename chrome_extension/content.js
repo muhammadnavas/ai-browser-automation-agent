@@ -2512,6 +2512,41 @@
         } else if (message.type === "clear_badges") {
           clearBadges();
           sendResponse({ success: true });
+        } else if (message.type === "resolve_native_click_target") {
+          const nativeAction = message.action || {};
+          const rawTarget = findTargetElement(nativeAction);
+          const target = rawTarget ? getActionableElement(rawTarget, String(nativeAction.action || "click").toLowerCase()) : null;
+          if (!target || !isVisibleActionTarget(target)) {
+            sendResponse({ success: false, error: "Could not resolve a unique visible target for native pointer input." });
+            return;
+          }
+
+          // Bring the target into the viewport, then re-check its live geometry
+          // and hit-test after layout/scroll settling to avoid clicking overlays.
+          target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          if (!isCenterHitTarget(target)) {
+            sendResponse({ success: false, error: "Native click target is obscured or its center is not hit-testable." });
+            return;
+          }
+
+          const rect = target.getBoundingClientRect();
+          const x = Math.round(rect.left + rect.width / 2);
+          const y = Math.round(rect.top + rect.height / 2);
+          if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) {
+            sendResponse({ success: false, error: "Native click target is outside the visible viewport." });
+            return;
+          }
+
+          const accessibleName = getAccessibleName(target) || target.innerText?.trim() || target.getAttribute("title") || "";
+          sendResponse({
+            success: true,
+            data: {
+              x, y,
+              target: String(accessibleName).slice(0, 160),
+              button: nativeAction.button === "right" ? "right" : "left",
+            },
+          });
         } else if (message.type === "execute_action") {
           const result = await executeAction(message.action || {});
           sendResponse(result);
