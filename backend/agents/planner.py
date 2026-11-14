@@ -3558,8 +3558,55 @@ Return ONLY this JSON object with a real JSON boolean:
                 val, field_name = val_res[0], val_res[1]
                 source = getattr(val_res, "source", "Synthesized")
 
-                # If the value is empty, this field must be left blank! Continue to next field.
+                # The DOM index/selector can change after every Google Forms rerender.
+                # Treat the live control value as the source of truth, not only the
+                # snapshot-local element index recorded in trajectory_history.
                 if not val:
+                    continue
+                live_value = el.get("value", el.get("current_value", ""))
+                if live_value is None:
+                    live_value = ""
+                live_value_text = str(live_value).strip()
+                expected_value_text = str(val).strip()
+                if el_type == "checkbox":
+                    desired_checked = str(val).strip().lower() in ("true", "1", "yes", "checked")
+                    if bool(el.get("checked", False)) == desired_checked:
+                        continue
+                elif el_tag == "select":
+                    selected_text = str(
+                        el.get("selected_text")
+                        or el.get("selected_label")
+                        or el.get("selected_option")
+                        or live_value_text
+                    ).strip().lower()
+                    desired_text = expected_value_text.lower()
+                    options = el.get("options", [])
+                    selected_matches = bool(
+                        selected_text
+                        and (
+                            selected_text == desired_text
+                            or selected_text in desired_text
+                            or desired_text in selected_text
+                        )
+                    )
+                    if not selected_matches and options:
+                        for option in options:
+                            if not isinstance(option, dict) or not option.get("selected"):
+                                continue
+                            option_text = str(option.get("text") or option.get("label") or "").strip().lower()
+                            option_value = str(option.get("value") or "").strip().lower()
+                            if desired_text in option_text or option_text in desired_text or desired_text == option_value:
+                                selected_matches = True
+                                break
+                    if selected_matches:
+                        continue
+                elif live_value_text and (
+                    live_value_text == expected_value_text
+                    or live_value_text in expected_value_text
+                    or expected_value_text in live_value_text
+                ):
+                    # Already populated with the exact requested value: don't emit
+                    # another fill action just because Google Forms regenerated its DOM.
                     continue
 
                 # Handle Select Dropdown
