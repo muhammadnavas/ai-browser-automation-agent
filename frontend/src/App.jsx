@@ -2221,7 +2221,9 @@ export default function App() {
                   : [];
                 const currentVersion = Number(currentTask.plan_metadata?.plan_version || planVersions.length || 1);
                 const replanCount = Number(
-                  currentTask.plan_metadata?.adaptive_replan_count ?? Math.max(0, planVersions.length - 1)
+                  currentTask.plan_metadata?.replan_count ??
+                  currentTask.plan_metadata?.adaptive_replan_count ??
+                  Math.max(0, planVersions.length - 1)
                 );
                 return planVersions.length > 0 ? (
                   <div className="plan-version-strip" aria-label="Execution plan versions">
