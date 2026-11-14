@@ -836,6 +836,9 @@ class TaskManager:
             task.plan_metadata.setdefault("last_successful_action", None)
             task.plan_metadata.setdefault("plan_version", 1)
             task.plan_metadata.setdefault("adaptive_replan_count", 0)
+            task.plan_metadata["requires_live_inspection"] = bool(
+                getattr(planner, "last_plan_requires_inspection", False)
+            )
             if not task.plan_metadata.get("plan_versions"):
                 task.plan_metadata["plan_versions"] = [{
                     "version": 1,
@@ -1061,6 +1064,65 @@ class TaskManager:
                 # as instructions.
                 from agents.page_state import classify_page_state
                 page_info["agent_state"] = classify_page_state(page_info)
+
+                # URL-led tasks are intentionally replanned once the actual
+                # page has been inspected. This replaces speculative milestones
+                # with evidence-based steps and records a visible plan version.
+                plan_meta = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
+                if (
+                    plan_meta.get("requires_live_inspection")
+                    and not plan_meta.get("inspection_plan_generated")
+                    and hasattr(planner, "generate_observed_plan")
+                ):
+                    try:
+                        observed_plan = await planner.generate_observed_plan(req.goal, page_info)
+                        observed_plan = [str(item).strip() for item in (observed_plan or []) if str(item).strip()][:8]
+                        if observed_plan:
+                            previous_version = int(plan_meta.get("plan_version", 1) or 1)
+                            next_version = previous_version + 1
+                            versions = plan_meta.setdefault("plan_versions", [])
+                            versions.append({
+                                "version": next_version,
+                                "reason": "live_page_inspection",
+                                "created_at": time.time(),
+                                "page_title": str(page_info.get("title") or "")[:180],
+                                "page_url": str(page_info.get("browser_tab_url") or page_info.get("url") or "")[:500],
+                                "milestones": list(observed_plan),
+                            })
+                            plan_meta["plan_version"] = next_version
+                            plan_meta["adaptive_replan_count"] = int(plan_meta.get("adaptive_replan_count", 0) or 0) + 1
+                            plan_meta["replan_reason"] = "live_page_inspection"
+                            plan_meta["inspection_plan_generated"] = True
+                            plan_meta["requires_live_inspection"] = False
+                            plan_meta["plan"] = list(observed_plan)
+                            plan_meta["initial_plan"] = list(observed_plan)
+                            plan_meta["milestone_graph"] = self._build_milestone_graph(observed_plan)
+                            plan_meta["completed_milestone_ids"] = []
+                            cache_details = plan_meta.get("cache_details")
+                            if isinstance(cache_details, dict):
+                                cache_details["plan"] = list(observed_plan)
+                            task.plan_metadata = plan_meta
+                            task.initial_plan = list(observed_plan)
+                            task.plan = list(observed_plan)
+                            task.current_plan_step = 0
+                            task.plan_status = "executing"
+                            task.updated_at = time.time()
+                            logger.info(
+                                "Task %s refined plan to v%s after live page inspection (%s milestones).",
+                                task_id, next_version, len(observed_plan),
+                            )
+                            await self.broadcast_task_update(task_id)
+                            await self._save_cached_task_state(task_id)
+                    except Exception as observed_plan_error:
+                        # Do not block execution if optional milestone refinement fails.
+                        # Keep the short discovery plan; the action planner still uses live DOM.
+                        plan_meta["inspection_plan_generated"] = True
+                        plan_meta["requires_live_inspection"] = False
+                        task.plan_metadata = plan_meta
+                        logger.warning(
+                            "Task %s could not generate an observed-page plan; retaining discovery plan: %s",
+                            task_id, observed_plan_error,
+                        )
 
                 if default_cache_service:
                     from browser.controller import generate_dom_fingerprint
