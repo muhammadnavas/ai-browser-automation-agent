@@ -2216,6 +2216,36 @@ export default function App() {
               )}
 
               {(() => {
+                const planVersions = Array.isArray(currentTask.plan_metadata?.plan_versions)
+                  ? currentTask.plan_metadata.plan_versions
+                  : [];
+                const currentVersion = Number(currentTask.plan_metadata?.plan_version || planVersions.length || 1);
+                const replanCount = Number(
+                  currentTask.plan_metadata?.adaptive_replan_count ?? Math.max(0, planVersions.length - 1)
+                );
+                return planVersions.length > 0 ? (
+                  <div className="plan-version-strip" aria-label="Execution plan versions">
+                    <span className="plan-version-current">v{currentVersion} current</span>
+                    <span className="plan-replan-count">{replanCount} replans</span>
+                    <div className="plan-version-history">
+                      {planVersions.map((version, index) => (
+                        <span
+                          key={version.version || index}
+                          className={'plan-version-tag' + (Number(version.version) === currentVersion ? ' is-current' : '')}
+                          title={
+                            (version.reason || 'Plan version') +
+                            (version.page_title ? ' · ' + version.page_title : '')
+                          }
+                        >
+                          v{version.version || index + 1}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null;
+              })()}
+
+              {(() => {
                 const planSteps = extractPlanSteps(currentTask);
                 return planSteps.length > 0 ? (
                   <ol className="plan-list">
