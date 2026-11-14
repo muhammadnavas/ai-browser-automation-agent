@@ -3888,11 +3888,14 @@ Return ONLY this JSON object with a real JSON boolean:
                         continue
                     el_text = (el.get("text") or "").lower()
                     el_aria = (el.get("aria_label") or "").lower()
-                    combined_item = f"{el_text} {el_aria}"
-                    if is_folder_task and "new folder" in combined_item:
+                    el_acc = (el.get("accessible_name") or "").lower()
+                    el_title = (el.get("title") or "").lower()
+                    el_label = (el.get("label") or "").lower()
+                    combined_item = f"{el_text} {el_aria} {el_acc} {el_title} {el_label}"
+                    if is_folder_task and any(k in combined_item for k in ["new folder", "create folder"]):
                         target_el = el
                         break
-                    elif not is_folder_task and any(k in combined_item for k in ["file upload", "upload file"]):
+                    elif not is_folder_task and any(k in combined_item for k in ["file upload", "upload file", "files upload", "upload files"]):
                         target_el = el
                         break
                 
@@ -3918,26 +3921,44 @@ Return ONLY this JSON object with a real JSON boolean:
                             action=ActionType.CLICK,
                             element_id=target_el.get("index"),
                             selector=target_el.get("selector"),
-                            text=target_el.get("text"),
+                            text=target_el.get("text") or "File upload",
                             file_name=_rf_name,
                             upload_paths=_rf_paths,
                             reasoning="Clicking 'File upload' option in the New menu.",
                         )
                 else:
-                    wait_count = sum(
-                        1 for h in trajectory_history
-                        if any(k in str(h.get("reasoning", "")).lower() for k in ["waiting for the 'new' menu", "waiting briefly before continuing"])
+                    last_step = trajectory_history[-1] if trajectory_history else {}
+                    last_reasoning = str(last_step.get("reasoning", "")).lower()
+                    last_was_new_click = (
+                        last_step.get("action") == "click"
+                        and any(k in last_reasoning for k in ["'new' button", "new button", "new/upload"])
                     )
-                    if wait_count >= 1:
-                        # Re-click New button if menu didn't open
+
+                    # If we JUST clicked or re-clicked the New button, ALWAYS wait for the popup menu to render!
+                    if last_was_new_click:
+                        return BrowserAction(
+                            action=ActionType.WAIT,
+                            scroll_amount=1500,
+                            reasoning="Waiting for the 'New' menu to fully open to locate the target menu item.",
+                        )
+
+                    # Re-click New button AT MOST ONCE if menu really didn't open after waiting
+                    reclick_count = sum(
+                        1 for h in trajectory_history
+                        if "re-clicking 'new' button" in str(h.get("reasoning", "")).lower()
+                    )
+                    if reclick_count == 0:
                         upload_btn = None
                         for el in elements:
                             if el.get("disabled") is True or el.get("visible") is False:
                                 continue
                             el_text = (el.get("text") or "").lower().strip()
                             el_tag = el.get("tag", "").lower()
-                            el_aria = (el.get("aria_label") or "").lower()
-                            if el_tag in ("button", "a", "div", "span") and any(kw in f"{el_text} {el_aria}" for kw in ["new", "+ new"]):
+                            el_aria = (el.get("aria_label") or "").lower().strip()
+                            if el_tag in ("button", "a", "div", "span") and (
+                                el_text in ("new", "+ new", "+new")
+                                or el_aria in ("new", "new item", "create new")
+                            ):
                                 upload_btn = el
                                 break
                         if upload_btn:
@@ -3945,12 +3966,13 @@ Return ONLY this JSON object with a real JSON boolean:
                                 action=ActionType.CLICK,
                                 element_id=upload_btn.get("index"),
                                 selector=upload_btn.get("selector"),
-                                text=upload_btn.get("text"),
+                                text=upload_btn.get("text") or "+ New",
                                 reasoning="Re-clicking 'New' button to ensure menu opens.",
                             )
+
                     return BrowserAction(
                         action=ActionType.WAIT,
-                        scroll_amount=800,
+                        scroll_amount=1500,
                         reasoning="Waiting for the 'New' menu to fully open to locate the target menu item.",
                     )
 

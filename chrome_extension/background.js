@@ -956,8 +956,12 @@ async function handleBackendMessage(msg) {
       // resolves the semantic target; Chrome itself dispatches the pointer events.
       // If CDP pointer input fails (e.g. target obscured, center not hit-testable,
       // or target could not be resolved for CDP), fall back to DOM action execution.
+      // Exception: popup/menu triggers (e.g. Google Drive "+ New") are dismissed if
+      // the debugger detaches and blurs the tab; dispatch those via content script DOM.
       const pointerAction = String(action.action || "").toLowerCase();
-      if (["click", "double_click", "right_click"].includes(pointerAction)) {
+      const isMenuTrigger = /^(new|\+ new)$/i.test(String(action.text || "").trim()) ||
+        /new button|menu|dropdown/i.test(String(action.reasoning || ""));
+      if (["click", "double_click", "right_click"].includes(pointerAction) && !isMenuTrigger) {
         const pointerButton = pointerAction === "right_click" ? "right" : "left";
         try {
           const nativeResult = await dispatchNativePointerClick(tabId, {
