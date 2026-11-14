@@ -179,3 +179,36 @@ class MilestoneVerifierTests(unittest.IsolatedAsyncioTestCase):
             trajectory_history=[],
         )
         self.assertFalse(result["complete"])
+
+
+class LivePagePlanningTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_url_starts_with_short_discovery_plan(self):
+        planner = AIAgentPlanner(api_key="", groq_api_key="")
+        planner.plan_cache = None
+        planner.cache_service = None
+        plan = await planner.generate_plan(
+            goal="https://forms.gle/example fill this form with my data",
+            use_cache=False,
+        )
+        self.assertEqual(len(plan), 3)
+        self.assertIn("Inspect the live page", plan[1])
+        self.assertTrue(planner.last_plan_requires_inspection)
+
+    async def test_observed_form_plan_uses_only_inspected_structure(self):
+        planner = AIAgentPlanner.__new__(AIAgentPlanner)
+        planner.ollama_enabled = False
+        planner.client = None
+        planner.groq_api_key = ""
+        plan = await planner.generate_observed_plan(
+            "Fill this form with my data",
+            {
+                "title": "Course feedback",
+                "form_fields": [
+                    {"label": "Full name", "type": "text", "required": False},
+                    {"label": "Course", "type": "select", "required": True},
+                ],
+            },
+        )
+        self.assertTrue(any("2 observed form fields" in item for item in plan))
+        self.assertTrue(any("verified user data" in item for item in plan))
+        self.assertFalse(any("rating" in item.lower() for item in plan))
