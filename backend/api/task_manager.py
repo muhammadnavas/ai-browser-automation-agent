@@ -1119,7 +1119,18 @@ class TaskManager:
                             plan_meta["completed_milestone_ids"] = []
                             cache_details = plan_meta.get("cache_details")
                             if isinstance(cache_details, dict):
-                                cache_details["plan"] = list(observed_plan)
+                                cache_details.update({
+                                    "hit": False,
+                                    "tier": "Live page analysis",
+                                    "source": "page_analysis",
+                                    "reused": False,
+                                    "message": "Generated a task-specific plan from the inspected page",
+                                    "details": (
+                                        f"Inspected the live page and generated {len(observed_plan)} "
+                                        "evidence-based milestones."
+                                    ),
+                                    "plan": list(observed_plan),
+                                })
                             task.plan_metadata = plan_meta
                             task.initial_plan = list(observed_plan)
                             task.plan = list(observed_plan)
