@@ -3153,12 +3153,22 @@ CURRENT PAGE:
 RECENT ACTION HISTORY:
 {json.dumps(history, ensure_ascii=False)[:3000]}
 
-Return ONLY this JSON object:
-{{"complete": true_or_false, "evidence": "short quote or concrete observable fact from the current page"}}
+Return ONLY this JSON object with a real JSON boolean:
+{{"complete": false, "evidence": "short quote or concrete observable fact from the current page"}}
 """
         try:
             raw = await asyncio.to_thread(self._call_llm, prompt, "application/json")
-            parsed = json.loads(raw.strip())
+            raw = (raw or "").strip()
+            if raw.startswith("```"):
+                lines = raw.splitlines()
+                if lines and lines[0].lstrip().startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip().startswith("```"):
+                    lines = lines[:-1]
+                raw = "\n".join(lines).strip()
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("Milestone verifier must return a JSON object.")
             complete = parsed.get("complete") is True
             evidence = str(parsed.get("evidence") or "").strip()[:500]
             if complete and not evidence:
