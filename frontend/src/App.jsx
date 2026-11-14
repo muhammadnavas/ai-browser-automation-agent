@@ -596,7 +596,10 @@ function ReportDownloadButton({ task }) {
 
       // Report paths returned by FastAPI are usually relative (/api/...).
       // Resolve them against the configured backend origin, not the frontend host.
-      const reportUrl = /^https?:\\/\\//i.test(reportPath)
+      const isAbsoluteReportUrl = reportPath.startsWith('https://') || reportPath.startsWith('http://');
+      const reportUrl = isAbsoluteReportUrl
+        ? reportPath
+        : api(reportPath.startsWith('/') ? reportPath : `/${reportPath}`);
         ? reportPath
         : api(reportPath.startsWith('/') ? reportPath : `/${reportPath}`);
 
