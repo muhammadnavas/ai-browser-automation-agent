@@ -160,22 +160,7 @@
     // Keep this function synchronous so the chrome.runtime.onMessage port
     // does not need to stay open across microtask boundaries.
     // SPA stabilisation is handled by background.js post-navigate delay instead.
-    const borderEl = document.getElementById("ai-agent-running-border");
-    const lockEl = document.getElementById("ai-agent-ui-lock");
-    const prevBorderPointerEvents = borderEl ? borderEl.style.pointerEvents : null;
-    const prevLockPointerEvents = lockEl ? lockEl.style.pointerEvents : null;
-    if (borderEl) borderEl.style.pointerEvents = "none";
-    if (lockEl) lockEl.style.pointerEvents = "none";
-    try {
-      return _inspectPageDOMInternal(showBadges);
-    } finally {
-      if (borderEl && prevBorderPointerEvents !== null) {
-        borderEl.style.pointerEvents = prevBorderPointerEvents;
-      }
-      if (lockEl && prevLockPointerEvents !== null) {
-        lockEl.style.pointerEvents = prevLockPointerEvents;
-      }
-    }
+    return _inspectPageDOMInternal(showBadges);
   }
 
   function _inspectPageDOMInternal(showBadges) {
@@ -506,7 +491,7 @@
     const x = Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(0, window.innerWidth - 1));
     const y = Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(0, window.innerHeight - 1));
     const hit = document.elementFromPoint(x, y);
-    if (Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el)))) return true;
+    if (Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el) || hit.id === "ai-agent-running-border" || hit.id === "ai-agent-ui-lock"))) return true;
 
     // Check additional hit points (e.g. left-center, right-center) in case center is overlayed by an icon or pseudo-element
     const points = [
@@ -517,7 +502,7 @@
     for (const [px, py] of points) {
       if (px >= 0 && px < window.innerWidth && py >= 0 && py < window.innerHeight) {
         const h = document.elementFromPoint(px, py);
-        if (h && (h === el || el.contains(h) || h.contains(el))) return true;
+        if (h && (h === el || el.contains(h) || h.contains(el) || h.id === "ai-agent-running-border" || h.id === "ai-agent-ui-lock")) return true;
       }
     }
     return false;
@@ -1474,16 +1459,7 @@
   }
 
   async function executeAction(action) {
-    const borderEl = document.getElementById("ai-agent-running-border");
-    const prevBorderPointerEvents = borderEl ? borderEl.style.pointerEvents : null;
-    if (borderEl) borderEl.style.pointerEvents = "none";
-    try {
-      return await _executeActionInternal(action);
-    } finally {
-      if (borderEl && prevBorderPointerEvents !== null) {
-        borderEl.style.pointerEvents = prevBorderPointerEvents;
-      }
-    }
+    return await _executeActionInternal(action);
   }
 
   async function _executeActionInternal(action) {
@@ -1725,8 +1701,7 @@
       innerTarget.dispatchEvent(new MouseEvent("mouseup", opts));
       if (typeof innerTarget.click === "function") {
         innerTarget.click();
-      }
-      if (typeof el.click === "function" && el !== innerTarget) {
+      } else if (typeof el.click === "function") {
         el.click();
       }
 
@@ -2382,7 +2357,7 @@
         boxShadow: "inset 0 0 0 1px rgba(167, 243, 208, 0.3), inset 0 0 18px rgba(52, 211, 153, 0.12)",
         borderRadius: "2px",
         background: "transparent",
-        pointerEvents: "auto",
+        pointerEvents: "none",
         cursor: "not-allowed",
         userSelect: "none",
         boxSizing: "border-box",
@@ -2458,10 +2433,7 @@
         // capture handlers are the authoritative lock, overlay is supplemental.
         return typeof type === "string";
       }) &&
-      (!isTopFrame || (
-        document.getElementById("ai-agent-running-border") &&
-        getComputedStyle(document.getElementById("ai-agent-running-border")).pointerEvents === "auto"
-      ))
+      (!isTopFrame || Boolean(document.getElementById("ai-agent-running-border")))
     );
   }
   function unlockUI() {

@@ -343,6 +343,40 @@ def extract_target_url(goal: str, start_url: str = "") -> Optional[str]:
     return None
 
 
+def _extract_folder_name(target_goal: str) -> str:
+    import re as _re
+    _NAME_CHARS = r'[A-Za-z0-9_\-\.\(\) ]+?'
+    _STOP = r'(?:\s*$|\s+(?:in|on|at|inside|to|and|then|for|from|under|within)\b)'
+    name = 'New Folder'
+
+    _dq = _re.search(r'"([^"]+)"', target_goal)
+    _sq = _re.search(r"'([^']+)'", target_goal)
+    if _dq:
+        return _dq.group(1).strip()
+    if _sq:
+        return _sq.group(1).strip()
+
+    _kw_patterns = [
+        r'\bname\s+(?:it\s+(?:as\s+)?|the\s+folder\s+)' + f'({_NAME_CHARS})' + _STOP,
+        r'\bnamed?\s+' + f'({_NAME_CHARS})' + _STOP,
+        r'\bcall(?:ed|ing|s)?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+        r'\btitl(?:ed?|ing)\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+        r'\blabell?ed?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+        r'\bwith\s+(?:the\s+)?name\s+' + f'({_NAME_CHARS})' + _STOP,
+        r'\bas\s+' + f'({_NAME_CHARS})' + _STOP,
+        r'\b(?:create|make|mkdir)\s+(?:a\s+|new\s+)?folder\s+([A-Za-z0-9_\-\.]+)',
+        r'\bfolder\s+([A-Za-z0-9_\-\.]+)' + _STOP,
+    ]
+    for _pat in _kw_patterns:
+        _m = _re.search(_pat, target_goal, _re.IGNORECASE)
+        if _m:
+            cand = _m.group(1).strip()
+            if cand.lower() not in ('a', 'an', 'the', 'new', 'in', 'on', 'my', 'this', 'that'):
+                return cand
+    return name
+
+
+
 DOMAIN_ALIASES: Dict[str, Set[str]] = {
     "forms.gle": {"docs.google.com", "google.com", "forms.google.com"},
     "docs.google.com": {"forms.gle", "google.com", "forms.google.com"},
@@ -2899,8 +2933,9 @@ If the original goal is already complete, return ["Verify the requested outcome 
                     f"Failed to store action in Redis (non-fatal): {exc}"
                 )
 
-        if action and active_milestone:
-            action.milestone_id = str(active_milestone.get("id") or "") or None
+        if action:
+            if not getattr(action, "milestone_id", None) and active_milestone:
+                action.milestone_id = str(active_milestone.get("id") or "") or None
         return action
 
     # ------------------------------------------------------------------
@@ -3198,6 +3233,39 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
         trajectory_history: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Fail-closed verification that the active milestone's outcome is visible now."""
+        # Fast, deterministic verification for standard browser milestone outcomes
+        # before delegating to the verifier LLM:
+        milestone_title_lower = str(milestone.get("title") or "").lower()
+        page_url = str(page_info.get("url") or "").lower()
+        page_title = str(page_info.get("title") or "").lower()
+        headings = [str(h or "").lower() for h in page_info.get("headings", [])]
+        page_text = str(page_info.get("page_text") or "").lower()
+
+        # 1. Folder navigation / locating milestone
+        if any(kw in milestone_title_lower for kw in ["folder", "locate", "open"]) and "upload" not in milestone_title_lower:
+            folder_target = _extract_folder_name(milestone.get("title") or "") or _extract_folder_name(goal)
+            if folder_target:
+                ft_lower = folder_target.lower()
+                if "folders/" in page_url and (
+                    ft_lower in page_title
+                    or any(ft_lower in h for h in headings)
+                    or f"my drive > {ft_lower}" in page_text
+                    or f"my drive › {ft_lower}" in page_text
+                    or ft_lower in page_text
+                ):
+                    return {
+                        "complete": True,
+                        "evidence": f"Successfully inside folder '{folder_target}' (URL: {page_info.get('url')}, Title: {page_info.get('title')}).",
+                    }
+
+        # 2. Drive / Site access milestone
+        if any(kw in milestone_title_lower for kw in ["access", "navigate", "open google drive", "go to drive", "access the google drive"]):
+            if "drive.google.com" in page_url:
+                return {
+                    "complete": True,
+                    "evidence": f"Successfully accessed Google Drive interface at {page_info.get('url')}.",
+                }
+
         if not (self.ollama_enabled or self.client or self.groq_api_key):
             return {"complete": False, "evidence": "No verifier model is configured."}
 
@@ -3634,38 +3702,6 @@ Return ONLY this JSON object with a real JSON boolean:
                     return False
                 return True
 
-            def _extract_folder_name(target_goal: str) -> str:
-                import re as _re
-                _NAME_CHARS = r'[A-Za-z0-9_\-\.\(\) ]+?'
-                _STOP = r'(?:\s*$|\s+(?:in|on|at|inside|to|and|then|for|from|under|within)\b)'
-                name = 'New Folder'
-
-                _dq = _re.search(r'"([^"]+)"', target_goal)
-                _sq = _re.search(r"'([^']+)'", target_goal)
-                if _dq:
-                    return _dq.group(1).strip()
-                if _sq:
-                    return _sq.group(1).strip()
-
-                _kw_patterns = [
-                    r'\bname\s+(?:it\s+(?:as\s+)?|the\s+folder\s+)' + f'({_NAME_CHARS})' + _STOP,
-                    r'\bnamed?\s+' + f'({_NAME_CHARS})' + _STOP,
-                    r'\bcall(?:ed|ing|s)?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
-                    r'\btitl(?:ed?|ing)\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
-                    r'\blabell?ed?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
-                    r'\bwith\s+(?:the\s+)?name\s+' + f'({_NAME_CHARS})' + _STOP,
-                    r'\bas\s+' + f'({_NAME_CHARS})' + _STOP,
-                    r'\b(?:create|make|mkdir)\s+(?:a\s+|new\s+)?folder\s+([A-Za-z0-9_\-\.]+)',
-                    r'\bfolder\s+([A-Za-z0-9_\-\.]+)' + _STOP,
-                ]
-                for _pat in _kw_patterns:
-                    _m = _re.search(_pat, target_goal, _re.IGNORECASE)
-                    if _m:
-                        cand = _m.group(1).strip()
-                        if cand.lower() not in ('a', 'an', 'the', 'new', 'in', 'on', 'my', 'this', 'that'):
-                            return cand
-                return name
-
             has_clicked_new = any(
                 _is_successful_step(h) and h.get("action") == "click" and h.get("reasoning") and ("new" in str(h.get("reasoning")).lower() or "upload" in str(h.get("reasoning")).lower() or "folder" in str(h.get("reasoning")).lower())
                 for h in trajectory_history
@@ -4079,6 +4115,31 @@ Return ONLY this JSON object with a real JSON boolean:
                             text=alt_trigger.get("text") or "New",
                             reasoning="Opening folder options menu via header dropdown.",
                         )
+
+                    # Fallback for upload: if inside target folder and menu hasn't appeared,
+                    # trigger file upload directly into the folder dropzone or Drive container
+                    if not is_folder_task and is_inside_target_folder:
+                        wait_menu_count = sum(
+                            1 for h in trajectory_history
+                            if "waiting for the 'new' menu" in str(h.get("reasoning", "")).lower()
+                        )
+                        if wait_menu_count >= 1:
+                            from browser.os_dialog import get_user_system_file
+                            _rf = None
+                            try:
+                                _rf = get_user_system_file(goal)
+                            except Exception:
+                                pass
+                            _rf_name = _rf["name"] if _rf else None
+                            _rf_paths = [_rf["path"]] if _rf else []
+                            return BrowserAction(
+                                action=ActionType.CLICK,
+                                selector="#drive-main-page",
+                                text="Drop files here",
+                                file_name=_rf_name,
+                                upload_paths=_rf_paths,
+                                reasoning=f"Initiating file upload for '{_rf_name or 'file'}' directly into '{existing_folder_target}' folder.",
+                            )
 
                     return BrowserAction(
                         action=ActionType.WAIT,

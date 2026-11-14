@@ -285,4 +285,81 @@ def test_planner_navigates_to_my_drive_if_home_dblclick_fails():
     assert "My Drive" in action.reasoning
 
 
+def test_verify_milestone_completion_folder_opening():
+    """Verify that verify_milestone_completion immediately verifies folder opening when inside target folder."""
+    import asyncio
+    from backend.agents.planner import AIAgentPlanner
+    from backend.models.schemas import ActionType, BrowserAction
+
+    planner = AIAgentPlanner.__new__(AIAgentPlanner)
+    planner.ollama_enabled = False
+    planner.client = None
+    planner.groq_api_key = ""
+
+    page_info = {
+        "url": "https://drive.google.com/drive/u/0/folders/1x-C4LjEUamB4ivs7zRRHnrjUANEISc0O",
+        "title": "Automata - Google Drive",
+        "headings": ["Automata"],
+        "page_text": "My Drive > Automata Drop files here or use the 'New' button.",
+        "elements": [],
+    }
+    action = BrowserAction(
+        action=ActionType.DOUBLE_CLICK,
+        text="Automata",
+        reasoning="Opening 'Automata' folder.",
+        milestone_id="m2",
+    )
+    milestone = {"id": "m2", "title": "Locate and open the 'Automata' folder"}
+
+    result = asyncio.run(planner.verify_milestone_completion(
+        goal="open gdrive and open a folder called Automata and upload any pdf file from downloads",
+        milestone=milestone,
+        action=action,
+        page_info=page_info,
+        trajectory_history=[{"step": 1, "action": "double_click", "description": "Opening folder"}],
+    ))
+
+    assert result["complete"] is True
+    assert "Automata" in result["evidence"]
+
+
+def test_verify_milestone_completion_drive_access():
+    """Verify that verify_milestone_completion verifies Drive access."""
+    import asyncio
+    from backend.agents.planner import AIAgentPlanner
+    from backend.models.schemas import ActionType, BrowserAction
+
+    planner = AIAgentPlanner.__new__(AIAgentPlanner)
+    planner.ollama_enabled = False
+    planner.client = None
+    planner.groq_api_key = ""
+
+    page_info = {
+        "url": "https://drive.google.com/drive/u/0/my-drive",
+        "title": "My Drive - Google Drive",
+        "headings": ["My Drive"],
+        "page_text": "My Drive",
+        "elements": [],
+    }
+    action = BrowserAction(
+        action=ActionType.NAVIGATE,
+        url="https://drive.google.com",
+        reasoning="Accessing Google Drive interface.",
+        milestone_id="m1",
+    )
+    milestone = {"id": "m1", "title": "Access the Google Drive interface"}
+
+    result = asyncio.run(planner.verify_milestone_completion(
+        goal="open gdrive and open a folder called Automata and upload any pdf file from downloads",
+        milestone=milestone,
+        action=action,
+        page_info=page_info,
+        trajectory_history=[],
+    ))
+
+    assert result["complete"] is True
+    assert "Google Drive" in result["evidence"]
+
+
+
 
