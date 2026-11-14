@@ -132,3 +132,50 @@ class PlanFormatTests(unittest.TestCase):
             ),
             ["Open the target folder", "Verify the requested folder"],
         )
+
+
+class MilestoneVerifierTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.planner = AIAgentPlanner.__new__(AIAgentPlanner)
+        self.planner.ollama_enabled = True
+        self.planner.client = None
+        self.planner.groq_api_key = ""
+
+    async def test_verifier_accepts_completion_only_with_evidence(self):
+        from models.schemas import BrowserAction, ActionType
+        self.planner._call_llm = lambda prompt, mime: (
+            '{"complete":true,"evidence":"The target folder title is visible."}'
+        )
+        result = await self.planner.verify_milestone_completion(
+            goal="Open the Reports folder",
+            milestone={"id": "m2", "title": "Open the Reports folder"},
+            action=BrowserAction(action=ActionType.CLICK, milestone_id="m2"),
+            page_info={"url": "https://drive.google.com", "title": "Reports", "page_text": "Reports"},
+            trajectory_history=[],
+        )
+        self.assertTrue(result["complete"])
+        self.assertIn("Reports", result["evidence"])
+
+    async def test_verifier_rejects_completion_without_evidence(self):
+        from models.schemas import BrowserAction, ActionType
+        self.planner._call_llm = lambda prompt, mime: '{"complete":true,"evidence":""}'
+        result = await self.planner.verify_milestone_completion(
+            goal="Delete the selected email",
+            milestone={"id": "m3", "title": "Verify the email was deleted"},
+            action=BrowserAction(action=ActionType.CLICK, milestone_id="m3"),
+            page_info={"url": "https://mail.google.com", "title": "Inbox", "page_text": "Inbox"},
+            trajectory_history=[],
+        )
+        self.assertFalse(result["complete"])
+
+    async def test_verifier_fails_closed_on_invalid_response(self):
+        from models.schemas import BrowserAction, ActionType
+        self.planner._call_llm = lambda prompt, mime: "not json"
+        result = await self.planner.verify_milestone_completion(
+            goal="Open Gmail",
+            milestone={"id": "m1", "title": "Open Gmail"},
+            action=BrowserAction(action=ActionType.NAVIGATE, milestone_id="m1"),
+            page_info={"url": "about:blank"},
+            trajectory_history=[],
+        )
+        self.assertFalse(result["complete"])
