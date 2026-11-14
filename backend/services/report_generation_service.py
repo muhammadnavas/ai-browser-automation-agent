@@ -285,28 +285,66 @@ class ReportGenerator:
                     pdf.set_text_color(31, 48, 40)
                     self._paragraph(pdf, f"{index:02d}.  {item}", 5)
 
-            # Preserve the complete plan evolution, including the reason and
-            # page evidence behind each replan, in the downloadable report.
+            # Show plan evolution as distinct, readable version cards so a
+            # reviewer can compare the original plan with each later replan.
             plan_metadata = getattr(task, "plan_metadata", None) or {}
             plan_versions = plan_metadata.get("plan_versions", []) if isinstance(plan_metadata, dict) else []
             if isinstance(plan_versions, list) and plan_versions:
-                self._section(pdf, "Plan Version History")
+                self._section(
+                    pdf,
+                    "Plan Version History",
+                    "Each version records the plan produced at that point in the task.",
+                )
                 current_version = plan_metadata.get("plan_version")
+                if current_version is None:
+                    current_version = plan_versions[-1].get("version", len(plan_versions)) if isinstance(plan_versions[-1], dict) else len(plan_versions)
+
+                reason_labels = {
+                    "initial_plan": "Initial plan",
+                    "live_page_inspection": "Refined after live page inspection",
+                    "adaptive_replan": "Adaptive replan during execution",
+                    "recovery": "Recovery replan",
+                }
+
                 for index, version in enumerate(plan_versions, start=1):
                     if not isinstance(version, dict):
                         continue
+
                     version_number = version.get("version", index)
-                    label = f"Version {version_number}"
-                    if str(version_number) == str(current_version):
-                        label += " (current)"
+                    is_current = str(version_number) == str(current_version)
+                    milestones = version.get("milestones") or []
+                    if not isinstance(milestones, list):
+                        milestones = []
+
+                    # Keep the version heading together and visually distinct.
+                    if pdf.get_y() > pdf.h - pdf.b_margin - 20:
+                        pdf.add_page()
+                    card_x = pdf.l_margin
+                    card_w = pdf.w - pdf.l_margin - pdf.r_margin
+                    header_y = pdf.get_y() + 1
+                    pdf.set_fill_color(235, 247, 239)
+                    pdf.set_draw_color(190, 220, 201)
+                    pdf.rect(card_x, header_y, card_w, 9, style="DF")
+                    pdf.set_xy(card_x + 3, header_y + 1.5)
                     pdf.set_font("Helvetica", "B", 9)
-                    pdf.set_text_color(17, 105, 62)
-                    self._paragraph(pdf, label, 4)
-                    pdf.set_font("Helvetica", "", 8.5)
+                    pdf.set_text_color(20, 92, 55)
+                    pdf.cell(card_w - 34, 6, self._safe_text(f"VERSION {version_number}"))
+                    if is_current:
+                        pdf.set_xy(card_x + card_w - 31, header_y + 1.5)
+                        pdf.set_font("Helvetica", "B", 7)
+                        pdf.set_text_color(17, 105, 62)
+                        pdf.cell(28, 6, "CURRENT", align="R")
+                    pdf.set_y(header_y + 11)
                     pdf.set_text_color(35, 43, 55)
 
-                    reason = str(version.get("reason") or "Initial plan").replace("_", " ").strip()
-                    self._key_value(pdf, "Reason", reason)
+                    raw_reason = str(version.get("reason") or "initial_plan").strip()
+                    reason_key = raw_reason.lower().replace(" ", "_")
+                    reason_label = reason_labels.get(
+                        reason_key,
+                        raw_reason.replace("_", " ").strip().capitalize() or "Plan updated",
+                    )
+                    self._key_value(pdf, "Change", reason_label)
+
                     page_title = version.get("page_title")
                     if page_title:
                         self._key_value(pdf, "Inspected page", page_title)
@@ -316,15 +354,33 @@ class ReportGenerator:
                     created_at = version.get("created_at")
                     if created_at:
                         try:
-                            self._key_value(pdf, "Created", datetime.fromtimestamp(float(created_at)).strftime("%Y-%m-%d %H:%M:%S"))
+                            created_label = datetime.fromtimestamp(float(created_at)).strftime("%Y-%m-%d %H:%M:%S")
+                            self._key_value(pdf, "Recorded", created_label)
                         except (TypeError, ValueError, OSError, OverflowError):
                             pass
-                    milestones = version.get("milestones") or []
-                    if isinstance(milestones, list) and milestones:
-                        self._paragraph(pdf, "Milestones:", 3)
+
+                    if milestones:
+                        pdf.set_font("Helvetica", "B", 8.5)
+                        pdf.set_text_color(65, 105, 80)
+                        self._paragraph(pdf, "PLAN STEPS", 4.2)
                         for milestone_index, milestone in enumerate(milestones, start=1):
-                            self._paragraph(pdf, f"{milestone_index:02d}.  {self._sanitize_decision_explanation(milestone)}", 4)
-                    pdf.ln(1)
+                            safe_milestone = self._sanitize_decision_explanation(milestone)
+                            if not safe_milestone:
+                                continue
+                            pdf.set_font("Helvetica", "", 8.5)
+                            pdf.set_text_color(35, 43, 55)
+                            self._paragraph(pdf, f"{milestone_index:02d}.  {safe_milestone}", 4.5)
+                    else:
+                        pdf.set_font("Helvetica", "I", 8)
+                        pdf.set_text_color(110, 120, 115)
+                        self._paragraph(pdf, "No milestone details were recorded for this version.", 4.2)
+
+                    # Subtle divider between version records.
+                    pdf.ln(2)
+                    divider_y = pdf.get_y()
+                    pdf.set_draw_color(215, 226, 218)
+                    pdf.line(card_x, divider_y, card_x + card_w, divider_y)
+                    pdf.ln(4)
 
             self._section(pdf, "Execution Timeline")
             if not steps:
