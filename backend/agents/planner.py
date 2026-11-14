@@ -2125,11 +2125,11 @@ Keep dependencies in execution order: prerequisites must appear before dependent
 Do not suggest bypassing authentication, CAPTCHA, security checks, or human approval.
 Do not submit forms, send messages, make purchases, delete data, or perform other
 irreversible actions without the existing human-approval gate.
-Return ONLY a JSON array of 3 to 8 concise remaining milestone strings.
+Return ONLY a JSON array of 1 to 8 concise remaining milestone strings.
 If the original goal is already complete, return ["Verify the requested outcome and finish"].
 """
         raw = await asyncio.to_thread(self._call_llm, prompt, "application/json")
-        revised = normalize_plan_response(raw, allow_completion_marker=True)
+        revised = normalize_plan_response(raw, allow_completion_marker=True, min_milestones=1)
 
         logger.info("Adaptive replan generated %s remaining milestones using %s.", len(revised), self.last_llm_provider)
         return revised
