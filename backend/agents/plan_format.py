@@ -40,7 +40,12 @@ def _extract_items(parsed: Any) -> List[Any]:
     raise ValueError("Plan response must be a JSON array or an object containing a plan array.")
 
 
-def normalize_plan_response(\n    raw: str,\n    *,\n    allow_completion_marker: bool = False,\n    min_milestones: int = MIN_MILESTONES,\n) -> List[str]:
+def normalize_plan_response(
+    raw: str,
+    *,
+    allow_completion_marker: bool = False,
+    min_milestones: int = MIN_MILESTONES,
+) -> List[str]:
     """Parse, normalize, de-duplicate and validate a model-generated plan."""
     try:
         parsed = json.loads(_strip_fences(raw))

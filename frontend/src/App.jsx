@@ -25,7 +25,7 @@ const wsUrl = (path) => {
     path;
 };
 
-export function isSafeWebUrl(url) {
+function isSafeWebUrl(url) {
   if (!url || typeof url !== 'string') return false;
   const trimmed = url.trim();
   // Strip control characters (including tabs and newlines that some browsers ignore in protocol parsing)
