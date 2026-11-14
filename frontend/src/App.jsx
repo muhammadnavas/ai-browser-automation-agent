@@ -1904,18 +1904,8 @@ export default function App() {
         <div className="nav-right">
           <button
             type="button"
-            className={"nav-stat-chip" + (showMyContext ? " is-active" : "")}
+            className={"nav-stat-chip nav-stat-button" + (showMyContext ? " is-active" : "")}
             onClick={() => setShowMyContext((prev) => !prev)}
-            style={{
-              cursor: 'pointer',
-              background: showMyContext ? 'rgba(10, 40, 24, 0.95)' : 'rgba(6, 78, 59, 0.55)',
-              border: '1px solid var(--accent, #65e6a4)',
-              color: 'var(--accent, #65e6a4)',
-              fontWeight: 600,
-              padding: '6px 14px',
-              borderRadius: '9999px',
-              transition: 'all 0.2s',
-            }}
             title="Manage My Context: persistent profile, documents, and memories"
           >
             My Context
