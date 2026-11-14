@@ -2812,6 +2812,8 @@ If the original goal is already complete, return ["Verify the requested outcome 
 
         if action and active_milestone:
             action.milestone_id = str(active_milestone.get("id") or "") or None
+        if action and active_milestone:
+            action.milestone_id = str(active_milestone.get("id") or "") or None
         return action
 
     # ------------------------------------------------------------------
@@ -2977,6 +2979,7 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
 - Use this exact schema:
 {{
   "action": "<action_name>",
+  "milestone_id": "<exact active milestone id or null>",
   "element_id": <integer or null>,
   "selector": "<CSS selector or null>",
   "text": "<text to type or approval summary>",
@@ -3037,6 +3040,17 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
         data = json.loads(raw_text)
 
         action_str = data.get("action")
+        expected_milestone_id = str(active_milestone.get("id") or "") if active_milestone else None
+        if expected_milestone_id and data.get("milestone_id") != expected_milestone_id:
+            logger.warning(
+                "Planner action milestone mismatch: expected %s, received %s; falling back to WAIT.",
+                expected_milestone_id, data.get("milestone_id"),
+            )
+            return BrowserAction(
+                action=ActionType.WAIT,
+                milestone_id=expected_milestone_id,
+                reasoning="The proposed action was not explicitly bound to the active milestone. Re-evaluating the current milestone.",
+            )
         is_valid_action, validation_error = validate_action_payload(action_str, data)
         if not is_valid_action:
             logger.warning("Invalid planner tool call (%s): %s; falling back to WAIT", action_str, validation_error)
