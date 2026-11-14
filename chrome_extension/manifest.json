@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Connects Automata to your Chrome session so it can carry out browser tasks with your approval.",
   "permissions": [
+    "debugger",
     "tabs",
     "windows",
     "scripting",
