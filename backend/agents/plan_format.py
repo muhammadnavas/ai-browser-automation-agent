@@ -40,7 +40,7 @@ def _extract_items(parsed: Any) -> List[Any]:
     raise ValueError("Plan response must be a JSON array or an object containing a plan array.")
 
 
-def normalize_plan_response(raw: str, *, allow_completion_marker: bool = False) -> List[str]:
+def normalize_plan_response(\n    raw: str,\n    *,\n    allow_completion_marker: bool = False,\n    min_milestones: int = MIN_MILESTONES,\n) -> List[str]:
     """Parse, normalize, de-duplicate and validate a model-generated plan."""
     try:
         parsed = json.loads(_strip_fences(raw))
@@ -77,9 +77,9 @@ def normalize_plan_response(raw: str, *, allow_completion_marker: bool = False) 
             "verify completion and finish",
         }
     )
-    if not completion and not MIN_MILESTONES <= len(normalized) <= MAX_MILESTONES:
+    if not completion and not min_milestones <= len(normalized) <= MAX_MILESTONES:
         raise ValueError(
-            f"Planner must return {MIN_MILESTONES}-{MAX_MILESTONES} unique, non-empty milestones; got {len(normalized)}."
+            f"Planner must return {min_milestones}-{MAX_MILESTONES} unique, non-empty milestones; got {len(normalized)}."
         )
 
     for index, title in enumerate(normalized, start=1):
