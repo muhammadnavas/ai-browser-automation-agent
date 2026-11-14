@@ -578,29 +578,88 @@ function ActionCard({ step }) {
 }
 
 function ReportDownloadButton({ task }) {
-  if (!task || !task.task_id) return null;
-  const isFinished = isTerminal(task.status);
-  if (!isFinished) return null;
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
 
-  const rawHref =
-    task.reports?.pdf ||
-    api(`/api/reports/${encodeURIComponent(task.task_id)}/download`);
-  const pdfHref = isSafeWebUrl(rawHref) ? rawHref : '#';
+  if (!task || !task.task_id || !isTerminal(task.status)) return null;
+
+  const downloadReport = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setDownloadError('');
+
+    try {
+      const reportPath = task.reports?.pdf || `/api/reports/${encodeURIComponent(task.task_id)}/download`;
+      if (!isSafeWebUrl(reportPath)) {
+        throw new Error('The report download address is invalid.');
+      }
+
+      // Report paths returned by FastAPI are usually relative (/api/...).
+      // Resolve them against the configured backend origin, not the frontend host.
+      const reportUrl = /^https?:\\/\\//i.test(reportPath)
+        ? reportPath
+        : api(reportPath.startsWith('/') ? reportPath : `/${reportPath}`);
+
+      const response = await authFetch(reportUrl, {
+        method: 'GET',
+        headers: { Accept: 'application/pdf' },
+      });
+
+      if (!response.ok) {
+        let detail = '';
+        try {
+          const payload = await response.json();
+          detail = payload.detail || payload.message || '';
+        } catch {
+          // The server may return a plain-text or HTML error response.
+        }
+        throw new Error(detail || `Report download failed (HTTP ${response.status}).`);
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.toLowerCase().includes('application/pdf')) {
+        throw new Error('The server did not return a PDF report.');
+      }
+
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('The generated report is empty.');
+
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `report-${String(task.task_id).replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (error) {
+      console.error('Report download failed:', error);
+      setDownloadError(error?.message || 'Unable to download the report.');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
-    <a
-      className="report-download-btn"
-      href={pdfHref}
-      download={`report-${task.task_id}.pdf`}
-      title="Download complete PDF task report"
-      aria-label="Download complete PDF task report"
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      <FileText size={15} />
-      <span>Download Report</span>
-      <Download size={13} />
-    </a>
+    <div className="report-download-wrap">
+      <button
+        type="button"
+        className="report-download-btn"
+        onClick={downloadReport}
+        disabled={downloading}
+        title={downloadError || 'Download complete PDF task report'}
+        aria-label="Download complete PDF task report"
+      >
+        <FileText size={15} />
+        <span>{downloading ? 'Preparing PDF…' : 'Download Report'}</span>
+        <Download size={13} />
+      </button>
+      {downloadError && (
+        <span className="report-download-error" role="alert">
+          {downloadError}
+        </span>
+      )}
+    </div>
   );
 }
 
