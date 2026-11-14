@@ -2425,7 +2425,12 @@ export default function App() {
                         'status-tag ' + (cache.hit ? 'status-ok' : 'status-warn')
                       }
                     >
-                      {cache.tier === 'Live page discovery' ? 'Page-aware planning' : `Plan cache ${cache.hit ? 'hit' : 'miss'}`}
+                      {currentTask.plan_metadata?.inspection_plan_generated &&
+                      currentTask.plan_metadata?.replan_reason === 'live_page_inspection'
+                        ? 'Page analyzed'
+                        : cache.tier === 'Live page discovery'
+                          ? 'Page-aware planning'
+                          : `Plan cache ${cache.hit ? 'hit' : 'miss'}`}
                     </span>
                     <span className="cache-summary-text">
                       {cache.message ||
