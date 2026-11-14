@@ -1874,13 +1874,13 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="navbar">
-        <a className="brand" href="/" aria-label="AI Browser Agent dashboard">
+        <a className="brand" href="/" aria-label="Automata dashboard">
           <span className="brand-icon">
-            <Bot size={21} />
+            <img src="/automata-mark.svg" alt="Automata" />
           </span>
           <span>
-            <strong className="brand-name">AI Browser Agent</strong>
-            <small className="brand-subtitle">AUTONOMOUS BROWSER AUTOMATION</small>
+            <strong className="brand-name">AUTOMATA</strong>
+            <small className="brand-subtitle">YOUR AI BROWSER ASSISTANT</small>
           </span>
         </a>
 
@@ -2527,7 +2527,7 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        <span>AI Browser Agent</span>
+        <span>Automata</span>
         <span>
           {pool?.extension_status?.connected
             ? `Chrome Extension connected (${pool?.extension_status?.client_count || 1} client)`

@@ -391,7 +391,7 @@ function NodeCanvas() {
     };
   }, []);
 
-  return <canvas ref={canvasRef} className="node-canvas" aria-label="Interactive AI browser agent node graph" />;
+  return <canvas ref={canvasRef} className="node-canvas" aria-label="Interactive Automata node graph" />;
 }
 
 /* ─────────────────── scroll-reveal hook ─────────────── */

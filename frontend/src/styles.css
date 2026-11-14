@@ -125,15 +125,16 @@ a:focus-visible {
 
 .brand-name {
   display: block;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  font-size: 1.05rem;
 }
 
 .brand-subtitle {
   display: block;
-  color: #798b80;
-  font-size: 0.64rem;
+  font-family: 'DM Mono', monospace, sans-serif;
+  color: #79847c;
+  font-size: 0.62rem;
   letter-spacing: 0.12em;
   margin-top: 3px;
 }
