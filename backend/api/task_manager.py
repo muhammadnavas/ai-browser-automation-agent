@@ -2020,37 +2020,12 @@ class TaskManager:
                             or bool(action.file_base64)
                         )
                     )
-                    screen_x, screen_y = None, None
-                    if is_file_upload_click or action.action == ActionType.DOUBLE_CLICK:
-                        if page_info and page_info.get("elements"):
-                            for el in page_info["elements"]:
-                                el_text = (el.get("text") or "").lower()
-                                el_aria = (el.get("aria_label") or "").lower()
-                                el_sel = el.get("selector") or ""
-                                if (
-                                    (action.element_id and el.get("index") == action.element_id)
-                                    or (action.selector and el_sel == action.selector)
-                                    or (action.text and (action.text.lower() in el_text or action.text.lower() in el_aria))
-                                    or (is_file_upload_click and "file upload" in f"{el_text} {el_aria}")
-                                ):
-                                    screen_x = el.get("screen_x")
-                                    screen_y = el.get("screen_y")
-                                    break
-
-                    if action.action == ActionType.DOUBLE_CLICK and screen_x and screen_y and screen_x > 0 and screen_y > 0:
-                        try:
-                            import pyautogui
-                            pyautogui.FAILSAFE = False
-                            pyautogui.moveTo(screen_x, screen_y, duration=0.25)
-                            pyautogui.doubleClick(screen_x, screen_y)
-                            await asyncio.sleep(0.2)
-                            pyautogui.press("enter")
-                            logger.info(f"Triggered physical OS double-click + Enter at ({screen_x}, {screen_y}) on '{action.text}'.")
-                        except Exception as e:
-                            logger.debug(f"Physical double click note: {e}")
-
+                    # Browser interactions must stay inside the extension-controlled tab.
+                    # Never use PyAutoGUI for page clicks: it moves the user's physical
+                    # desktop pointer and can interfere with unrelated foreground work.
+                    # DOUBLE_CLICK is handled by the content script using DOM events.
                     if is_file_upload_click:
-                        logger.info(f"File upload target located — executing upload catalog handler.")
+                        logger.info("File upload target located — executing upload catalog handler.")
 
                     if self._is_cancelled(task_id):
                         break
