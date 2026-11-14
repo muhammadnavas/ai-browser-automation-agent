@@ -285,6 +285,47 @@ class ReportGenerator:
                     pdf.set_text_color(31, 48, 40)
                     self._paragraph(pdf, f"{index:02d}.  {item}", 5)
 
+            # Preserve the complete plan evolution, including the reason and
+            # page evidence behind each replan, in the downloadable report.
+            plan_metadata = getattr(task, "plan_metadata", None) or {}
+            plan_versions = plan_metadata.get("plan_versions", []) if isinstance(plan_metadata, dict) else []
+            if isinstance(plan_versions, list) and plan_versions:
+                self._section(pdf, "Plan Version History")
+                current_version = plan_metadata.get("plan_version")
+                for index, version in enumerate(plan_versions, start=1):
+                    if not isinstance(version, dict):
+                        continue
+                    version_number = version.get("version", index)
+                    label = f"Version {version_number}"
+                    if str(version_number) == str(current_version):
+                        label += " (current)"
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(17, 105, 62)
+                    self._paragraph(pdf, label, 4)
+                    pdf.set_font("Helvetica", "", 8.5)
+                    pdf.set_text_color(35, 43, 55)
+
+                    reason = str(version.get("reason") or "Initial plan").replace("_", " ").strip()
+                    self._key_value(pdf, "Reason", reason)
+                    page_title = version.get("page_title")
+                    if page_title:
+                        self._key_value(pdf, "Inspected page", page_title)
+                    page_url = version.get("page_url")
+                    if page_url:
+                        self._key_value(pdf, "Page URL", self._safe_url(page_url))
+                    created_at = version.get("created_at")
+                    if created_at:
+                        try:
+                            self._key_value(pdf, "Created", datetime.fromtimestamp(float(created_at)).strftime("%Y-%m-%d %H:%M:%S"))
+                        except (TypeError, ValueError, OSError, OverflowError):
+                            pass
+                    milestones = version.get("milestones") or []
+                    if isinstance(milestones, list) and milestones:
+                        self._paragraph(pdf, "Milestones:", 3)
+                        for milestone_index, milestone in enumerate(milestones, start=1):
+                            self._paragraph(pdf, f"{milestone_index:02d}.  {self._sanitize_decision_explanation(milestone)}", 4)
+                    pdf.ln(1)
+
             self._section(pdf, "Execution Timeline")
             if not steps:
                 self._paragraph(pdf, "No execution steps were recorded.", 5)
