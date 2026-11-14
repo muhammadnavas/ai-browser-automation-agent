@@ -2812,8 +2812,6 @@ If the original goal is already complete, return ["Verify the requested outcome 
 
         if action and active_milestone:
             action.milestone_id = str(active_milestone.get("id") or "") or None
-        if action and active_milestone:
-            action.milestone_id = str(active_milestone.get("id") or "") or None
         return action
 
     # ------------------------------------------------------------------
