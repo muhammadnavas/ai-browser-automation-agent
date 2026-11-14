@@ -916,44 +916,17 @@ def synthesize_generalized_field_value(
         pass
 
     # ------------------------------------------------------------------
-    # Step 4: Generalized Semantic Synthesis based on HTML5 type & label
+    # Step 4: No synthetic personal or business data
     # ------------------------------------------------------------------
-    if el_type == "email" or any(k in label_lower for k in ["email", "e-mail", "mail"]):
-        val = "user@example.com"
-    elif el_type == "tel" or any(k in label_lower for k in ["phone", "mobile", "tel", "contact number"]):
-        val = "9876543210"
-    elif el_type == "number":
-        min_v = el.get("min")
-        val = str(min_v) if min_v is not None else "1"
-    elif el_type == "date" or "date" in label_lower:
-        val = "2025-01-15"
-    elif el_type == "url" or "website" in label_lower or "url" in label_lower:
-        val = "https://example.com"
-    elif any(k in label_lower for k in ["name", "full name", "applicant", "candidate"]):
-        val = "Alex Morgan"
-    elif any(k in label_lower for k in ["id", "code", "roll", "reg", "number", "usn", "ssn"]):
-        hash_id = abs(hash(label_lower)) % 900000 + 100000
-        val = str(hash_id)
-    elif any(k in label_lower for k in ["address", "street", "city", "location", "residence"]):
-        val = "100 Innovation Boulevard"
-    elif any(k in label_lower for k in ["dept", "department", "branch", "stream", "major", "field of study", "course"]):
-        val = "Technology"
-    elif any(k in label_lower for k in ["year", "semester", "grade", "class"]):
-        val = "3rd Year"
-    elif any(k in label_lower for k in ["score", "gpa", "cgpa", "marks", "percentage", "rating"]):
-        val = "8.5"
-    elif any(k in label_lower for k in ["company", "organization", "employer", "firm"]):
-        val = "Acme Solutions"
-    elif any(k in label_lower for k in ["comment", "message", "description", "note", "reason", "feedback", "summary"]):
-        val = "Details submitted for autonomous workflow verification."
-    else:
-        ph = (el.get("placeholder") or "").strip()
-        if ph and len(ph) > 2 and not any(k in ph.lower() for k in ["enter", "type", "here", "fill"]):
-            val = ph
-        else:
-            val = f"Valid {label_clean}" if label_clean else "Verified"
-
-    return FieldValueResult(val, label_clean or "Form Field", "Synthesized Semantic Fallback")
+    # A plausible-looking placeholder is still fabricated data. Never invent
+    # names, emails, phone numbers, IDs, dates, ratings, courses, or comments.
+    # The caller may request the missing value from the user or leave an
+    # optional field untouched.
+    return FieldValueResult(
+        "",
+        label_clean or "Form Field",
+        "Needs user input (no verified value found)",
+    )
 
 
 class AIAgentPlanner:
