@@ -485,3 +485,23 @@ def test_user_ownership_context_isolation(user_a_retrieved_context, test_form_el
     assert res_b_phone.val == ""
     assert res_b_phone.val != "+1-555-0199"
     assert "Unavailable in My Context" in res_b_phone.source
+
+
+
+def test_unknown_form_values_are_never_fabricated():
+    """Unknown fields must not receive plausible-looking synthetic personal data."""
+    field = {
+        "tag": "input",
+        "type": "text",
+        "id": "department",
+        "name": "department",
+        "placeholder": "Enter department",
+        "text": "Department",
+    }
+    result = synthesize_generalized_field_value(
+        field,
+        goal="Fill this form with my data",
+        retrieved_context={},
+    )
+    assert result.value == ""
+    assert "Needs user input" in result.source
