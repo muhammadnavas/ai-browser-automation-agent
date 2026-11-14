@@ -749,7 +749,7 @@
     if (isFieldAction && fieldLabel) {
       const selector = String(action.selector || "");
       const stableSelector = selector.startsWith("#") ||
-        /\\[(?:name|data-testid|data-test|aria-label|placeholder)=/.test(selector);
+        /\[(?:name|data-testid|data-test|aria-label|placeholder)=/.test(selector);
       if (stableSelector) {
         try {
           const matches = document.querySelectorAll(selector);
