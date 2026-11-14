@@ -2442,8 +2442,9 @@ If the original goal is already complete, return ["Verify the requested outcome 
         task_context: Optional[Any] = None,
         use_cache: bool = True,
         screenshot_path: Optional[str] = None,
+        active_milestone: Optional[Dict[str, Any]] = None,
     ) -> BrowserAction:
-        """Determines the next action to execute in the browser context with state-aware caching."""
+        """Determine the next browser action, scoped to the currently active plan milestone."""
 
         # Authentication walls require the user to sign in in their own session.
         # Never attempt credential discovery or automated authentication here.
@@ -2499,6 +2500,10 @@ If the original goal is already complete, return ["Verify the requested outcome 
                 reasoning=f"Reached max steps limit ({max_steps}). Wrapping up task.",
                 extracted_data={"summary": "Completed maximum steps allocation."},
             )
+
+        # Never reuse an action across milestone boundaries.
+        if active_milestone:
+            use_cache = False
 
         # Screenshot-based decisions must use the current visual frame, not a
         # cached action derived from a previous frame of the same URL/DOM.
@@ -2656,6 +2661,7 @@ If the original goal is already complete, return ["Verify the requested outcome 
                     extracted_data, trajectory_history, user_approval_input,
                     task_context,
                     vision_image_path,
+                    active_milestone,
                 )
             except Exception as e:
                 logger.error(f"LLM decision error: {e}. Falling back to heuristic planner.")
@@ -2804,6 +2810,8 @@ If the original goal is already complete, return ["Verify the requested outcome 
                     f"Failed to store action in Redis (non-fatal): {exc}"
                 )
 
+        if action and active_milestone:
+            action.milestone_id = str(active_milestone.get("id") or "") or None
         return action
 
     # ------------------------------------------------------------------
@@ -2821,8 +2829,9 @@ If the original goal is already complete, return ["Verify the requested outcome 
         user_approval_input: Optional[str] = None,
         task_context: Optional[Any] = None,
         screenshot_path: Optional[str] = None,
+        active_milestone: Optional[Dict[str, Any]] = None,
     ) -> BrowserAction:
-        """Uses Grok vision when a screenshot is available, otherwise the configured text LLM."""
+        """Uses Grok vision when available and constrains the action to the active milestone."""
 
         # ── Build context strings ────────────────────────────────────────
         compact_elements = self.compact_interactive_elements(page_info.get("elements", []), limit=40)
@@ -2886,12 +2895,23 @@ If the original goal is already complete, return ["Verify the requested outcome 
             pass
 
         # ── Prompt ───────────────────────────────────────────────────────
+        milestone_block = (
+            "ACTIVE MILESTONE (the only objective this action may advance):\\n"
+            + json.dumps({
+                "id": active_milestone.get("id"),
+                "title": active_milestone.get("title"),
+                "status": active_milestone.get("status"),
+            }, ensure_ascii=False)
+            + "\\nDo not execute work belonging to a later milestone. If this milestone is already satisfied, choose WAIT and explain the observed evidence; the verifier will decide whether to advance."
+            if active_milestone else "(No milestone supplied)"
+        )
         prompt = f"""{SYSTEM_PROMPT}
 
 ═══════════════════════════════════════════════════════════
 CURRENT TASK STATE
 ═══════════════════════════════════════════════════════════
 USER GOAL: "{sanitized_goal}"
+{milestone_block}
 Step: {step_number} / {max_steps}
 URL:  {page_info.get('url', 'Unknown')}
 Title: {page_info.get('title', 'Unknown')}
@@ -3060,11 +3080,79 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
             wait_selector=data.get("wait_selector"),
             reasoning=data.get("reasoning", "LLM reasoning step"),
             extracted_data=data.get("extracted_data"),
+            milestone_id=str(active_milestone.get("id")) if active_milestone else None,
         )
 
         # ------------------------------------------------------------------
         # Heuristic fallback planner
         # ------------------------------------------------------------------
+
+
+    async def verify_milestone_completion(
+        self,
+        goal: str,
+        milestone: Dict[str, Any],
+        action: BrowserAction,
+        page_info: Dict[str, Any],
+        trajectory_history: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Fail-closed verification that the active milestone's outcome is visible now."""
+        if not (self.ollama_enabled or self.client or self.groq_api_key):
+            return {"complete": False, "evidence": "No verifier model is configured."}
+
+        safe_elements = []
+        for element in (page_info.get("elements") or [])[:35]:
+            if not isinstance(element, dict):
+                continue
+            safe_elements.append({
+                key: element.get(key)
+                for key in ("index", "tag", "role", "text", "aria_label", "label", "placeholder", "disabled")
+                if element.get(key) is not None
+            })
+        history = [
+            {
+                "step": item.get("step"),
+                "action": item.get("action"),
+                "description": str(item.get("description") or "")[:240],
+                "url": item.get("url"),
+            }
+            for item in trajectory_history[-8:]
+        ]
+        prompt = f"""You are a strict browser-task milestone verifier.
+Decide only whether the exact active milestone is demonstrably complete in the CURRENT page state.
+The action's execution success is not proof of milestone completion. A click, keystroke, navigation command, or attempted operation is not outcome evidence by itself.
+Use visible page state, URL, headings, text, and controls as evidence. If evidence is missing, ambiguous, stale, or contradictory, return complete=false.
+Do not infer completion from the user's overall goal or from future planned work.
+
+ORIGINAL GOAL:
+{goal}
+
+ACTIVE MILESTONE:
+{json.dumps({"id": milestone.get("id"), "title": milestone.get("title")}, ensure_ascii=False)}
+
+LAST ACTION:
+{json.dumps({"action": action.action.value, "milestone_id": action.milestone_id, "description": action.reasoning or action.text or action.url or ""}, ensure_ascii=False)}
+
+CURRENT PAGE:
+{json.dumps({"url": page_info.get("url"), "title": page_info.get("title"), "headings": (page_info.get("headings") or [])[:15], "page_text": str(page_info.get("page_text") or "")[:4500], "elements": safe_elements}, ensure_ascii=False)[:9000]}
+
+RECENT ACTION HISTORY:
+{json.dumps(history, ensure_ascii=False)[:3000]}
+
+Return ONLY this JSON object:
+{{"complete": true_or_false, "evidence": "short quote or concrete observable fact from the current page"}}
+"""
+        try:
+            raw = await asyncio.to_thread(self._call_llm, prompt, "application/json")
+            parsed = json.loads(raw.strip())
+            complete = parsed.get("complete") is True
+            evidence = str(parsed.get("evidence") or "").strip()[:500]
+            if complete and not evidence:
+                return {"complete": False, "evidence": "Verifier supplied no observable evidence."}
+            return {"complete": complete, "evidence": evidence or "Milestone outcome is not yet observable."}
+        except Exception as exc:
+            logger.warning("Milestone verification failed closed for %s: %s", milestone.get("id"), exc)
+            return {"complete": False, "evidence": "Milestone verification unavailable; completion was not recorded."}
 
     def _heuristic_decide_action(
         self,
