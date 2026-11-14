@@ -2481,6 +2481,7 @@ class TaskManager:
                         reasoning=action.reasoning,
                         url=controller.current_url,
                         success=True,
+                        milestone_id=action.milestone_id,
                     )
                     if action.action == ActionType.EXTRACT and extracted_item and isinstance(extracted_item, dict):
                         task.context.record_extraction(extracted_item)
@@ -2544,6 +2545,7 @@ class TaskManager:
                         url=controller.current_url,
                         success=False,
                         error=exec_description,
+                        milestone_id=action.milestone_id,
                     )
                     task.context.record_error(exec_description)
                     task.context.increment_failures()
