@@ -54,8 +54,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="AI Browser Automation Agent",
-    description="Industry-grade AI Browser Agent for autonomous navigation, form filling, flight/ticket booking, web scraping, and Excel/PDF report generation.",
+    title="Automata",
+    description="Automata — Your AI Browser Assistant for autonomous navigation, form filling, web tasks, and report generation.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -224,7 +224,7 @@ async def serve_ui():
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Browser Agent — Frontend not built</title>
+  <title>Automata — Frontend not built</title>
   <style>
     body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:#e5e7eb;font:16px/1.6 system-ui,sans-serif}
     main{max-width:680px;margin:24px;padding:28px;border:1px solid #334155;border-radius:16px;background:#111827}

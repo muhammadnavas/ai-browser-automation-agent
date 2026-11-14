@@ -1103,7 +1103,8 @@ class AIAgentPlanner:
     # Fallback chain — tried in order when the primary model returns 404/503/429
     _FALLBACK_MODELS = [
         "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite-preview",
         "gemini-3-flash-preview",
     ]
 
@@ -1796,7 +1797,7 @@ class AIAgentPlanner:
                             "reused": True,
                             "key": redis_key,
                             "version": redis_cached.get("agent_version", self.agent_version),
-                            "message": f"Plan Cache HIT (Redis): Reused {len(plan_steps)}-step plan from Redis cache",
+                            "message": f"Reused {len(plan_steps)}-step plan from Redis cache",
                             "details": f"Redis Key: {redis_key} • State validated • Instant reuse without AI latency",
                         }
                         return self._filter_unrequested_report_steps(goal, plan_steps)
@@ -3531,29 +3532,157 @@ Return ONLY this JSON object with a real JSON boolean:
             goal_lower, ["upload", "attach", "folder", "create"]
         )
         if is_upload_task and on_target:
+            def _is_successful_step(h: Dict[str, Any]) -> bool:
+                if h.get("success") is False:
+                    return False
+                status = str(h.get("status") or "").lower()
+                if status in ("failed", "error") or "fail" in status:
+                    return False
+                return True
+
+            def _extract_folder_name(target_goal: str) -> str:
+                import re as _re
+                _NAME_CHARS = r'[A-Za-z0-9_\-\.\(\) ]+?'
+                _STOP = r'(?:\s*$|\s+(?:in|on|at|inside|to|and|then|for|from|under|within)\b)'
+                name = 'New Folder'
+
+                _dq = _re.search(r'"([^"]+)"', target_goal)
+                _sq = _re.search(r"'([^']+)'", target_goal)
+                if _dq:
+                    return _dq.group(1).strip()
+                if _sq:
+                    return _sq.group(1).strip()
+
+                _kw_patterns = [
+                    r'\bname\s+(?:it\s+(?:as\s+)?|the\s+folder\s+)' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bnamed?\s+' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bcall(?:ed|ing|s)?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+                    r'\btitl(?:ed?|ing)\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+                    r'\blabell?ed?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bwith\s+(?:the\s+)?name\s+' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bas\s+' + f'({_NAME_CHARS})' + _STOP,
+                    r'\b(?:create|make|mkdir)\s+(?:a\s+|new\s+)?folder\s+([A-Za-z0-9_\-\.]+)',
+                    r'\bfolder\s+([A-Za-z0-9_\-\.]+)' + _STOP,
+                ]
+                for _pat in _kw_patterns:
+                    _m = _re.search(_pat, target_goal, _re.IGNORECASE)
+                    if _m:
+                        cand = _m.group(1).strip()
+                        if cand.lower() not in ('a', 'an', 'the', 'new', 'in', 'on', 'my', 'this', 'that'):
+                            return cand
+                return name
+
             has_clicked_new = any(
-                h.get("action") == "click" and h.get("reasoning") and ("new" in str(h.get("reasoning")).lower() or "upload" in str(h.get("reasoning")).lower() or "folder" in str(h.get("reasoning")).lower())
+                _is_successful_step(h) and h.get("action") == "click" and h.get("reasoning") and ("new" in str(h.get("reasoning")).lower() or "upload" in str(h.get("reasoning")).lower() or "folder" in str(h.get("reasoning")).lower())
                 for h in trajectory_history
             )
             has_clicked_file_upload = any(
-                (h.get("action") == "click" and h.get("reasoning") and "file upload" in str(h.get("reasoning")).lower())
-                or h.get("action") in ("upload", "upload_file")
+                _is_successful_step(h) and (
+                    (h.get("action") == "click" and h.get("reasoning") and "file upload" in str(h.get("reasoning")).lower())
+                    or h.get("action") in ("upload", "upload_file")
+                )
                 for h in trajectory_history
             )
             has_clicked_new_folder = any(
-                h.get("action") == "click" and h.get("reasoning") and "new folder" in str(h.get("reasoning")).lower()
+                _is_successful_step(h) and h.get("action") == "click" and h.get("reasoning") and "new folder" in str(h.get("reasoning")).lower()
                 for h in trajectory_history
             )
             has_typed_folder_name = any(
-                h.get("action") in ("type_text", "fill") and h.get("reasoning") and "folder name" in str(h.get("reasoning")).lower()
+                _is_successful_step(h) and h.get("action") in ("type_text", "fill") and h.get("reasoning") and "folder name" in str(h.get("reasoning")).lower()
                 for h in trajectory_history
             )
+
+            # Determine whether the user wants to CREATE a new folder vs FIND/OPEN an existing folder
+            is_create_folder_task = any(kw in goal_lower for kw in [
+                "create folder", "create a folder", "new folder", "make a folder", "make folder",
+                "add folder", "add a folder", "create new folder", "mkdir"
+            ])
+
+            import re as _re
+            existing_folder_target = None
+            if not is_create_folder_task:
+                _ef_match = _re.search(
+                    r"\b(?:find|open|search for|search|into|in|inside|select|go to)?\s*([a-zA-Z0-9_\-\.]+)\s+folder\b",
+                    goal, _re.IGNORECASE
+                )
+                if _ef_match:
+                    cand = _ef_match.group(1).strip()
+                    if cand.lower() not in ("a", "an", "the", "this", "that", "my", "new", "each", "every", "some"):
+                        existing_folder_target = cand
+                if not existing_folder_target:
+                    _ef_match2 = _re.search(
+                        r"\bfolder\s+(?:named|called)?\s*['\"]?([a-zA-Z0-9_\-\.]+)['\"]?",
+                        goal, _re.IGNORECASE
+                    )
+                    if _ef_match2:
+                        cand = _ef_match2.group(1).strip()
+                        if cand.lower() not in ("a", "an", "the", "this", "that", "my", "new"):
+                            existing_folder_target = cand
+
+            # If user wants to upload into an existing folder, navigate into it before clicking New
+            url_current = (page_info.get("url") or "").lower()
+            headings_current = [(h or "").lower() for h in page_info.get("headings", [])]
+            is_inside_target_folder = bool(
+                existing_folder_target
+                and (
+                    "folders/" in url_current
+                    or any(existing_folder_target.lower() in h for h in headings_current)
+                )
+            )
+
+            if existing_folder_target and not is_inside_target_folder:
+                last_step = trajectory_history[-1] if trajectory_history else {}
+                if last_step.get("action") in ("click", "double_click") and existing_folder_target.lower() in str(last_step.get("reasoning", "")).lower():
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=2000,
+                        reasoning=f"Waiting for '{existing_folder_target}' folder to finish opening.",
+                    )
+
+                folder_el = None
+                for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
+                    el_text = (el.get("text") or "").strip().lower()
+                    el_aria = (el.get("aria_label") or "").strip().lower()
+                    if existing_folder_target.lower() in el_text or (existing_folder_target.lower() in el_aria and "folder" in el_aria):
+                        folder_el = el
+                        break
+
+                if folder_el:
+                    return BrowserAction(
+                        action=ActionType.DOUBLE_CLICK,
+                        element_id=folder_el.get("index"),
+                        selector=folder_el.get("selector"),
+                        text=folder_el.get("text") or existing_folder_target,
+                        reasoning=f"Opening '{existing_folder_target}' folder.",
+                    )
+                else:
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=1500,
+                        reasoning=f"Looking for '{existing_folder_target}' folder in Google Drive.",
+                    )
+
+            if existing_folder_target and is_inside_target_folder:
+                has_waited_in_target_folder = any(
+                    h.get("action") == "wait" and "folder view" in str(h.get("reasoning", "")).lower()
+                    for h in trajectory_history
+                )
+                if not has_waited_in_target_folder:
+                    return BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=1500,
+                        reasoning=f"Waiting for '{existing_folder_target}' folder view to fully load before clicking New.",
+                    )
 
             # Priority 1: Look for "+ New" button if we haven't clicked it yet
             if not has_clicked_new and not has_clicked_file_upload and not has_clicked_new_folder:
                 upload_btn = None
                 # First pass: check for exact "New" / "+ New" button (Google Drive, Cloud storage)
                 for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
                     el_text = (el.get("text") or "").lower().strip()
                     el_aria = (el.get("aria_label") or "").lower().strip()
                     el_tag = el.get("tag", "").lower()
@@ -3566,6 +3695,8 @@ Return ONLY this JSON object with a real JSON boolean:
                 if not upload_btn:
                     upload_keywords = ["new", "+ new", "upload", "add", "import", "attach"]
                     for el in elements:
+                        if el.get("disabled") is True or el.get("visible") is False:
+                            continue
                         el_text = (el.get("text") or "").lower().strip()
                         el_tag = el.get("tag", "").lower()
                         el_aria = (el.get("aria_label") or "").lower()
@@ -3595,9 +3726,11 @@ Return ONLY this JSON object with a real JSON boolean:
             # Priority 2: After clicking New, look for "File upload" or "New folder" option in the menu
             if has_clicked_new and not has_clicked_file_upload and not has_clicked_new_folder:
                 target_el = None
-                is_folder_task = "folder" in goal_lower
+                is_folder_task = is_create_folder_task
                 
                 for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
                     el_text = (el.get("text") or "").lower()
                     el_aria = (el.get("aria_label") or "").lower()
                     combined_item = f"{el_text} {el_aria}"
@@ -3618,22 +3751,34 @@ Return ONLY this JSON object with a real JSON boolean:
                             reasoning="Clicking 'New folder' option in the New menu.",
                         )
                     else:
+                        from browser.os_dialog import get_user_system_file
+                        _rf = None
+                        try:
+                            _rf = get_user_system_file(goal)
+                        except Exception:
+                            pass
+                        _rf_name = _rf["name"] if _rf else None
+                        _rf_paths = [_rf["path"]] if _rf else []
                         return BrowserAction(
                             action=ActionType.CLICK,
                             element_id=target_el.get("index"),
                             selector=target_el.get("selector"),
                             text=target_el.get("text"),
+                            file_name=_rf_name,
+                            upload_paths=_rf_paths,
                             reasoning="Clicking 'File upload' option in the New menu.",
                         )
                 else:
                     wait_count = sum(
                         1 for h in trajectory_history
-                        if "waiting for the 'new' menu" in str(h.get("reasoning", "")).lower()
+                        if any(k in str(h.get("reasoning", "")).lower() for k in ["waiting for the 'new' menu", "waiting briefly before continuing"])
                     )
                     if wait_count >= 1:
                         # Re-click New button if menu didn't open
                         upload_btn = None
                         for el in elements:
+                            if el.get("disabled") is True or el.get("visible") is False:
+                                continue
                             el_text = (el.get("text") or "").lower().strip()
                             el_tag = el.get("tag", "").lower()
                             el_aria = (el.get("aria_label") or "").lower()
@@ -3649,7 +3794,8 @@ Return ONLY this JSON object with a real JSON boolean:
                                 reasoning="Re-clicking 'New' button to ensure menu opens.",
                             )
                     return BrowserAction(
-                        action=ActionType.EXTRACT,
+                        action=ActionType.WAIT,
+                        scroll_amount=800,
                         reasoning="Waiting for the 'New' menu to fully open to locate the target menu item.",
                     )
 
@@ -3657,6 +3803,8 @@ Return ONLY this JSON object with a real JSON boolean:
             if has_clicked_new_folder and not has_typed_folder_name:
                 folder_name_input = None
                 for el in elements:
+                    if el.get("disabled") is True or el.get("visible") is False:
+                        continue
                     el_tag = el.get("tag", "")
                     el_type = el.get("type", "").lower()
                     el_val = (el.get("value") or el.get("text") or "").lower()
@@ -3676,15 +3824,7 @@ Return ONLY this JSON object with a real JSON boolean:
                             break
                 
                 if folder_name_input:
-                    # Extract desired folder name from goal, e.g. "name it as 'Agent Browser'"
-                    name = "New Folder"
-                    if '"' in goal:
-                        name = goal.split('"')[1]
-                    elif "'" in goal:
-                        name = goal.split("'")[1]
-                    elif " as " in goal_lower:
-                        name = goal[goal_lower.index(" as ") + 4:].strip()
-                    
+                    name = _extract_folder_name(goal)
                     return BrowserAction(
                         action=ActionType.TYPE_TEXT,
                         element_id=folder_name_input.get("index"),
@@ -3694,7 +3834,8 @@ Return ONLY this JSON object with a real JSON boolean:
                     )
                 else:
                     return BrowserAction(
-                        action=ActionType.EXTRACT,
+                        action=ActionType.WAIT,
+                        scroll_amount=800,
                         reasoning="Waiting for the folder name input dialog to appear.",
                     )
 
@@ -3709,6 +3850,39 @@ Return ONLY this JSON object with a real JSON boolean:
 
             # Priority 4: We have successfully uploaded/created. Verify and finish.
             if has_clicked_file_upload or has_typed_folder_name:
+                has_waited_after_upload = any(
+                    h.get("action") == "wait" and h.get("reasoning") and "upload" in str(h.get("reasoning")).lower()
+                    for h in trajectory_history
+                )
+                if has_clicked_file_upload and not has_typed_folder_name:
+                    if not has_waited_after_upload:
+                        return BrowserAction(
+                            action=ActionType.WAIT,
+                            scroll_amount=3000,
+                            reasoning="Waiting for file upload to complete.",
+                        )
+                    try:
+                        from browser.os_dialog import get_user_system_file
+                        real_file = get_user_system_file(goal)
+                        uploaded_file_name = real_file["name"] if real_file else "system file"
+                        uploaded_file_path = real_file["path"] if real_file else ""
+                    except Exception:
+                        uploaded_file_name = "system file"
+                        uploaded_file_path = ""
+
+                    return BrowserAction(
+                        action=ActionType.FINISH,
+                        reasoning=f"Upload of '{uploaded_file_name}' from user system completed successfully.",
+                        extracted_data={
+                            "task_goal": goal,
+                            "uploaded_file": uploaded_file_name,
+                            "system_file_path": uploaded_file_path,
+                            "url": page_info.get("url"),
+                            "status": "Success",
+                            "total_steps": step_number,
+                        },
+                    )
+
                 # After typing folder name, wait briefly for the dialog to dismiss
                 if has_typed_folder_name and not has_waited_after_folder:
                     return BrowserAction(
@@ -3721,26 +3895,39 @@ Return ONLY this JSON object with a real JSON boolean:
                 also_wants_upload = _has_keyword(goal_lower, ["upload", "attach"]) and has_typed_folder_name
 
                 # Extract name that was used for the folder
-                folder_name_used = "New Folder"
+                folder_name_used = _extract_folder_name(goal)
                 for h in trajectory_history:
                     if h.get("action") in ("type_text", "fill") and "folder name" in str(h.get("reasoning", "")).lower():
-                        folder_name_used = h.get("description", "").split("'")[1] if "'" in str(h.get("description", "")) else folder_name_used
+                        raw_desc = str(h.get("description", ""))
+                        raw_text = str(h.get("text") or h.get("value") or "")
+                        if raw_text:
+                            folder_name_used = raw_text
+                        elif "'" in raw_desc:
+                            folder_name_used = raw_desc.split("'")[1]
                         break
-                # Also try extracting from goal
-                if '"' in goal:
-                    folder_name_used = goal.split('"')[1]
-                elif "'" in goal:
-                    folder_name_used = goal.split("'")[1]
 
                 # Check if we are ACTUALLY inside the created folder
                 url_current = (page_info.get("url") or "").lower()
-                page_text_current = (page_info.get("page_text") or "").lower()
                 headings_current = [(h or "").lower() for h in page_info.get("headings", [])]
 
                 is_inside_folder = (
                     "folders/" in url_current
                     or any(folder_name_used.lower() in h for h in headings_current)
                 )
+
+                # If task only wanted to create a folder (not upload inside it), we are finished!
+                if not also_wants_upload:
+                    return BrowserAction(
+                        action=ActionType.FINISH,
+                        reasoning=f"Folder '{folder_name_used}' created successfully in Google Drive.",
+                        extracted_data={
+                            "task_goal": goal,
+                            "folder_name": folder_name_used,
+                            "url": page_info.get("url"),
+                            "status": "Success",
+                            "total_steps": step_number,
+                        },
+                    )
 
                 if also_wants_upload and not is_inside_folder:
                     last_step = trajectory_history[-1] if trajectory_history else {}
