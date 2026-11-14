@@ -206,6 +206,9 @@
       if (aInView !== bInView) return bInView - aInView;
       return Math.abs(ar.top) - Math.abs(br.top);
     });
+    // Bound work on pages with thousands of generic tabindex/data-id nodes.
+    // A fresh inspection after scrolling promotes newly visible controls.
+    if (rawElements.length > 800) rawElements.length = 800;
 
     const results = [];
     let index = 1;
