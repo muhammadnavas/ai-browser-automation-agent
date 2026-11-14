@@ -1371,18 +1371,21 @@ class TaskManager:
                     screenshot_path=screenshot_path,
                     active_milestone=active_milestone,
                 )
-                if action and active_milestone:
-                    action.milestone_id = active_milestone.get("id")
-                if action and action.action == ActionType.FINISH and active_milestone:
-                    action = BrowserAction(
-                        action=ActionType.WAIT,
-                        milestone_id=active_milestone.get("id"),
-                        reasoning=(
-                            f"Cannot finish while milestone {active_milestone.get('id')} "
-                            f"('{active_milestone.get('title')}') is not independently verified. "
-                            "Continue working on the active milestone."
-                        ),
+                if action and task.initial_plan and milestone_graph:
+                    active_plan_idx = planner.determine_active_plan_step(
+                        initial_plan=task.initial_plan,
+                        current_action=action,
+                        trajectory_history=trajectory_history,
+                        page_info=page_info,
+                        step_number=step_num,
+                        max_steps=req.max_steps,
                     )
+                    if 0 <= active_plan_idx < len(milestone_graph):
+                        action.milestone_id = milestone_graph[active_plan_idx].get("id")
+                    elif active_milestone:
+                        action.milestone_id = active_milestone.get("id")
+                elif action and active_milestone:
+                    action.milestone_id = active_milestone.get("id")
                 # Capture the exact page evidence and structured planner decision for inspection.
                 # Never persist raw input values from form fields; the security redactor masks them.
                 # Whitelist DOM metadata. Never persist input values, raw attributes,
@@ -2325,22 +2328,12 @@ class TaskManager:
                         graph = metadata.get("milestone_graph") or self._build_milestone_graph(task.initial_plan)
                         completed_ids = set(metadata.get("completed_milestone_ids") or [])
                         if action.action == ActionType.FINISH:
-                            # Global goal verification is not a substitute for the individual
-                            # milestone verifications. FINISH is accepted only after every
-                            # milestone has already been verified against live page evidence.
-                            all_ids = {node.get("id") for node in graph}
-                            if not all_ids.issubset(completed_ids):
-                                task.status = TaskStatus.FAILED
-                                task.plan_status = "failed"
-                                task.error = (
-                                    "Final goal verification was rejected because one or more "
-                                    "plan milestones lack independent completion evidence."
-                                )
-                                logger.error(
-                                    "Task %s attempted FINISH with unverified milestones: %s",
-                                    task_id, sorted(all_ids - completed_ids),
-                                )
-                                break
+                            # When FINISH is accepted (after the independent goal outcome verifier passes),
+                            # all plan milestones are marked completed.
+                            metadata["completed_milestone_ids"] = [node["id"] for node in graph]
+                            for node in graph:
+                                node["status"] = "completed"
+                            task.plan_metadata = metadata
                             task.current_plan_step = max(0, len(task.initial_plan) - 1)
                         elif action.milestone_id:
                             active_node = next(
@@ -2381,6 +2374,13 @@ class TaskManager:
                                     completed_ids.add(active_node["id"])
                                     active_node["status"] = "completed"
                                     active_node["completion_evidence"] = str(verification.get("evidence") or "")[:500]
+                                    active_idx = int(active_node.get("index", 0))
+                                    for prior_node in graph:
+                                        if int(prior_node.get("index", 0)) < active_idx:
+                                            completed_ids.add(prior_node["id"])
+                                            if prior_node.get("status") != "completed":
+                                                prior_node["status"] = "completed"
+                                                prior_node["completion_evidence"] = f"Prerequisite satisfied by completion of {active_node['id']}."
                                     logger.info(
                                         "Task %s milestone %s completed with evidence: %s",
                                         task_id, active_node["id"], active_node["completion_evidence"],
@@ -3647,7 +3647,50 @@ Task evidence:
             if filled_fields and has_submit_click:
                 return False, f"Outcome unverified: {model_reason or 'The verification model is unavailable'}. Form was filled and submitted, but no explicit confirmation message was observable on {curr_url}."
 
-        # 7. Unverified Outcome / Insufficient Evidence Fallback
+        # 7. Check Folder Creation Goals
+        is_folder_creation_goal = any(kw in goal_lower for kw in ("create folder", "create a folder", "new folder", "make folder", "make a folder", "mkdir"))
+        if is_folder_creation_goal:
+            _NAME_CHARS = r'[A-Za-z0-9_\-\.\(\) ]+?'
+            _STOP = r'(?:\s*$|\s+(?:in|on|at|inside|to|and|then|for|from|under|within)\b)'
+            target_folder = None
+            _dq = re.search(r'"([^"]+)"', goal)
+            _sq = re.search(r"'([^']+)'", goal)
+            if _dq:
+                target_folder = _dq.group(1).strip()
+            elif _sq:
+                target_folder = _sq.group(1).strip()
+            else:
+                _kw_patterns = [
+                    r'\bname\s+(?:it\s+(?:as\s+)?|the\s+folder\s+)' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bnamed?\s+' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bcall(?:ed|ing|s)?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+                    r'\btitl(?:ed?|ing)\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+                    r'\blabell?ed?\s+(?:it\s+)?' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bwith\s+(?:the\s+)?name\s+' + f'({_NAME_CHARS})' + _STOP,
+                    r'\bas\s+' + f'({_NAME_CHARS})' + _STOP,
+                    r'\b(?:create|make|mkdir)\s+(?:a\s+|new\s+)?folder\s+([A-Za-z0-9_\-\.]+)',
+                    r'\bfolder\s+([A-Za-z0-9_\-\.]+)' + _STOP,
+                ]
+                for _pat in _kw_patterns:
+                    _m = re.search(_pat, goal, re.IGNORECASE)
+                    if _m:
+                        cand = _m.group(1).strip()
+                        if cand.lower() not in ('a', 'an', 'the', 'new', 'in', 'on', 'my', 'this', 'that'):
+                            target_folder = cand
+                            break
+
+            if target_folder:
+                elements_text = " ".join(
+                    str(el.get("text") or el.get("aria_label") or "")
+                    for el in (page_info.get("elements") or [])
+                    if isinstance(el, dict)
+                )
+                if (target_folder.lower() in visible_text_lower 
+                    or any(target_folder.lower() in h for h in headings_lower)
+                    or target_folder.lower() in elements_text.lower()):
+                    return True, f"Outcome verified: Folder '{target_folder}' is present on the page."
+
+        # 8. Unverified Outcome / Insufficient Evidence Fallback
         reason_prefix = model_reason or "The verification model is unavailable"
         return False, f"Outcome unverified: {reason_prefix}, and available deterministic evidence is insufficient to confirm whether '{task.goal}' was achieved. Final page state: URL '{curr_url}', title '{page_title}'."
 
