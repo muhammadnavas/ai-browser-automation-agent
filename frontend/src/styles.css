@@ -1233,6 +1233,26 @@ h1 {
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
+.report-download-btn {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.report-download-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+  transform: none;
+}
+
+.report-download-error {
+  display: block;
+  margin-top: 6px;
+  max-width: 260px;
+  color: #fda4af;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
 .report-download-btn:hover {
   transform: translateY(-1px);
   background: #7ef5b8;
