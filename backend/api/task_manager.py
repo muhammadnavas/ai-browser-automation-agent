@@ -1065,6 +1065,24 @@ class TaskManager:
                 from agents.page_state import classify_page_state
                 page_info["agent_state"] = classify_page_state(page_info)
 
+
+                if default_cache_service:
+                    from browser.controller import generate_dom_fingerprint
+                    task.context.last_dom_fingerprint = generate_dom_fingerprint(page_info, default_cache_service)
+
+                if use_extension and not page_info.get("elements") and not page_info.get("page_text"):
+                    logger.info("DOM empty — waiting for content script to initialise, retrying in 2s…")
+                    if await self._sleep_or_cancel(task_id, 2.0):
+                        break
+                    page_info = await controller.parse_interactive_elements()
+                    if page_info.get("inspection_error"):
+                        task.status = TaskStatus.FAILED
+                        task.plan_status = "failed"
+                        task.error = "Could not inspect the live page after the content-script retry. No browser action was attempted."
+                        await self.broadcast_task_update(task_id)
+                        break
+                    page_info["agent_state"] = classify_page_state(page_info)
+
                 # URL-led tasks are intentionally replanned once the actual
                 # page has been inspected. This replaces speculative milestones
                 # with evidence-based steps and records a visible plan version.
@@ -1123,16 +1141,6 @@ class TaskManager:
                             "Task %s could not generate an observed-page plan; retaining discovery plan: %s",
                             task_id, observed_plan_error,
                         )
-
-                if default_cache_service:
-                    from browser.controller import generate_dom_fingerprint
-                    task.context.last_dom_fingerprint = generate_dom_fingerprint(page_info, default_cache_service)
-
-                if use_extension and not page_info.get("elements") and not page_info.get("page_text"):
-                    logger.info("DOM empty — waiting for content script to initialise, retrying in 2s…")
-                    if await self._sleep_or_cancel(task_id, 2.0):
-                        break
-                    page_info = await controller.parse_interactive_elements()
 
                 if restored_checkpoint and resume_checkpoint is not None:
                     checkpoint_ok, checkpoint_message = self._validate_resume_checkpoint(
