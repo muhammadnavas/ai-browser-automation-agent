@@ -226,6 +226,7 @@ class ActionRecord(BaseModel):
     description: str
     reasoning: Optional[str] = None
     url: Optional[str] = None
+    milestone_id: Optional[str] = None
     success: bool = True
     error: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
@@ -292,6 +293,7 @@ class TaskContext(BaseModel):
         url: Optional[str],
         success: bool,
         error: Optional[str] = None,
+        milestone_id: Optional[str] = None,
     ) -> None:
         """Append an ActionRecord and keep the list bounded to 50."""
         self.action_history.append(ActionRecord(
@@ -300,6 +302,7 @@ class TaskContext(BaseModel):
             description=description,
             reasoning=reasoning,
             url=url,
+            milestone_id=milestone_id,
             success=success,
             error=error,
         ))
