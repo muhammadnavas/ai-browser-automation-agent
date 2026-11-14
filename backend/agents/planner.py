@@ -32,6 +32,7 @@ warnings.filterwarnings(
 )
 
 from models.schemas import BrowserAction, ActionType, ApprovalType
+from agents.action_registry import get_action_catalog_prompt, validate_action_payload
 from agents.plan_cache import PlanCache, default_plan_cache
 from services.cache_service import CacheService, default_cache_service
 
@@ -3010,6 +3011,9 @@ INTERACTIVE ELEMENTS (index = element_id for click/type_text actions):
 RECENT ACTION HISTORY:
 {history_str}
 
+AVAILABLE BROWSER TOOLS (choose only from this registry):
+{get_action_catalog_prompt()}
+
 PREVIOUSLY EXTRACTED DATA:
 {extracted_summary if extracted_summary else '(none yet)'}
 {approval_ctx}
@@ -3071,6 +3075,11 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
         data = json.loads(raw_text)
 
         action_str = data.get("action")
+        is_valid_action, validation_error = validate_action_payload(action_str, data)
+        if not is_valid_action:
+            logger.warning("Invalid planner tool call (%s): %s; falling back to WAIT", action_str, validation_error)
+            data = {"action": "wait", "reasoning": f"Invalid tool arguments: {validation_error}"}
+            action_str = "wait"
         try:
             action_type = ActionType(action_str) if action_str else ActionType.WAIT
         except ValueError:
