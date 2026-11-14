@@ -579,7 +579,7 @@
   function getAccessibleName(el) {
     if (!el) return "";
     const labelledBy = String(el.getAttribute("aria-labelledby") || "")
-      .split(/\\s+/).filter(Boolean)
+      .split(/\s+/).filter(Boolean)
       .map((id) => document.getElementById(id))
       .filter(Boolean)
       .map((node) => node.innerText || node.textContent || "")
@@ -587,16 +587,19 @@
     const labelText = el.labels
       ? Array.from(el.labels).map((label) => label.innerText || label.textContent || "").join(" ")
       : "";
+    const questionCard = el.closest('.Qr7Oae,[role="listitem"],[data-params],[role="row"],[data-target="item"]');
+    const cardHeading = questionCard?.querySelector('[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]');
     return [
       el.getAttribute("aria-label"),
       labelledBy,
       labelText,
       inferLabel(el),
+      cardHeading?.innerText || cardHeading?.textContent || "",
       el.getAttribute("placeholder"),
       el.getAttribute("title"),
       el.getAttribute("name"),
       el.getAttribute("data-tooltip"),
-    ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
   }
 
   function isVisibleActionTarget(el) {
@@ -671,8 +674,8 @@
     const actionKind = String(action.action || "").toLowerCase();
     const isFieldAction = ["fill", "fill_field", "type_text", "select", "select_option"].includes(actionKind);
     const reasoning = String(action.reasoning || "");
-    const quotedField = reasoning.match(/(?:the\\s+)?['"“]([^'"”]+)['"”]\\s+(?:field|question|input)/i);
-    const describedField = reasoning.match(/(?:fill|enter|type|populate|update)\\s+(?:in\\s+)?(?:the\\s+)?["'“]?([^"'”]+?)["'”]?\\s+(?:field|question|input)\\b/i);
+    const quotedField = reasoning.match(/(?:the\s+)?['"“]([^'"”]+)['"”]\s+(?:field|question|input)/i);
+    const describedField = reasoning.match(/(?:fill|enter|type|populate|update)\s+(?:in\s+)?(?:the\s+)?["'“]?([^"'”]+?)["'”]?\s+(?:field|question|input)\b/i);
     const fieldLabel = String(
       action.field_label || action.label ||
       (quotedField && quotedField[1]) ||
@@ -685,13 +688,8 @@
       const controls = Array.from(document.querySelectorAll(
         'input:not([type="hidden"]),textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]'
       )).filter(isVisibleActionTarget);
-      const cardCandidates = controls.map((control) => {
-        const card = control.closest('.Qr7Oae,[role="listitem"],[data-params]');
-        const heading = card?.querySelector('[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]');
-        return heading || control;
-      });
       const matches = findBestSemanticMatch(
-        [...controls, ...cardCandidates], fieldLabel, actionKind, true
+        controls, fieldLabel, actionKind, true
       );
       if (matches.ambiguous) {
         console.warn("AI Agent: refusing ambiguous form-field match", { fieldLabel, score: matches.score });
@@ -731,7 +729,7 @@
 
     // Numeric selectors are supported for planner compatibility, but are only
     // accepted when the current snapshot marker still points to a live element.
-    const numericSelector = (typeof action.selector === "string" && /^\\d+$/.test(action.selector.trim()))
+    const numericSelector = (typeof action.selector === "string" && /^\d+$/.test(action.selector.trim()))
       ? action.selector.trim()
       : (typeof action.selector === "number" ? String(action.selector) : null);
     if (numericSelector !== null) {
@@ -763,7 +761,7 @@
       // Google Forms card recovery is allowed only when the requested card
       // resolves to a single visible editable control.
       if (action.selector.includes(".Qr7Oae")) {
-        const nthMatch = action.selector.match(/\\.Qr7Oae(?::nth-of-type\\((\\d+)\\))?/);
+        const nthMatch = action.selector.match(/\.Qr7Oae(?::nth-of-type\((\d+)\))?/);
         if (nthMatch) {
           const cards = Array.from(document.querySelectorAll(".Qr7Oae"));
           const idx = nthMatch[1] ? parseInt(nthMatch[1], 10) - 1 : 0;
