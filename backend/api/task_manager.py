@@ -3308,6 +3308,18 @@ class TaskManager:
             # because the target DOM hasn't finished re-rendering in the first 50ms.
             if action_type == ActionType.DOUBLE_CLICK:
                 return True, "Double-click dispatched to target; awaiting asynchronous view update."
+            # A click on a menu/dropdown trigger (like Google Drive '+ New')
+            # opens an async popup menu that animates into the DOM over 200-500ms.
+            # Do not fail menu trigger clicks before the menu items can be observed.
+            target_text_lower = str(action.text or "").strip().lower()
+            reasoning_lower = str(action.reasoning or "").lower()
+            if (
+                target_text_lower in ("new", "+ new", "+new")
+                or "new button" in reasoning_lower
+                or "dropdown" in reasoning_lower
+                or "menu" in reasoning_lower
+            ):
+                return True, "Menu trigger click dispatched; awaiting dropdown menu render."
             # An accepted click is not proof that its intended effect occurred.
             # In particular, do not let an unchanged Submit button count as success.
             return False, "Click outcome is unverified: the page and target state did not observably change."

@@ -1682,6 +1682,11 @@
         el.dispatchEvent(new MouseEvent("click", opts));
       }
 
+      // A Google Drive "+ New" button click opens a dynamic menu: wait briefly for the menu to mount
+      if (location.hostname.includes("drive.google.com") && /^(new|\+ new)$/i.test((action.text || el.innerText || "").trim())) {
+        await new Promise((r) => setTimeout(r, 450));
+      }
+
       // If navigation began immediately synchronously
       if (willNavigate || window.location.href !== beforeClickState.url) {
         window.removeEventListener("pagehide", onNavigationInitiated);

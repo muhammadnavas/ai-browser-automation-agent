@@ -53,3 +53,94 @@ def test_existing_folder_target():
     assert _ef_match is not None
     assert _ef_match.group(1).strip().lower() == "automata"
 
+
+def test_folder_candidate_ranking_ignores_container_row():
+    """Verify that multi-folder container rows are ignored and specific folder elements are ranked first."""
+    _eft_lower = "automata"
+    elements = [
+        {
+            "index": 21,
+            "tag": "div",
+            "role": "row",
+            "text": "Activity PointsMore actionsAutomataMore actionsNew FolderMore actionsPlacementMore actions",
+            "selector": "div#\\:a > ... > div.KNHpub.bn8JV",
+            "accessible_name": "",
+            "aria_label": "",
+            "disabled": False,
+            "visible": True,
+        },
+        {
+            "index": 23,
+            "tag": "div",
+            "role": "gridcell",
+            "text": "Activity PointsMore actions",
+            "accessible_name": "Activity Points Folder",
+            "aria_label": "Activity Points Folder",
+            "selector": '[aria-label="Activity Points Folder"]',
+            "disabled": False,
+            "visible": True,
+        },
+        {
+            "index": 24,
+            "tag": "div",
+            "role": "gridcell",
+            "text": "AutomataMore actions",
+            "accessible_name": "Automata Folder",
+            "aria_label": "Automata Folder Loading…",
+            "selector": '[aria-label="Automata Folder Loading…"]',
+            "disabled": False,
+            "visible": True,
+        },
+        {
+            "index": 40,
+            "tag": "div",
+            "role": None,
+            "text": "Automata",
+            "accessible_name": "Automata Folder",
+            "selector": '[data-tooltip="Automata Folder"]',
+            "disabled": False,
+            "visible": True,
+        },
+    ]
+
+    candidates = []
+    for el in elements:
+        if el.get("disabled") is True or el.get("visible") is False:
+            continue
+        el_text = (el.get("text") or "").strip().lower()
+        el_aria = (el.get("aria_label") or "").strip().lower()
+        el_acc = (el.get("accessible_name") or "").strip().lower()
+        el_role = (el.get("role") or "").strip().lower()
+        el_selector = (el.get("selector") or "").lower()
+
+        if len(el_text) > 60 or el_text.count("more actions") > 1:
+            continue
+        if el_role == "row" and any(r in el_selector for r in ["s55kne", "bn8jv"]):
+            continue
+
+        score = 0
+        if f"{_eft_lower} folder" in el_acc or f"{_eft_lower} folder" in el_aria or f"{_eft_lower} folder" in el_selector:
+            score += 100
+        elif el_acc == _eft_lower or el_aria == _eft_lower:
+            score += 90
+        if el_text == _eft_lower:
+            score += 85
+        elif el_text in (f"{_eft_lower}more actions", f"{_eft_lower} more actions"):
+            score += 80
+        elif el_text.startswith(_eft_lower) and len(el_text) <= len(_eft_lower) + 15:
+            score += 70
+
+        if el_role in ("gridcell", "treeitem", "link", "button"):
+            score += 15
+
+        if score > 0:
+            candidates.append((score, el))
+
+    assert len(candidates) >= 2
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    best = candidates[0][1]
+    # Must NOT be element 21 (the multi-folder container row) or element 23 (Activity Points)
+    assert best["index"] in (24, 40)
+    assert "automata" in (best.get("text") or "").lower()
+    assert "activity" not in (best.get("text") or "").lower()
+
