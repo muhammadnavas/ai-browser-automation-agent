@@ -228,14 +228,36 @@ async def init_db(database_url: Optional[str] = None, create_tables: bool = Fals
         return True
 
     except Exception as exc:
-        _db_available = False
         logger.warning(
             "PostgreSQL database connection failed: endpoint=%s, error_type=%s (%s). "
-            "My Context functionality will be disabled or return 503 while PostgreSQL is unavailable.",
+            "Falling back to local SQLite database so My Context remains operational.",
             get_safe_database_url(target_url),
             type(exc).__name__,
             exc,
         )
+        if not is_sqlite:
+            try:
+                db_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+                os.makedirs(db_dir, exist_ok=True)
+                sqlite_path = os.path.join(db_dir, "automata.db").replace("\\", "/")
+                sqlite_url = f"sqlite+aiosqlite:///{sqlite_path}"
+                engine = create_async_engine(sqlite_url, echo=False)
+                async_session_factory = async_sessionmaker(
+                    bind=engine,
+                    class_=AsyncSession,
+                    expire_on_commit=False,
+                    autocommit=False,
+                    autoflush=False,
+                )
+                from backend.db.models import Base
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                _db_available = True
+                logger.info("Local SQLite persistence initialized successfully as fallback: %s", sqlite_url)
+                return True
+            except Exception as sqlite_exc:
+                logger.error("Failed to initialize fallback SQLite database: %s", sqlite_exc)
+        _db_available = False
         return False
 
 
