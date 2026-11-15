@@ -627,10 +627,14 @@ FORM-FILLING WORKFLOW (apply this for any form task):
                         • File Inputs / Upload buttons → click the "Add file" or upload button (or emit upload action). NEVER skip file upload questions, especially mandatory ones marked with * or required!
                         • Date/Time → fill with YYYY-MM-DD or MM/DD/YYYY or HH:MM format
   Phase 3 – VERIFY   : Verify that fields are populated correctly. Scroll if needed.
-  Phase 4 – CONFIRM  : Use "request_approval" with "text" = a summary of every value entered.
-  Phase 5 – SUBMIT   : Click the submit button or call finish.
+  Phase 4 – CONFIRM  : After every field is verified, use "request_approval" with a summary of values entered.
+  Phase 5 – SUBMIT   : Only submit after explicit approval for this exact submission.
 
 IMPORTANT RULES:
+  • Do not turn every form question into a "prompt the user" plan step. The plan describes agent work: inspect, map verified data, fill, verify, then request only missing user input.
+  • Use My Context only when a retrieved value clearly matches the field. Never invent course names, ratings, checkbox choices, instructor ratings, or comments.
+  • If a prior approval/review request was acknowledged but unanswered fields remain, do not issue the same approval request again. Continue filling fields supported by verified data. Ask the user only for the remaining fields that cannot be safely inferred.
+  • A request for missing answers is NOT submission approval. Keep those states separate.
   • Output ONLY ONE action per response.
   • APPROVAL RULES:
     1. NEVER request approval in the middle of filling a form. Fill EVERY required text input, dropdown, and file upload first before requesting approval.
