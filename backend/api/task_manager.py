@@ -128,14 +128,14 @@ class TaskManager:
         task_goal = str(goal or "").strip()
         if not value or not task_goal:
             return False
-        normalize = lambda text: re.sub(r"\\s+", " ", str(text).strip().lower())
+        normalize = lambda text: re.sub(r"\s+", " ", str(text).strip().lower())
         value_norm, goal_norm = normalize(value), normalize(task_goal)
         if value_norm == goal_norm:
             return True
         # A planner sometimes turns the goal URL into a search query and types
         # the whole instruction into the first visible input. Treat that as
         # task-goal leakage, not as a valid form value.
-        goal_urls = re.findall(r"https?://\\S+", task_goal, flags=re.I)
+        goal_urls = re.findall(r"https?://\S+", task_goal, flags=re.I)
         return bool(
             len(value_norm) > 24
             and any(normalize(url) in value_norm for url in goal_urls)
