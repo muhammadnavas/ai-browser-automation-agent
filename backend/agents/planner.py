@@ -2969,6 +2969,34 @@ If the original goal is already complete, return ["Verify the requested outcome 
                     )
                     break
 
+        # 4e. Execution-loop guard: reject empty fills and repeated successful
+        # attempts against the same control/value when the page has not advanced.
+        if action and action.action in (ActionType.FILL, ActionType.FILL_FIELD, ActionType.TYPE_TEXT):
+            requested_value = str(action.value if action.value is not None else action.text or "").strip()
+            if not requested_value:
+                target_label = action.reasoning or action.selector or "the current form field"
+                action = BrowserAction(
+                    action=ActionType.REQUEST_APPROVAL,
+                    text="I cannot safely fill this field because no verified answer is available. Please provide the value or tell me to leave it blank.",
+                    reasoning=f"Blocked an empty fill action for {target_label}; empty fills are no-ops and must not be retried.",
+                )
+            else:
+                target_key = str(action.selector or action.element_id or "").strip()
+                normalized_value = " ".join(requested_value.casefold().split())
+                prior_match = next((
+                    h for h in reversed(trajectory_history[-8:])
+                    if h.get("action") in ("fill", "fill_field", "type_text")
+                    and str(h.get("selector") or h.get("element_id") or "").strip() == target_key
+                    and " ".join(str(h.get("value") or h.get("text") or "").casefold().split()) == normalized_value
+                    and h.get("success", h.get("status") == "success") is True
+                ), None)
+                if prior_match:
+                    action = BrowserAction(
+                        action=ActionType.REQUEST_APPROVAL,
+                        text="I already attempted this exact field/value and cannot confirm further progress. Please check the field in the browser and tell me whether to retry or leave it unchanged.",
+                        reasoning="Stopped a repeated successful fill attempt against the same target/value to prevent an execution loop.",
+                    )
+
         # 5. Store Safe Action in Redis
         if action and use_cache and self.cache_service is not None and self._is_safe_action_to_cache(action):
             try:
