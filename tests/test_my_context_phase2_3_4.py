@@ -514,6 +514,33 @@ class TestContextRetrievalAndAgentIntegration:
         await async_test_db.commit()
 
     @pytest.mark.asyncio
+    async def test_context_retrieves_education_for_live_form_field_query(self, async_test_db):
+        """A discovered form label must retrieve its matching structured profile section."""
+        user_id = f"education_field_{uuid.uuid4().hex[:6]}"
+        await profile_service.upsert_profile(
+            async_test_db,
+            user_id,
+            {
+                "personal_details": {"full_name": "Sample Candidate"},
+                "education": {
+                    "degree": "B.E. Computer Science",
+                    "institution": "CMR Institute of Technology",
+                },
+            },
+        )
+        await async_test_db.commit()
+
+        result = await context_retrieval_service.retrieve_relevant_context(
+            async_test_db,
+            user_id,
+            "Fill this form. Current field label: Highest degree or qualification",
+        )
+
+        assert result["has_context"] is True
+        assert result["profile"]["education"]["degree"] == "B.E. Computer Science"
+
+
+    @pytest.mark.asyncio
     async def test_context_retrieval_limits_budget(self, async_test_db):
         user_id = f"budget_user_{uuid.uuid4().hex[:6]}"
 
