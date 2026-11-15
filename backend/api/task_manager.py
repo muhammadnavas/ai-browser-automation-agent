@@ -3925,7 +3925,7 @@ Task evidence:
                 return False, f"Form submission failed: Validation error detected on page ('{error_msg}')."
 
             filled_fields = getattr(task.context, "filled_fields", {}) if hasattr(task, "context") else {}
-            has_submit_click = any(s.action in (ActionType.CLICK, ActionType.SUBMIT) for s in task.steps)
+            has_submit_click = any(s.action == ActionType.CLICK for s in task.steps)
             if filled_fields and has_submit_click:
                 return False, f"Outcome unverified: {model_reason or 'The verification model is unavailable'}. Form was filled and submitted, but no explicit confirmation message was observable on {curr_url}."
 
