@@ -1147,6 +1147,8 @@ class TaskManager:
             # inspect the live page before acting rather than replaying old commands.
             step_num = max(1, int(task.current_step or 0) + 1) if restored_checkpoint else 1
             consecutive_failures = 0
+            consecutive_no_progress = 0
+            last_no_progress_fingerprint = None
             task.plan_status = "executing"
             self.cancel_events[task_id] = asyncio.Event()
             self.pause_events[task_id] = asyncio.Event()
@@ -1809,11 +1811,23 @@ class TaskManager:
                         "action": action.action.value,
                         "selector": action.selector,
                     }, step=step_num)
-                    action = BrowserAction(
-                        action=ActionType.WAIT,
-                        scroll_amount=250,
-                        reasoning="Blocked a planner attempt to type the task instruction into a page field. Re-inspect and choose a value grounded in My Context or ask the user.",
-                    )
+                    unanswered = self._unanswered_form_questions(page_info)
+                    if unanswered:
+                        action = BrowserAction(
+                            action=ActionType.REQUEST_APPROVAL,
+                            text=(
+                                "I blocked an attempt to type the task instruction into a form field. "
+                                "Please provide answers for these unanswered questions: "
+                                + "; ".join(unanswered[:10])
+                            ),
+                            reasoning="Blocked task-goal leakage and requested the actual missing form answers.",
+                        )
+                    else:
+                        action = BrowserAction(
+                            action=ActionType.WAIT,
+                            scroll_amount=250,
+                            reasoning="Blocked a planner attempt to type the task instruction into a page field. Re-inspect before taking another action.",
+                        )
 
                 # If the planner asks for generic approval before the form is complete,
                 # replace its misleading prompt with the actual unanswered questions.
@@ -1825,6 +1839,42 @@ class TaskManager:
                             + "; ".join(unanswered[:10])
                             + ". Do not approve submission yet; I need these answers to continue."
                         )
+
+                # Bound repeated no-progress waits. Do not burn the task budget
+                # repeating the same inspection against an unchanged DOM.
+                if action.action == ActionType.WAIT:
+                    fingerprint = str(getattr(task.context, "last_dom_fingerprint", "") or "")
+                    if fingerprint and fingerprint == last_no_progress_fingerprint:
+                        consecutive_no_progress += 1
+                    else:
+                        consecutive_no_progress = 1
+                        last_no_progress_fingerprint = fingerprint or None
+                    if consecutive_no_progress >= 3:
+                        unanswered = self._unanswered_form_questions(page_info)
+                        if unanswered:
+                            action = BrowserAction(
+                                action=ActionType.REQUEST_APPROVAL,
+                                text=(
+                                    "Automation is not making progress and these form questions remain unanswered: "
+                                    + "; ".join(unanswered[:10])
+                                    + ". Please provide the answers so I can continue safely."
+                                ),
+                                reasoning="Three consecutive inspections found no progress; requesting missing user input instead of looping.",
+                            )
+                            consecutive_no_progress = 0
+                        else:
+                            task.status = TaskStatus.FAILED
+                            task.plan_status = "failed"
+                            task.error = (
+                                "Automation stopped after three consecutive inspections with no page-state progress. "
+                                "No further action was attempted to avoid repeating the same operation."
+                            )
+                            task.updated_at = time.time()
+                            await self.broadcast_task_update(task_id)
+                            break
+                else:
+                    consecutive_no_progress = 0
+                    last_no_progress_fingerprint = None
 
                 user_approval_input = None   # consume after use
 
