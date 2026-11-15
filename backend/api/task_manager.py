@@ -1217,7 +1217,7 @@ class TaskManager:
                                     "tier": "Live page analysis",
                                     "source": "page_analysis",
                                     "reused": False,
-                                    "message": "Generated a task-specific plan from the inspected page",
+                                    "message": "Generated a plan from the inspected page",
                                     "details": (
                                         f"Inspected the live page and generated {len(observed_plan)} "
                                         "evidence-based milestones."
