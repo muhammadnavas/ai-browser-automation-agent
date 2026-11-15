@@ -3392,23 +3392,10 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                     "evidence": f"Successfully loaded form at {page_info.get('url')} (Title: {page_info.get('title')}).",
                 }
 
-        # 4. Form field completion milestone
-        action_type = getattr(action, "action", None)
-        action_val = action_type.value if hasattr(action_type, "value") else str(action_type or "").lower()
-        if action_val in ("fill", "type", "type_text", "click", "select", "check", "radio_button"):
-            action_desc = " ".join(str(getattr(action, k, "") or "") for k in ("reasoning", "text", "value", "selector")).lower()
-            m_words = {w for w in re.findall(r'[a-zA-Z]{3,}', milestone_title_lower) if w not in {"enter", "choose", "with", "user", "data", "fill", "select", "complete", "optional", "fields", "rating", "ratings"}}
-            if m_words and any(w in action_desc for w in m_words):
-                return {
-                    "complete": True,
-                    "evidence": f"Field interaction completed for '{milestone.get('title')}' via {action_val} ({action.reasoning or action.text}).",
-                }
-            if "optional" in milestone_title_lower and any(w in action_desc for w in re.findall(r'[a-zA-Z]{3,}', milestone_title_lower)):
-                return {
-                    "complete": True,
-                    "evidence": f"Optional field handled for '{milestone.get('title')}'.",
-                }
-
+        # Never mark a form milestone complete merely because an action was
+        # attempted or its reasoning text overlaps milestone words. Completion
+        # must be proven from the resulting live form state (or explicit evidence
+        # returned by the strict verifier below).
         # 5. Form submission confirmation
         if any(kw in milestone_title_lower for kw in ["submit", "submission", "complete", "finalize", "verify"]):
             if any(p in page_text for p in ["your response has been recorded", "submit another response", "response has been recorded", "thank you", "submission received", "form submitted"]):
