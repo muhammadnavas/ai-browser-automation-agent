@@ -26,7 +26,7 @@ def _safe(value: Any, key: str = "") -> Any:
         return _REDACTED
     if isinstance(value, dict):
         result = {}
-        input_type = str(value.get("type") or value.get("input_type") or "").lower()
+        input_type = str(value.get("type") or value.get("input_type") or value.get("field_type") or "").lower()
         for child_key, child_value in value.items():
             if input_type in _SENSITIVE_INPUT_TYPES and str(child_key).lower() in {"value", "current_value", "text"}:
                 result[str(child_key)] = _REDACTED
@@ -52,10 +52,11 @@ def _safe(value: Any, key: str = "") -> Any:
 class TaskFileLogger:
     """Writes append-only task.log/events.jsonl plus full per-step artifacts."""
 
-    def __init__(self, task_id: str, root: str | os.PathLike[str] = "logs"):
+    def __init__(self, task_id: str, root: str | os.PathLike[str] | None = None):
         safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(task_id))[:160] or "unknown"
         self.task_id = safe_id
-        self.directory = Path(root).resolve() / safe_id
+        log_root = Path(root).resolve() if root is not None else Path(__file__).resolve().parents[2] / "logs"
+        self.directory = log_root / safe_id
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._log_path = self.directory / "task.log"
