@@ -42,6 +42,7 @@ register_browser_subagents()
 from services.report_generation_service import ReportGenerator
 from services.task_archive import task_archive
 from services.cache_service import CacheService, default_cache_service
+from services.task_file_logger import TaskFileLogger
 
 logger = logging.getLogger("TaskManager")
 
@@ -726,7 +727,10 @@ class TaskManager:
             return
 
         task = self.tasks[task_id]
+        task_log = TaskFileLogger(task_id)
+        task_log.event("task_started", {"goal": req.goal, "start_url": req.start_url, "max_steps": req.max_steps, "restored_checkpoint": False})
         restored_checkpoint = await self._restore_cached_task_state(task_id)
+        task_log.event("checkpoint_restore", {"restored": bool(restored_checkpoint), "initial_plan": getattr(task, "initial_plan", [])})
         task.status = TaskStatus.RUNNING
         task.updated_at = time.time()
         await self.broadcast_task_update(task_id)
@@ -836,6 +840,7 @@ class TaskManager:
             task.plan_metadata.setdefault("last_successful_action", None)
             task.plan_metadata.setdefault("plan_version", 1)
             task.plan_metadata.setdefault("adaptive_replan_count", 0)
+            task_log.plan(int(task.plan_metadata.get("plan_version", 1) or 1), plan or [], {"cache": cache_info, "requires_live_inspection": task.plan_metadata.get("requires_live_inspection")})
             task.plan_metadata.setdefault("replan_count", 0)
             task.plan_metadata["requires_live_inspection"] = bool(
                 getattr(planner, "last_plan_requires_inspection", False)
@@ -1039,6 +1044,7 @@ class TaskManager:
                 # 1. Snapshot DOM & Perform Form Discovery
                 #    Retry once if content script not yet injected (tab just opened)
                 page_info = await controller.parse_interactive_elements()
+                task_log.dom_snapshot(step_num, page_info)
                 if page_info.get("inspection_error"):
                     logger.warning(
                         "Task %s: live DOM inspection failed; retrying before making page or auth decisions",
@@ -1047,6 +1053,7 @@ class TaskManager:
                     if await self._sleep_or_cancel(task_id, 1.0):
                         break
                     page_info = await controller.parse_interactive_elements()
+                    task_log.dom_snapshot(step_num, page_info)
                     if page_info.get("inspection_error"):
                         reason = page_info.get("inspection_error_reason")
                         detail = f" ({reason})" if reason else ""
@@ -1453,6 +1460,7 @@ class TaskManager:
                     screenshot_path=screenshot_path,
                     active_milestone=active_milestone,
                 )
+                task_log.action(step_num, action, phase="planned", result={"active_milestone": active_milestone, "plan_version": milestone_metadata.get("plan_version", 1)})
                 if action and task.initial_plan and milestone_graph:
                     active_plan_idx = planner.determine_active_plan_step(
                         initial_plan=task.initial_plan,
@@ -2220,6 +2228,7 @@ class TaskManager:
                                 if not safe:
                                     raise ValueError(f"Navigation blocked by security policy: {reason}")
                                 action.url = normalized
+                        task_log.action(step_num, action, phase="started", result={"url_before": page_info.get("url"), "dom_url": page_info.get("browser_tab_url")})
                         res = await self._execute_action(action, controller, task, task_id, planner, trajectory_history)
                         if isinstance(res, tuple) and len(res) == 3:
                             description, extracted, success = res
@@ -2241,6 +2250,7 @@ class TaskManager:
                             description = f"{description} | {verification_note}"
                             if not verified:
                                 success = False
+                        task_log.action(step_num, action, phase="finished", result={"description": description, "extracted": extracted, "success": success})
                         return description, extracted, success
 
                     # If the user pauses while the planner is deciding, stop
@@ -2601,6 +2611,7 @@ class TaskManager:
                             "verified": True,
                         }
 
+                    task_log.action(step_num, action, phase="verified_success", result={"description": exec_description, "url_after": getattr(controller, "current_url", "") or ""})
                     trajectory_history.append({
                         "step": step_num,
                         "action": action.action.value,
@@ -2618,6 +2629,7 @@ class TaskManager:
                         finish_verified = True
                         break
                 else:
+                    task_log.action(step_num, action, phase="failed", result={"description": exec_description, "recovery_log": recovery_log})
                     consecutive_failures += 1
                     recovery_summary = "; ".join(recovery_log) if recovery_log else f"{policy.max_retries} attempts failed"
                     logger.warning(
@@ -2793,6 +2805,7 @@ class TaskManager:
                                         active_milestone_index=int(task.current_plan_step or 0),
                                     )
                                 if revised_plan:
+                                    task_log.event("replan_generated", {"version": int(metadata.get("plan_version", 1) or 1) + 1, "reason": "recoverable_action_failure", "failed_step": step_num, "failed_action": action, "previous_plan": list(task.initial_plan or task.plan or []), "revised_plan": revised_plan, "trajectory_history": trajectory_history, "page_info": live_page_info}, step=step_num)
                                     metadata.setdefault("original_plan", list(task.initial_plan or []))
                                     versions = metadata.setdefault("plan_versions", [])
                                     next_plan_version = int(metadata.get("plan_version", 1) or 1) + 1
@@ -2807,6 +2820,7 @@ class TaskManager:
                                     metadata["adaptive_replan_count"] = replan_count + 1
                                     metadata["replan_count"] = int(metadata.get("replan_count", 0) or 0) + 1
                                     metadata["plan_version"] = next_plan_version
+                                    task_log.plan(next_plan_version, combined_plan if "combined_plan" in locals() else revised_plan, {"reason": "recoverable_action_failure", "failed_step": step_num, "failed_action": action.action.value})
                                     metadata["replan_reason"] = "recoverable_action_failure"
                                     metadata["plan"] = list(revised_plan)
                                     task.plan_metadata = metadata
@@ -2896,8 +2910,10 @@ class TaskManager:
                 logger.warning("Task %s exhausted its step budget without verified completion.", task_id)
             elif task.status == TaskStatus.CANCELLED:
                 task.plan_status = "cancelled"
+            task_log.close(task.status.value if hasattr(task.status, "value") else str(task.status), {"error": task.error, "steps": len(task.steps), "trajectory_history": trajectory_history, "plan_metadata": task.plan_metadata})
 
         except asyncio.CancelledError:
+            task_log.event("task_cancelled_exception", {"trajectory_history": trajectory_history})
             logger.warning(f"Task {task_id} received asyncio cancellation.")
             task.status = TaskStatus.CANCELLED
             task.plan_status = "cancelled"
@@ -2911,6 +2927,7 @@ class TaskManager:
                 ))
         except Exception as exc:
             err_msg = str(exc) if str(exc).strip() else repr(exc)
+            task_log.event("task_exception", {"error": err_msg, "exception_type": type(exc).__name__, "trajectory_history": trajectory_history})
 
             # Closed-tab errors are user-initiated cancellations, not failures
             tab_closed_phrases = (
