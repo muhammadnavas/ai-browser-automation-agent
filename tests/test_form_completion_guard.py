@@ -63,3 +63,32 @@ def test_google_forms_choose_placeholder_is_reported_as_unanswered():
     assert TaskManager._unanswered_form_questions(page) == [
         "Which course are you providing feedback for?"
     ]
+
+
+
+def test_task_instruction_is_not_accepted_as_form_field_value():
+    from backend.models.schemas import ActionType, BrowserAction
+
+    goal = "Fill this application form with my data: https://forms.gle/example"
+    action = BrowserAction(
+        action=ActionType.TYPE_TEXT,
+        text=goal,
+        selector='input[aria-label="Search"]',
+    )
+
+    assert TaskManager._is_task_goal_echo(action, goal)
+
+
+def test_real_profile_value_is_not_treated_as_task_goal_echo():
+    from backend.models.schemas import ActionType, BrowserAction
+
+    action = BrowserAction(
+        action=ActionType.FILL,
+        text="Muhammad Navas",
+        selector='input[aria-label="Full Name"]',
+    )
+
+    assert not TaskManager._is_task_goal_echo(
+        action,
+        "Fill this application form with my data: https://forms.gle/example",
+    )
