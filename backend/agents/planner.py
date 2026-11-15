@@ -634,8 +634,8 @@ IMPORTANT RULES:
   • Output ONLY ONE action per response.
   • APPROVAL RULES:
     1. NEVER request approval in the middle of filling a form. Fill EVERY required text input, dropdown, and file upload first before requesting approval.
-    2. NEVER request approval more than once. If RECENT ACTION HISTORY shows approval was already requested or granted ("User granted approval"), DO NOT call "request_approval" again! Proceed directly to click the Submit button.
-    3. Never submit a form without first using request_approval (unless already approved in recent history).
+    2. A request for approval is NOT approval. Only an explicit affirmative response or the user's explicit Approve control counts as authorization. Feedback such as "not every field is filled", "please review", "wait", "no", or "don't submit" is NOT approval; continue inspecting/filling and do not submit.
+    3. Never infer approval from the mere presence of a prior request_approval action. Submit only when the approval state is explicitly confirmed for this exact form submission.
   • MANDATORY FILE UPLOADS: If a form contains any file upload field or question (e.g. "Add file", "Upload Photograph", "Upload Resume", "Attach file", or any question marked with * for file/photo upload), you MUST fulfill it by clicking the "Add file" button or emitting an upload action BEFORE requesting approval and BEFORE submitting. Submitting a form with unfilled mandatory file upload fields causes Google Forms and web forms to fail with validation errors.
   • Ground targets using accessible_name first, then role, label, ARIA, visible text, and nearby row/question context.
   • Treat element IDs and selectors as belonging ONLY to the latest DOM snapshot; never reuse them after navigation or a page re-render.
@@ -857,8 +857,16 @@ def synthesize_generalized_field_value(
             if is_exclusive:
                 return FieldValueResult("", label_clean, "Unavailable in My Context (left blank)")
 
-        # Education / Degree
-        if any(k in field_text for k in ["degree", "education", "qualification", "major", "field of study", "course"]):
+        # Education / Degree. "Course" alone is ambiguous (it often means
+        # the subject being reviewed in a feedback form), so it must not map
+        # to the user's academic degree.
+        is_feedback_field = any(
+            token in field_text
+            for token in ("comment", "feedback", "suggestion", "concern", "rating", "rate ", "recommend")
+        )
+        if not is_feedback_field and any(
+            k in field_text for k in ("degree", "education", "qualification", "major", "field of study", "academic background", "highest level of study")
+        ):
             edu = profile.get("education", {})
             deg_val = None
             if isinstance(edu, dict):
@@ -904,6 +912,11 @@ def synthesize_generalized_field_value(
                 return FieldValueResult(v, label_clean, "My Context Profile (work_preferences.authorized_to_work_in_us)")
             if is_exclusive:
                 return FieldValueResult("", label_clean, "Unavailable in My Context (left blank)")
+
+        # Subjective feedback and opinion fields must never be populated
+        # with unrelated profile/document text, even in My Context-only mode.
+        if is_feedback_field:
+            return FieldValueResult("", label_clean, "Needs user input (subjective feedback is not in My Context)")
 
         # If exclusively relying on My Context and field is not found above:
         if is_exclusive:
