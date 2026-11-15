@@ -2969,6 +2969,53 @@ If the original goal is already complete, return ["Verify the requested outcome 
                     )
                     break
 
+        # 4d2. Do not let the LLM invent answers for choice-based form fields.
+        # A click on a discovered radio/checkbox option is permitted only when
+        # the user explicitly supplied that option for that question in the goal.
+        if action and action.action == ActionType.CLICK and action.selector:
+            goal_text = " ".join((goal or "").casefold().split())
+            matched_choice = None
+            for group in (page_info.get("form_groups") or []):
+                if not isinstance(group, dict):
+                    continue
+                for option in (group.get("options") or []):
+                    if not isinstance(option, dict):
+                        continue
+                    if str(option.get("selector") or "") == str(action.selector):
+                        matched_choice = (group, option)
+                        break
+                if matched_choice:
+                    break
+
+            if matched_choice:
+                group, option = matched_choice
+                question_text = " ".join(str(group.get("question") or "").casefold().split())
+                row_text = " ".join(str(group.get("row") or "").casefold().split())
+                option_text = " ".join(str(option.get("label") or "").casefold().split())
+                # Require a meaningful part of the question and the exact option
+                # to be explicitly present in the user's instruction. This avoids
+                # accidentally treating a number in a URL or unrelated profile
+                # text as permission to select a rating.
+                question_tokens = [
+                    token for token in re.findall(r"[a-z0-9]+", question_text)
+                    if len(token) >= 5 and token not in {"which", "would", "following", "course", "please", "select"}
+                ]
+                option_tokens = re.findall(r"[a-z0-9]+", option_text)
+                question_explicit = bool(question_tokens) and any(
+                    token in goal_text for token in question_tokens[:5]
+                )
+                option_explicit = bool(option_text) and option_text in goal_text
+                if not (question_explicit and option_explicit):
+                    question_label = str(group.get("question") or "the form question")
+                    if row_text:
+                        question_label += f" — {row_text}"
+                    option_label = str(option.get("label") or "selected option")
+                    action = BrowserAction(
+                        action=ActionType.REQUEST_APPROVAL,
+                        text=f"What answer should I choose for '{question_label}'? The option '{option_label}' is available, but you have not specified a choice. I will not guess.",
+                        reasoning="Blocked an unrequested choice-based form answer; asking the user instead of inventing a course, rating, recommendation, or checkbox selection.",
+                    )
+
         # 4e. Execution-loop guard: reject empty fills and repeated successful
         # attempts against the same control/value when the page has not advanced.
         if action and action.action in (ActionType.FILL, ActionType.FILL_FIELD, ActionType.TYPE_TEXT):
