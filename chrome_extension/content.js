@@ -407,30 +407,34 @@
     // (notably Google Forms, which often renders radio/checkbox controls as
     // div[role=radio|checkbox] instead of native input elements).
     const formGroups = [];
-    const seenQuestionCards = new Set();
-    document.querySelectorAll('.Qr7Oae,[role="listitem"],[data-params]').forEach((card) => {
-      if (seenQuestionCards.has(card)) return;
+    // Google Forms renders one question card per .Qr7Oae. Avoid walking
+    // nested [data-params]/[role=listitem] wrappers: doing so duplicated
+    // the same question and made parent group containers look like options.
+    const questionCards = Array.from(document.querySelectorAll(".Qr7Oae"));
+    questionCards.forEach((card) => {
       const controls = Array.from(card.querySelectorAll(
-        'input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"],[role="radiogroup"],[role="group"] [role="radio"],[role="group"] [role="checkbox"]'
+        'input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]'
       )).filter((control) => {
         const rect = control.getBoundingClientRect();
         const style = window.getComputedStyle(control);
-        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+        return rect.width > 0 && rect.height > 0 &&
+          style.display !== "none" && style.visibility !== "hidden";
       });
       if (!controls.length) return;
-      seenQuestionCards.add(card);
+
       const titleNode = card.querySelector(
-        '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"],.HoXoMd'
+        '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]'
       );
       const question = String(
         titleNode?.innerText || titleNode?.textContent || ""
-      ).trim().replace(/\s+/g, " ") || String(card.innerText || "").trim().split("\n")[0].slice(0, 300);
-      const type = controls.some((control) =>
-        control.matches('input[type="checkbox"],[role="checkbox"]')
-      ) ? "checkbox_group" : "radio_group";
-      const options = controls.map((control) => {
+      ).trim().replace(/\s+/g, " ") ||
+        String(card.innerText || "").trim().split("\n")[0].slice(0, 300);
+
+      const mappedOptions = controls.map((control) => {
+        const aria = String(control.getAttribute("aria-label") || "").trim();
+        const responseMatch = aria.match(/^(.+?),\s*response for\s+(.+)$/i);
         const optionLabel = String(
-          control.getAttribute("aria-label")
+          responseMatch?.[1]
           || control.getAttribute("data-value")
           || control.closest("label")?.innerText
           || control.innerText
@@ -438,24 +442,49 @@
           || getAccessibleName(control)
           || ""
         ).trim().replace(/\s+/g, " ");
+        const rowLabel = responseMatch?.[2]?.trim() || "";
         return {
           label: optionLabel.slice(0, 180),
+          row: rowLabel.slice(0, 180),
           value: control.getAttribute("data-value") || control.value || optionLabel,
           selected: control.getAttribute("aria-checked") === "true"
             || control.getAttribute("aria-selected") === "true"
             || Boolean(control.checked),
           selector: uniqueSelector(control),
-          role: control.getAttribute("role") || control.type || type,
+          role: control.getAttribute("role") || control.type || "custom",
         };
       }).filter((option) => option.label);
-      if (!options.length) return;
-      formGroups.push({
-        question: question.slice(0, 400),
-        type,
-        required: card.querySelector('[aria-required="true"],[required]') !== null
-          || /\*\s*$/.test(question),
-        options,
+
+      if (!mappedOptions.length) return;
+      const type = controls.some((control) =>
+        control.matches('input[type="checkbox"],[role="checkbox"]')
+      ) ? "checkbox_group" : "radio_group";
+      const rowGroups = new Map();
+      mappedOptions.forEach((option) => {
+        const key = option.row || question;
+        if (!rowGroups.has(key)) rowGroups.set(key, []);
+        rowGroups.get(key).push({
+          label: option.label,
+          value: option.value,
+          selected: option.selected,
+          selector: option.selector,
+          role: option.role,
+        });
       });
+
+      for (const [row, options] of rowGroups.entries()) {
+        // For grid questions, emit one independent radio group per row.
+        // For ordinary radio/checkbox questions, retain the question label.
+        const isGridRow = row !== question;
+        formGroups.push({
+          question: question.slice(0, 400),
+          row: isGridRow ? row : "",
+          type,
+          required: card.querySelector('[aria-required="true"],[required]') !== null
+            || /\*\s*$/.test(question),
+          options,
+        });
+      }
     });
 
     return {
