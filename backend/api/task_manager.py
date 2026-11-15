@@ -1550,17 +1550,28 @@ class TaskManager:
                 )
                 task_log.action(step_num, action, phase="planned", result={"active_milestone": active_milestone, "plan_version": milestone_metadata.get("plan_version", 1)})
                 if action and task.initial_plan and milestone_graph:
-                    active_plan_idx = planner.determine_active_plan_step(
-                        initial_plan=task.initial_plan,
-                        current_action=action,
-                        trajectory_history=trajectory_history,
-                        page_info=page_info,
-                        step_number=step_num,
-                        max_steps=req.max_steps,
-                    )
-                    if 0 <= active_plan_idx < len(milestone_graph):
-                        action.milestone_id = milestone_graph[active_plan_idx].get("id")
-                    elif active_milestone:
+                    # Preserve the planner's explicit milestone binding. Recomputing
+                    # it from loose word overlap can mark an unrelated field as
+                    # completing (for example, a name fill advancing a course choice).
+                    supplied_id = str(getattr(action, "milestone_id", "") or "")
+                    valid_ids = {str(node.get("id")) for node in milestone_graph}
+                    if supplied_id not in valid_ids:
+                        active_plan_idx = planner.determine_active_plan_step(
+                            initial_plan=task.initial_plan,
+                            current_action=action,
+                            trajectory_history=trajectory_history,
+                            page_info=page_info,
+                            step_number=step_num,
+                            max_steps=req.max_steps,
+                        )
+                        if 0 <= active_plan_idx < len(milestone_graph):
+                            candidate = milestone_graph[active_plan_idx]
+                            # Do not bind an action to an earlier unrelated milestone.
+                            if candidate.get("id") == (active_milestone or {}).get("id"):
+                                action.milestone_id = candidate.get("id")
+                            elif active_milestone:
+                                action.milestone_id = active_milestone.get("id")
+                    elif supplied_id not in valid_ids and active_milestone:
                         action.milestone_id = active_milestone.get("id")
                 elif action and active_milestone:
                     action.milestone_id = active_milestone.get("id")
