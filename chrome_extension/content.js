@@ -403,12 +403,68 @@
       })),
     };
 
+    // Preserve question-to-control relationships for custom form widgets
+    // (notably Google Forms, which often renders radio/checkbox controls as
+    // div[role=radio|checkbox] instead of native input elements).
+    const formGroups = [];
+    const seenQuestionCards = new Set();
+    document.querySelectorAll('.Qr7Oae,[role="listitem"],[data-params]').forEach((card) => {
+      if (seenQuestionCards.has(card)) return;
+      const controls = Array.from(card.querySelectorAll(
+        'input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"],[role="radiogroup"],[role="group"] [role="radio"],[role="group"] [role="checkbox"]'
+      )).filter((control) => {
+        const rect = control.getBoundingClientRect();
+        const style = window.getComputedStyle(control);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      });
+      if (!controls.length) return;
+      seenQuestionCards.add(card);
+      const titleNode = card.querySelector(
+        '[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"],.HoXoMd'
+      );
+      const question = String(
+        titleNode?.innerText || titleNode?.textContent || ""
+      ).trim().replace(/\\s+/g, " ") || String(card.innerText || "").trim().split("\\n")[0].slice(0, 300);
+      const type = controls.some((control) =>
+        control.matches('input[type="checkbox"],[role="checkbox"]')
+      ) ? "checkbox_group" : "radio_group";
+      const options = controls.map((control) => {
+        const optionLabel = String(
+          control.getAttribute("aria-label")
+          || control.getAttribute("data-value")
+          || control.closest("label")?.innerText
+          || control.innerText
+          || control.textContent
+          || getAccessibleName(control)
+          || ""
+        ).trim().replace(/\\s+/g, " ");
+        return {
+          label: optionLabel.slice(0, 180),
+          value: control.getAttribute("data-value") || control.value || optionLabel,
+          selected: control.getAttribute("aria-checked") === "true"
+            || control.getAttribute("aria-selected") === "true"
+            || Boolean(control.checked),
+          selector: uniqueSelector(control),
+          role: control.getAttribute("role") || control.type || type,
+        };
+      }).filter((option) => option.label);
+      if (!options.length) return;
+      formGroups.push({
+        question: question.slice(0, 400),
+        type,
+        required: card.querySelector('[aria-required="true"],[required]') !== null
+          || /\\*\\s*$/.test(question),
+        options,
+      });
+    });
+
     return {
       title: document.title,
       url: window.location.href,
       elements: results.slice(0, 400),
       page_text: pageTextParts.slice(0, 60).join(" | "),
       form_questions: formQuestions,
+      form_groups: formGroups.slice(0, 80),
       headings: Array.from(document.querySelectorAll("h1,h2,h3,[role=\"heading\"]"))
         .map((h) => h.innerText?.trim())
         .filter(Boolean)
