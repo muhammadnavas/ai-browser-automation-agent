@@ -2358,7 +2358,7 @@ If the original goal is already complete, return ["Verify the requested outcome 
             return 0
 
         if action_type in (ActionType.WAIT, ActionType.SCROLL) or step_number <= 2:
-            return find_milestone_idx(["inspect", "search", "wait", "load", "structure"], 1)
+            return find_milestone_idx(["inspect", "search", "wait", "structure", "initial"], 1)
 
         # Proportional fallback based on trajectory progress
         ratio = step_number / max(max_steps, 5)
@@ -4117,7 +4117,11 @@ Return ONLY this JSON object with a real JSON boolean:
                     if is_folder_task and any(k in combined_item for k in ["new folder", "create folder"]):
                         target_el = el
                         break
-                    elif not is_folder_task and any(k in combined_item for k in ["file upload", "upload file", "files upload", "upload files"]):
+                    elif not is_folder_task and (
+                        any(k in combined_item for k in ["file upload", "upload file", "files upload", "upload files"])
+                        or (el.get("role") == "menuitem" and "file" in combined_item and "upload" in combined_item)
+                        or (el.get("role") == "menuitem" and "upload" in combined_item and "folder" not in combined_item)
+                    ):
                         target_el = el
                         break
                 
@@ -4164,12 +4168,18 @@ Return ONLY this JSON object with a real JSON boolean:
                             reasoning="Waiting for the 'New' menu to fully open to locate the target menu item.",
                         )
 
-                    # Re-click New button AT MOST ONCE if menu really didn't open after waiting
+                    # Re-click New button AT MOST ONCE only if menu really didn't open after waiting.
+                    # NEVER re-click the New button if menu items are already visible (as clicking it would toggle and close the menu).
+                    has_open_menu = any(
+                        el.get("role") in ("menuitem", "menu")
+                        or "goog-menu" in str(el.get("selector", "")).lower()
+                        for el in elements if el.get("visible") is not False
+                    )
                     reclick_count = sum(
                         1 for h in trajectory_history
                         if "re-clicking 'new' button" in str(h.get("reasoning", "")).lower()
                     )
-                    if reclick_count == 0:
+                    if reclick_count == 0 and not has_open_menu:
                         upload_btn = None
                         for el in elements:
                             if el.get("disabled") is True or el.get("visible") is False:

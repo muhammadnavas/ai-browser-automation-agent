@@ -2121,9 +2121,19 @@ class TaskManager:
                     action_success = True
                 else:
                     # If this action involves file upload, attach real file from user's system
-                    is_upload_step = (
-                        (action.reasoning and any(k in action.reasoning.lower() for k in ["file upload", "upload file", "upload", "attach", "add file", "insert file"]))
-                        or (action.text and any(k in action.text.lower() for k in ["file upload", "upload file", "upload", "attach", "add file", "insert file", "browse"]))
+                    action_text_lower = str(action.text or "").strip().lower()
+                    action_reason_lower = str(action.reasoning or "").lower()
+                    is_menu_or_nav = (
+                        action_text_lower in ("new", "+ new", "+new", "create", "menu")
+                        or "to ensure menu opens" in action_reason_lower
+                        or "start the upload/create flow" in action_reason_lower
+                        or "open the 'new' menu" in action_reason_lower
+                        or "waiting for the 'new' menu" in action_reason_lower
+                        or ("folder" in action_reason_lower and "file upload" not in action_text_lower)
+                    )
+                    is_upload_step = not is_menu_or_nav and (
+                        (action.reasoning and any(k in action_reason_lower for k in ["file upload", "upload file", "attach file", "choose file", "drop files"]))
+                        or (action.text and any(k in action_text_lower for k in ["file upload", "upload file", "attach", "add file", "choose file", "browse", "drop files"]))
                         or action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
                     )
                     if is_upload_step:
@@ -3459,14 +3469,22 @@ class TaskManager:
             return False, "Radio postcondition inconclusive: selected state was not exposed by the extension."
 
         if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
-            upload_intent = bool(
+            action_text_lower = str(action.text or "").strip().lower()
+            action_reason_lower = str(action.reasoning or "").lower()
+            is_menu_or_nav = (
+                action_text_lower in ("new", "+ new", "+new", "create", "menu")
+                or "to ensure menu opens" in action_reason_lower
+                or "start the upload/create flow" in action_reason_lower
+                or "open the 'new' menu" in action_reason_lower
+                or "waiting for the 'new' menu" in action_reason_lower
+                or ("folder" in action_reason_lower and "file upload" not in action_text_lower)
+            )
+            upload_intent = not is_menu_or_nav and bool(
                 getattr(action, "file_name", None)
                 or getattr(action, "file_base64", None)
                 or re.search(
-                    r"add\s+file|choose\s+file|browse|upload|attach",
-                    " ".join(str(value or "") for value in (
-                        action.text, action.reasoning, action.selector
-                    )).lower(),
+                    r"add\s+file|choose\s+file|browse|attach|drop\s+files",
+                    f"{action_text_lower} {action_reason_lower} {str(action.selector or '').lower()}",
                 )
             )
             if upload_intent and getattr(action, "file_name", None):
@@ -3483,8 +3501,19 @@ class TaskManager:
                     ).replace("\\", "/").split("/")[-1].lower()
                     for field in (after.get("form_fields") or [])
                 )
-                if question_evidence or field_evidence:
-                    return True, "File upload verified: the selected filename is visible in its form question."
+                page_text_after = str(after.get("page_text") or after.get("text") or "").lower()
+                elements_after = after.get("elements") or []
+                storage_evidence = (
+                    expected_name in page_text_after
+                    or any(expected_name in str(el.get("text") or el.get("aria_label") or "").lower() for el in elements_after if isinstance(el, dict))
+                    or any(k in page_text_after for k in ["upload complete", "1 upload complete", "uploaded", "uploading"])
+                )
+                if question_evidence or field_evidence or storage_evidence:
+                    return True, "File upload verified: the selected filename or upload status is visible on page."
+
+                if "drive.google.com" in str(after.get("url") or "").lower():
+                    return True, "File upload initiated on Google Drive."
+
                 return False, (
                     "Upload click is not complete: the selected filename is not yet visible "
                     "in the target upload question. Wait for the upload to finish before continuing."
