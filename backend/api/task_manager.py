@@ -743,6 +743,7 @@ class TaskManager:
             task.error = "Chrome Extension is disconnected. Connect the extension in Chrome before starting a task."
             task.updated_at = time.time()
             self._record_terminal_task(task)
+            task_log.close("failed", {"error": task.error})
             await self.broadcast_task_update(task_id)
             await self._save_cached_task_state(task_id)
             return
@@ -1139,6 +1140,8 @@ class TaskManager:
                                     "plan": list(observed_plan),
                                 })
                             task.plan_metadata = plan_meta
+                            task_log.event("replan_generated", {"version": next_version, "reason": "live_page_inspection", "previous_plan": list(task.initial_plan or []), "revised_plan": observed_plan, "page_info": page_info})
+                            task_log.plan(next_version, observed_plan, {"reason": "live_page_inspection", "page_url": page_info.get("url"), "page_title": page_info.get("title")})
                             task.initial_plan = list(observed_plan)
                             task.plan = list(observed_plan)
                             task.current_plan_step = 0
@@ -2820,7 +2823,7 @@ class TaskManager:
                                     metadata["adaptive_replan_count"] = replan_count + 1
                                     metadata["replan_count"] = int(metadata.get("replan_count", 0) or 0) + 1
                                     metadata["plan_version"] = next_plan_version
-                                    task_log.plan(next_plan_version, combined_plan if "combined_plan" in locals() else revised_plan, {"reason": "recoverable_action_failure", "failed_step": step_num, "failed_action": action.action.value})
+                                    task_log.plan(next_plan_version, revised_plan, {"reason": "recoverable_action_failure", "failed_step": step_num, "failed_action": action.action.value})
                                     metadata["replan_reason"] = "recoverable_action_failure"
                                     metadata["plan"] = list(revised_plan)
                                     task.plan_metadata = metadata
@@ -2910,7 +2913,6 @@ class TaskManager:
                 logger.warning("Task %s exhausted its step budget without verified completion.", task_id)
             elif task.status == TaskStatus.CANCELLED:
                 task.plan_status = "cancelled"
-            task_log.close(task.status.value if hasattr(task.status, "value") else str(task.status), {"error": task.error, "steps": len(task.steps), "trajectory_history": trajectory_history, "plan_metadata": task.plan_metadata})
 
         except asyncio.CancelledError:
             task_log.event("task_cancelled_exception", {"trajectory_history": trajectory_history})
@@ -2981,6 +2983,7 @@ class TaskManager:
                 pass
             self.controllers.pop(task_id, None)
             task.updated_at = time.time()
+            task_log.close(task.status.value if hasattr(task.status, "value") else str(task.status), {"error": task.error, "steps": len(task.steps), "trajectory_history": trajectory_history, "plan_metadata": task.plan_metadata})
             # For terminal tasks, wait until the report URL is attached before broadcasting.
             # The frontend closes the WebSocket on terminal status, so broadcasting here first
             # can make it miss the later update that contains the generated PDF link.
