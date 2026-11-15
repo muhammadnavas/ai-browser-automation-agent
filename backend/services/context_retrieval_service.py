@@ -134,10 +134,20 @@ class ContextRetrievalService:
                     "location": sanitize_untrusted_context_text(personal.get("location", "")),
                 }
 
-                if is_job_task or any(k in str(education).lower() for k in keywords):
+                education_intent = bool(keywords.intersection({
+                    "education", "degree", "qualification", "university", "college",
+                    "school", "course", "major", "study", "graduation", "cgpa", "gpa",
+                    "academic", "academics", "institution",
+                }))
+                skills_intent = bool(keywords.intersection({
+                    "skill", "skills", "experience", "technical", "technology",
+                    "technologies", "expertise", "programming", "language", "framework",
+                    "project", "projects", "work",
+                }))
+                if is_job_task or education_intent or any(k in str(education).lower() for k in keywords):
                     relevant_profile["education"] = education
 
-                if is_job_task or any(k in str(skills).lower() for k in keywords):
+                if is_job_task or skills_intent or any(k in str(skills).lower() for k in keywords):
                     relevant_profile["skills_and_experience"] = skills
 
                 if profile_data.get("career_interests"):
