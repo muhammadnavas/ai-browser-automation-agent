@@ -1648,12 +1648,17 @@ class AIAgentPlanner:
             category_label = "File Upload"
             tools.extend(["Interactive Element Control", "File Uploader", "Action Executor", "Human Approval Gate"])
             requires_human_approval = True
-        elif _has_keyword(goal_lower, ["job", "jobs", "apply", "applying", "career", "careers", "resume", "resumes", "cv", "hiring", "applicant", "applicants", "application", "applications"]):
+        elif _has_keyword(goal_lower, ["feedback form", "course feedback", "student feedback", "survey", "questionnaire", "feedback", "rate this course", "course evaluation"]):
+            category_key = "form_filling"
+            category_label = "Feedback & Survey Form"
+            tools.extend(["Form Discovery & Autofill", "Question-Control Mapping", "Field Mapping", "Verification", "Human Approval Gate"])
+            requires_human_approval = True
+        elif _has_keyword(goal_lower, ["job", "jobs", "apply", "applying", "career", "careers", "resume", "resumes", "cv", "hiring", "applicant", "applicants", "employment", "job application"]):
             category_key = "job_application"
             category_label = "Job Application"
             tools.extend(["Form Discovery", "File Uploader", "Human Approval Gate", "Verification"])
             requires_human_approval = True
-        elif _has_keyword(goal_lower, ["form", "forms", "fill", "filled", "filling", "register", "registration", "signup", "sign up", "survey", "input", "inputs", "submit", "submitting"]):
+        elif _has_keyword(goal_lower, ["form", "forms", "fill", "filled", "filling", "register", "registration", "signup", "sign up", "input", "inputs", "submit", "submitting", "application form"]):
             category_key = "form_filling"
             category_label = "Form Filling & Registration"
             tools.extend(["Form Discovery & Autofill", "Field Mapping", "Human Approval Gate"])
