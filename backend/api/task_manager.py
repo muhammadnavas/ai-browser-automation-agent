@@ -1829,15 +1829,19 @@ class TaskManager:
                             reasoning="Blocked a planner attempt to type the task instruction into a page field. Re-inspect before taking another action.",
                         )
 
-                # If the planner asks for generic approval before the form is complete,
-                # replace its misleading prompt with the actual unanswered questions.
+                # Never present a generic submission-approval dialog while the
+                # form still has unanswered questions. This is an input request, not
+                # a consent request, and the two must not share the same approval state.
                 if action.action == ActionType.REQUEST_APPROVAL:
                     unanswered = self._unanswered_form_questions(page_info)
                     if unanswered:
                         action.text = (
-                            "The form is not complete. Please provide answers for these unanswered questions: "
+                            "I have filled the fields supported by verified information. "
+                            "I still need your answers for: "
                             + "; ".join(unanswered[:10])
-                            + ". Do not approve submission yet; I need these answers to continue."
+                            + ". Enter the answers in this response box. Do not treat this "
+                            "as permission to submit; I will request submission approval "
+                            "separately after verifying the completed form."
                         )
 
                 user_approval_input = None   # consume after use
@@ -2305,6 +2309,27 @@ class TaskManager:
                             ("Human approval feedback: " if not approval_is_granted else "Human review note: ")
                             + user_approval_input
                         )
+
+                    # An approval click on an incomplete-form review prompt is
+                    # acknowledgement of the review, NOT permission to submit.
+                    # Do not execute the same REQUEST_APPROVAL action again: hand
+                    # control back to the planner so it can fill verified fields
+                    # and ask only for information that genuinely requires the user.
+                    if approval_form_gaps and captcha_or_payment is None:
+                        action = BrowserAction(
+                            action=ActionType.WAIT,
+                            scroll_amount=1,
+                            reasoning=(
+                                "The user acknowledged the incomplete-form review, but "
+                                "the form still has unanswered fields. Submission remains "
+                                "unauthorized. Resume filling fields supported by verified "
+                                "user context; do not repeat this approval request."
+                            ),
+                        )
+                        task_log.event("incomplete_form_review_acknowledged", {
+                            "unanswered_questions": approval_form_gaps[:12],
+                            "submission_authorized": False,
+                        }, step=step_num)
                     task.status = TaskStatus.RUNNING
                     task.approval_request = None
 
