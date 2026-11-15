@@ -783,7 +783,7 @@ class TaskManager:
                     or field.get("placeholder") or field.get("name") or field.get("text")
                 )
                 if label:
-                    label = re.sub(r"\\s+", " ", str(label)).strip()
+                    label = re.sub(r"\s+", " ", str(label)).strip()
                     if label and label not in labels:
                         labels.append(label[:100])
                 if len(labels) >= 35:
@@ -804,6 +804,7 @@ class TaskManager:
                     "user_id": getattr(task, "user_id", None),
                 })
                 logger.warning("My Context unavailable for task %s: database is not configured/available", task_id)
+                last_context_query_signature = None  # Retry on the next live page if DB becomes available.
                 return
 
             try:
@@ -857,6 +858,7 @@ class TaskManager:
                     "reason": reason, "error": str(ctx_exc), "user_id": getattr(task, "user_id", None),
                 })
                 logger.exception("Could not retrieve My Context for task %s (%s)", task_id, reason)
+                last_context_query_signature = None  # Allow a later retry after transient DB failures.
 
         await refresh_my_context("task_start")
 
