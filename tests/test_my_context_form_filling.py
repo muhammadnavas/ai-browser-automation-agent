@@ -555,3 +555,26 @@ def test_heuristic_skips_checkbox_already_in_desired_state(user_a_retrieved_cont
         task_context={"retrieved_context": user_a_retrieved_context},
     )
     assert action.action == ActionType.FINISH
+
+
+
+def test_feedback_fields_never_receive_unrelated_education_data():
+    """A degree must not be copied into a subjective course-feedback comment."""
+    context = {
+        "profile": {
+            "education": {"degree": "Computer Science Engineering in AI & ML"},
+            "personal_details": {"full_name": "Navas"},
+        }
+    }
+    for label in (
+        "Please share any additional comments, suggestions, or concerns regarding the course.",
+        "How likely are you to recommend this course to another student?",
+        "How would you rate the overall quality of instruction in this course?",
+    ):
+        result = synthesize_generalized_field_value(
+            {"label": label, "type": "text"},
+            goal="Fill this application form with my data",
+            retrieved_context=context,
+        )
+        assert result.value == ""
+        assert "user input" in result.source.lower()
