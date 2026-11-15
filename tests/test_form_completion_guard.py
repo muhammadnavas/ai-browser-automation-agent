@@ -92,3 +92,18 @@ def test_real_profile_value_is_not_treated_as_task_goal_echo():
         action,
         "Fill this application form with my data: https://forms.gle/example",
     )
+
+
+def test_task_goal_url_embedded_in_search_query_is_blocked():
+    from backend.models.schemas import ActionType, BrowserAction
+
+    action = BrowserAction(
+        action=ActionType.TYPE_TEXT,
+        text="Please fill this application form with my data https://forms.gle/example",
+        selector='input[aria-label="Search"]',
+    )
+
+    assert TaskManager._is_task_goal_echo(
+        action,
+        "Fill this application form with my data: https://forms.gle/example",
+    )
