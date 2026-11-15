@@ -2902,29 +2902,41 @@ If the original goal is already complete, return ["Verify the requested outcome 
                         reasoning="User has already granted approval; proceeding directly to click the Submit button.",
                     )
 
-        # 4d. Premature Approval Guardrail: Intercept approval if visible input fields are still unfilled
+        # 4d. Premature Approval Guardrail:
+        # Only verified, non-empty values may be autofilled. Optional blank
+        # comments are not "missing required fields", and unknown required
+        # values must be requested from the user rather than filled with "".
         if action and action.action == ActionType.REQUEST_APPROVAL and not user_already_approved:
-            filled_indices = {
-                h.get("element_id") for h in trajectory_history
-                if h.get("action") == "fill" and h.get("element_id") is not None
+            filled_selectors = {
+                str(h.get("selector")) for h in trajectory_history
+                if h.get("action") in ("fill", "type_text", "fill_field")
+                and h.get("selector")
             }
-            unfilled_input = None
+            required_by_selector = {
+                str(f.get("selector")): bool(f.get("required"))
+                for f in (page_info.get("form_fields") or [])
+                if isinstance(f, dict) and f.get("selector")
+            }
             for el in elements:
-                el_tag = el.get("tag", "").lower()
-                el_type = el.get("type", "").lower()
-                el_idx = el.get("index")
-                if el_idx in filled_indices:
+                el_tag = str(el.get("tag") or "").lower()
+                el_type = str(el.get("type") or "").lower()
+                selector = str(el.get("selector") or "")
+                if el_tag not in ("input", "textarea", "select"):
                     continue
-                if el_tag in ("input", "textarea") and el_type not in ("hidden", "submit", "button", "reset", "image", "checkbox", "radio"):
-                    el_desc = f"{el.get('text', '')} {el.get('name', '')} {el.get('placeholder', '')} {el.get('aria_label', '')}".lower()
-                    if "search" in el_desc or el.get("name") in ("q", "query"):
-                        continue
-                    if not el.get("value"):
-                        unfilled_input = el
-                        break
-            if unfilled_input:
+                if el_type in ("hidden", "submit", "button", "reset", "image", "file", "password", "checkbox", "radio"):
+                    continue
+                if selector and selector in filled_selectors:
+                    continue
+                label_text = " ".join(str(el.get(k) or "") for k in (
+                    "text", "label", "aria_label", "placeholder", "name"
+                )).lower()
+                if "search" in label_text or el.get("name") in ("q", "query"):
+                    continue
+                if str(el.get("value") or "").strip():
+                    continue
+
                 val_res = synthesize_generalized_field_value(
-                    unfilled_input,
+                    el,
                     goal=goal,
                     retrieved_context=retrieved_ctx,
                     exclusive_my_context=any(k in goal_lower_check for k in (
@@ -2934,33 +2946,28 @@ If the original goal is already complete, return ["Verify the requested outcome 
                 val, field_name = val_res[0], val_res[1]
                 source = getattr(val_res, "source", "Unknown")
                 if val is not None and str(val).strip():
-                    logger.info(
-                        "Guardrail: filling required field '%s' from a verified value (%s).",
-                        field_name, source,
-                    )
                     action = BrowserAction(
                         action=ActionType.FILL,
-                        element_id=unfilled_input.get("index"),
-                        selector=unfilled_input.get("selector"),
+                        element_id=el.get("index"),
+                        selector=selector or None,
                         text=str(val),
                         value=str(val),
-                        reasoning=f"Populate required field '{field_name}' from {source}.",
+                        reasoning=f"Populate '{field_name}' from verified source: {source}.",
                     )
-                else:
-                    # Never send an empty string to the executor: it creates a
-                    # successful no-op and traps the planner in the same action.
+                    break
+
+                is_required = required_by_selector.get(selector, bool(el.get("required")))
+                if is_required:
                     missing_label = (
-                        unfilled_input.get("text")
-                        or unfilled_input.get("aria_label")
-                        or unfilled_input.get("placeholder")
-                        or unfilled_input.get("name")
-                        or "a required form field"
+                        el.get("label") or el.get("text") or el.get("aria_label")
+                        or el.get("placeholder") or el.get("name") or field_name
                     )
                     action = BrowserAction(
                         action=ActionType.REQUEST_APPROVAL,
-                        text=f"I need your input for: {missing_label}. I could not find a verified value in My Context. Please provide the answer; I will not guess.",
-                        reasoning=f"Required field '{field_name}' has no verified value ({source}); asking the user instead of repeatedly filling it with an empty value.",
+                        text=f"I need your answer for the required field: {missing_label}. No verified value is available, so I will not guess.",
+                        reasoning=f"Required field '{field_name}' has no verified value ({source}); requesting user input.",
                     )
+                    break
 
         # 5. Store Safe Action in Redis
         if action and use_cache and self.cache_service is not None and self._is_safe_action_to_cache(action):
