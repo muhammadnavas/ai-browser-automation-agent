@@ -764,22 +764,101 @@ class TaskManager:
         if not restored_checkpoint:
             task.context.clear()
 
-        # Retrieve relevant user context (profile, documents, memories) from PostgreSQL if available
-        if not task.context.retrieved_context:
+        # My Context is retrieved initially and refreshed on-demand when a live
+        # page exposes new form fields. The goal alone is often too broad to find
+        # documents/memories relevant to a specific field (e.g. portfolio, degree).
+        from backend.db.database import async_session_factory, is_db_available
+        from backend.services.context_retrieval_service import context_retrieval_service
+        last_context_query_signature = None
+
+        async def refresh_my_context(reason: str, page_info: Optional[Dict[str, Any]] = None) -> None:
+            nonlocal last_context_query_signature
+            page_info = page_info if isinstance(page_info, dict) else {}
+            labels = []
+            for field in (page_info.get("form_fields") or []) + (page_info.get("elements") or []):
+                if not isinstance(field, dict):
+                    continue
+                label = (
+                    field.get("label") or field.get("accessible_name") or field.get("aria_label")
+                    or field.get("placeholder") or field.get("name") or field.get("text")
+                )
+                if label:
+                    label = re.sub(r"\\s+", " ", str(label)).strip()
+                    if label and label not in labels:
+                        labels.append(label[:100])
+                if len(labels) >= 35:
+                    break
+            # Add page headings/title so documents are retrieved against the actual
+            # form's subject, not just the user's short original instruction.
+            headings = [str(x).strip()[:100] for x in (page_info.get("headings") or [])[:8] if str(x).strip()]
+            query = " ".join([req.goal, str(page_info.get("title") or ""), *headings, *labels]).strip()
+            query_signature = hashlib.sha256(query.lower().encode("utf-8")).hexdigest()
+            if query_signature == last_context_query_signature:
+                return
+            last_context_query_signature = query_signature
+
+            if not is_db_available() or not async_session_factory:
+                task_log.event("my_context_unavailable", {
+                    "reason": reason, "database_available": bool(is_db_available()),
+                    "session_factory_available": bool(async_session_factory),
+                    "user_id": getattr(task, "user_id", None),
+                })
+                logger.warning("My Context unavailable for task %s: database is not configured/available", task_id)
+                return
+
             try:
-                from backend.db.database import async_session_factory, is_db_available
-                from backend.services.context_retrieval_service import context_retrieval_service
-                if is_db_available() and async_session_factory:
-                    async with async_session_factory() as session:
-                        user_id = getattr(task, "user_id", None) or os.getenv("APP_USER_ID", "default_user")
-                        retrieved = await context_retrieval_service.retrieve_relevant_context(
-                            db=session,
-                            user_id=user_id,
-                            goal=req.goal,
-                        )
-                        task.context.retrieved_context = retrieved
+                user_id = str(getattr(task, "user_id", None) or os.getenv("APP_USER_ID", "default_user"))
+                async with async_session_factory() as session:
+                    retrieved = await context_retrieval_service.retrieve_relevant_context(
+                        db=session,
+                        user_id=user_id,
+                        goal=query,
+                    )
+                previous = task.context.retrieved_context if isinstance(task.context.retrieved_context, dict) else {}
+                old_profile = previous.get("profile") if isinstance(previous.get("profile"), dict) else {}
+                new_profile = retrieved.get("profile") if isinstance(retrieved.get("profile"), dict) else {}
+                merged_profile = {**old_profile, **new_profile}
+                old_docs = previous.get("documents") or []
+                new_docs = retrieved.get("documents") or []
+                old_mems = previous.get("memories") or []
+                new_mems = retrieved.get("memories") or []
+                def merge_by_id(items):
+                    merged = {}
+                    for item in items:
+                        if isinstance(item, dict):
+                            merged[str(item.get("id") or json.dumps(item, sort_keys=True))] = item
+                    return list(merged.values())
+                merged_docs = merge_by_id([*old_docs, *new_docs])
+                merged_mems = merge_by_id([*old_mems, *new_mems])
+                formatted = context_retrieval_service._format_prompt_block(
+                    merged_profile or None, merged_docs, merged_mems
+                )
+                task.context.retrieved_context = {
+                    "user_id": user_id,
+                    "has_context": bool(merged_profile or merged_docs or merged_mems),
+                    "profile": merged_profile or None,
+                    "documents": merged_docs,
+                    "memories": merged_mems,
+                    "formatted_prompt": formatted,
+                }
+                task_log.event("my_context_retrieved", {
+                    "reason": reason, "user_id": user_id, "query": query[:1200],
+                    "has_context": task.context.retrieved_context["has_context"],
+                    "profile_fields": sorted(merged_profile.keys()),
+                    "documents": [{"id": d.get("id"), "filename": d.get("filename")} for d in merged_docs],
+                    "memory_categories": [m.get("category") for m in merged_mems],
+                })
+                logger.info(
+                    "My Context refreshed for task %s (%s): profile=%s documents=%s memories=%s",
+                    task_id, reason, bool(merged_profile), len(merged_docs), len(merged_mems),
+                )
             except Exception as ctx_exc:
-                logger.warning("Could not retrieve My Context for task %s: %s", task_id, ctx_exc)
+                task_log.event("my_context_retrieval_failed", {
+                    "reason": reason, "error": str(ctx_exc), "user_id": getattr(task, "user_id", None),
+                })
+                logger.exception("Could not retrieve My Context for task %s (%s)", task_id, reason)
+
+        await refresh_my_context("task_start")
 
         finish_verified = False
 
@@ -1091,6 +1170,10 @@ class TaskManager:
                         await self.broadcast_task_update(task_id)
                         break
                     page_info["agent_state"] = classify_page_state(page_info)
+
+                # Refresh My Context using the actual live form labels/page context.
+                # This makes retrieval responsive to fields discovered after navigation.
+                await refresh_my_context("live_page_fields", page_info)
 
                 # URL-led tasks are intentionally replanned once the actual
                 # page has been inspected. This replaces speculative milestones
