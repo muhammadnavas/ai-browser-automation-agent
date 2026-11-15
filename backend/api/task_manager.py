@@ -1739,10 +1739,11 @@ class TaskManager:
                         "Suppressing unsolicited EXTRACT action for task %s (goal=%r)",
                         task_id, req.goal[:160],
                     )
+                    from agents.action_safety import approval_was_granted
                     user_has_approved = (
                         task.context.form_confirmed
                         or getattr(task, "_form_confirmed", False)
-                        or any(h.get("action") == "request_approval" for h in trajectory_history)
+                        or approval_was_granted(None, trajectory_history)
                     )
                     page_text_lower = str(page_info.get("page_text") or "").lower()
                     form_confirmed = any(p in page_text_lower for p in [
