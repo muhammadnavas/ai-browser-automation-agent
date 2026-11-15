@@ -1925,7 +1925,27 @@ class TaskManager:
                 # repeating the same inspection against an unchanged DOM.
                 if action.action == ActionType.WAIT:
                     fingerprint = str(getattr(task.context, "last_dom_fingerprint", "") or "")
-                    if fingerprint and fingerprint == last_no_progress_fingerprint:
+                    if not fingerprint:
+                        fingerprint_payload = {
+                            "url": page_info.get("url"),
+                            "title": page_info.get("title"),
+                            "elements": [
+                                {
+                                    "index": item.get("index"),
+                                    "role": item.get("role"),
+                                    "text": item.get("text"),
+                                    "value": item.get("value"),
+                                    "checked": item.get("checked"),
+                                }
+                                for item in (page_info.get("elements") or [])[:100]
+                                if isinstance(item, dict)
+                            ],
+                            "form_groups": page_info.get("form_groups") or [],
+                        }
+                        fingerprint = hashlib.sha256(
+                            json.dumps(fingerprint_payload, sort_keys=True, default=str).encode("utf-8")
+                        ).hexdigest()
+                    if fingerprint == last_no_progress_fingerprint:
                         consecutive_no_progress += 1
                     else:
                         consecutive_no_progress = 1
