@@ -120,6 +120,29 @@ class TaskManager:
         return graph
 
     @staticmethod
+    def _is_task_goal_echo(action: BrowserAction, goal: str) -> bool:
+        """Reject typing the entire automation instruction into a page field."""
+        if action.action not in (ActionType.FILL, ActionType.FILL_FIELD, ActionType.TYPE_TEXT):
+            return False
+        value = str(action.text or action.value or "").strip()
+        task_goal = str(goal or "").strip()
+        if not value or not task_goal:
+            return False
+        normalize = lambda text: re.sub(r"\\s+", " ", str(text).strip().lower())
+        value_norm, goal_norm = normalize(value), normalize(task_goal)
+        if value_norm == goal_norm:
+            return True
+        # A planner sometimes turns the goal URL into a search query and types
+        # the whole instruction into the first visible input. Treat that as
+        # task-goal leakage, not as a valid form value.
+        goal_urls = re.findall(r"https?://\\S+", task_goal, flags=re.I)
+        return bool(
+            len(value_norm) > 24
+            and any(normalize(url) in value_norm for url in goal_urls)
+            and any(token in value_norm for token in ("fill this", "with my data", "complete this form", "application form"))
+        )
+
+    @staticmethod
     def _unanswered_form_questions(page_info: Dict[str, Any]) -> List[str]:
         """Return live form questions that still have no observable answer.
 
@@ -1778,6 +1801,31 @@ class TaskManager:
                                 reasoning="The same action already succeeded on this unchanged page. Re-observing before choosing another action.",
                             )
 
+                # A planner must never paste the complete task instruction or its URL
+                # into a form/search field as if it were user data.
+                if self._is_task_goal_echo(action, req.goal):
+                    task_log.event("unsafe_goal_echo_blocked", {
+                        "step": step_num,
+                        "action": action.action.value,
+                        "selector": action.selector,
+                    }, step=step_num)
+                    action = BrowserAction(
+                        action=ActionType.WAIT,
+                        scroll_amount=250,
+                        reasoning="Blocked a planner attempt to type the task instruction into a page field. Re-inspect and choose a value grounded in My Context or ask the user.",
+                    )
+
+                # If the planner asks for generic approval before the form is complete,
+                # replace its misleading prompt with the actual unanswered questions.
+                if action.action == ActionType.REQUEST_APPROVAL:
+                    unanswered = self._unanswered_form_questions(page_info)
+                    if unanswered:
+                        action.text = (
+                            "The form is not complete. Please provide answers for these unanswered questions: "
+                            + "; ".join(unanswered[:10])
+                            + ". Do not approve submission yet; I need these answers to continue."
+                        )
+
                 user_approval_input = None   # consume after use
 
                 # EXTRACT is only valid when the user explicitly requested data
@@ -1841,11 +1889,23 @@ class TaskManager:
                                 reasoning="The form has no uniquely identified submit control in the current DOM snapshot. Re-inspect the page; do not report completion without a submission confirmation.",
                             )
                     else:
-                        action = BrowserAction(
-                            action=ActionType.WAIT,
-                            scroll_amount=700,
-                            reasoning="Page inspection is internal. The user did not request data extraction; waiting briefly before continuing the requested workflow.",
-                        )
+                        unanswered = self._unanswered_form_questions(page_info)
+                        if unanswered:
+                            action = BrowserAction(
+                                action=ActionType.REQUEST_APPROVAL,
+                                text=(
+                                    "I cannot safely guess the unanswered form responses. Please provide answers for: "
+                                    + "; ".join(unanswered[:10])
+                                    + ". I will use only the answers you provide and verified data from My Context."
+                                ),
+                                reasoning="The form contains unanswered questions. Request the missing user-specific or subjective answers instead of looping on internal extraction.",
+                            )
+                        else:
+                            action = BrowserAction(
+                                action=ActionType.WAIT,
+                                scroll_amount=700,
+                                reasoning="Page inspection is internal. The user did not request data extraction; waiting briefly before continuing the requested workflow.",
+                            )
 
                 # Plan progress is updated only after the browser action is
                 # successfully executed and verified. Failed attempts must never
