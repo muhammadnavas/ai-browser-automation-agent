@@ -120,6 +120,52 @@ class TaskManager:
         return graph
 
     @staticmethod
+    def _unanswered_form_questions(page_info: Dict[str, Any]) -> List[str]:
+        """Return live form questions that still have no observable answer.
+
+        This is a safety check before accepting a generic form-review approval.
+        It deliberately treats radio/checkbox groups with no selected option and
+        Google Forms dropdowns still showing "Choose" as unanswered.
+        """
+        gaps: List[str] = []
+        seen: Set[str] = set()
+        for group in page_info.get("form_groups") or []:
+            if not isinstance(group, dict):
+                continue
+            options = group.get("options") or []
+            if not options:
+                continue
+            if not any(bool(option.get("selected")) for option in options if isinstance(option, dict)):
+                question = str(group.get("row") or group.get("question") or "Unanswered choice").strip()
+                if question and question not in seen:
+                    seen.add(question)
+                    gaps.append(question)
+
+        for element in page_info.get("elements") or []:
+            if not isinstance(element, dict):
+                continue
+            if str(element.get("role") or "").lower() != "option":
+                continue
+            label = str(element.get("label") or element.get("accessible_name") or "").strip()
+            text = str(element.get("text") or "").strip()
+            if text.lower() in {"choose", "select", "select an option"}:
+                question = label or "Dropdown selection"
+                if question not in seen:
+                    seen.add(question)
+                    gaps.append(question)
+
+        for field in page_info.get("form_fields") or []:
+            if not isinstance(field, dict) or not field.get("required"):
+                continue
+            current = str(field.get("current_value") or "").strip()
+            if not current:
+                label = str(field.get("label") or field.get("name") or "Required field").strip()
+                if label not in seen:
+                    seen.add(label)
+                    gaps.append(label)
+        return gaps
+
+    @staticmethod
     def _refresh_milestone_graph(task: TaskResponse) -> None:
         """Refresh milestone states; only explicit verification may mark a milestone complete."""
         metadata = task.plan_metadata if isinstance(task.plan_metadata, dict) else {}
@@ -2112,12 +2158,18 @@ class TaskManager:
                     # reviewing; only a blank response from the explicit Approve UI
                     # or an affirmative response authorizes the consequential step.
                     from agents.action_safety import approval_was_granted
+                    approval_form_gaps = self._unanswered_form_questions(page_info)
                     approval_is_granted = (
-                        not bool(user_approval_input.strip())
-                        or approval_was_granted(user_approval_input, [])
+                        (not bool(user_approval_input.strip()) or approval_was_granted(user_approval_input, []))
+                        and not approval_form_gaps
                     )
                     if captcha_or_payment is None and approval_is_granted:
                         task.context.confirm_form()
+                    if approval_form_gaps:
+                        task.context.record_error(
+                            "Form review is not complete. These questions still need answers: "
+                            + "; ".join(approval_form_gaps[:12])
+                        )
                     if user_approval_input:
                         task.context.record_error(
                             ("Human approval feedback: " if not approval_is_granted else "Human review note: ")
@@ -2142,10 +2194,7 @@ class TaskManager:
                     # The planner uses this history to decide whether submission is
                     # authorized, so feedback must remain distinguishable from consent.
                     from agents.action_safety import approval_was_granted
-                    approval_granted = (
-                        not bool((user_approval_input or "").strip())
-                        or approval_was_granted(user_approval_input, [])
-                    )
+                    approval_granted = bool(approval_is_granted)
                     exec_description = (
                         f"User granted approval. Input: {user_approval_input}"
                         if approval_granted
