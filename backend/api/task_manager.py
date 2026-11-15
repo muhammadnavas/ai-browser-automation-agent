@@ -1840,42 +1840,6 @@ class TaskManager:
                             + ". Do not approve submission yet; I need these answers to continue."
                         )
 
-                # Bound repeated no-progress waits. Do not burn the task budget
-                # repeating the same inspection against an unchanged DOM.
-                if action.action == ActionType.WAIT:
-                    fingerprint = str(getattr(task.context, "last_dom_fingerprint", "") or "")
-                    if fingerprint and fingerprint == last_no_progress_fingerprint:
-                        consecutive_no_progress += 1
-                    else:
-                        consecutive_no_progress = 1
-                        last_no_progress_fingerprint = fingerprint or None
-                    if consecutive_no_progress >= 3:
-                        unanswered = self._unanswered_form_questions(page_info)
-                        if unanswered:
-                            action = BrowserAction(
-                                action=ActionType.REQUEST_APPROVAL,
-                                text=(
-                                    "Automation is not making progress and these form questions remain unanswered: "
-                                    + "; ".join(unanswered[:10])
-                                    + ". Please provide the answers so I can continue safely."
-                                ),
-                                reasoning="Three consecutive inspections found no progress; requesting missing user input instead of looping.",
-                            )
-                            consecutive_no_progress = 0
-                        else:
-                            task.status = TaskStatus.FAILED
-                            task.plan_status = "failed"
-                            task.error = (
-                                "Automation stopped after three consecutive inspections with no page-state progress. "
-                                "No further action was attempted to avoid repeating the same operation."
-                            )
-                            task.updated_at = time.time()
-                            await self.broadcast_task_update(task_id)
-                            break
-                else:
-                    consecutive_no_progress = 0
-                    last_no_progress_fingerprint = None
-
                 user_approval_input = None   # consume after use
 
                 # EXTRACT is only valid when the user explicitly requested data
@@ -1956,6 +1920,42 @@ class TaskManager:
                                 scroll_amount=700,
                                 reasoning="Page inspection is internal. The user did not request data extraction; waiting briefly before continuing the requested workflow.",
                             )
+
+                # Bound repeated no-progress waits. Do not burn the task budget
+                # repeating the same inspection against an unchanged DOM.
+                if action.action == ActionType.WAIT:
+                    fingerprint = str(getattr(task.context, "last_dom_fingerprint", "") or "")
+                    if fingerprint and fingerprint == last_no_progress_fingerprint:
+                        consecutive_no_progress += 1
+                    else:
+                        consecutive_no_progress = 1
+                        last_no_progress_fingerprint = fingerprint or None
+                    if consecutive_no_progress >= 3:
+                        unanswered = self._unanswered_form_questions(page_info)
+                        if unanswered:
+                            action = BrowserAction(
+                                action=ActionType.REQUEST_APPROVAL,
+                                text=(
+                                    "Automation is not making progress and these form questions remain unanswered: "
+                                    + "; ".join(unanswered[:10])
+                                    + ". Please provide the answers so I can continue safely."
+                                ),
+                                reasoning="Three consecutive inspections found no progress; requesting missing user input instead of looping.",
+                            )
+                            consecutive_no_progress = 0
+                        else:
+                            task.status = TaskStatus.FAILED
+                            task.plan_status = "failed"
+                            task.error = (
+                                "Automation stopped after three consecutive inspections with no page-state progress. "
+                                "No further action was attempted to avoid repeating the same operation."
+                            )
+                            task.updated_at = time.time()
+                            await self.broadcast_task_update(task_id)
+                            break
+                else:
+                    consecutive_no_progress = 0
+                    last_no_progress_fingerprint = None
 
                 # Plan progress is updated only after the browser action is
                 # successfully executed and verified. Failed attempts must never
