@@ -943,11 +943,29 @@
         'button,a,[role="button"],[role="link"],[role="menuitem"],[role="option"],[role="row"],[role="treeitem"],[data-target="item"],[data-id],[tabindex]:not([tabindex="-1"]),li,span,div'
       ));
       const match = findBestSemanticMatch(candidates, textTarget, actionKind, false);
+      if (match.element && !match.ambiguous && match.score >= 92) return match.element;
+
+      // A unique, explicit selector from the same live DOM snapshot is stronger
+      // evidence than a broad text match. For example, "Submit" can be ambiguous
+      // on a long form, while [aria-label="Submit"] uniquely identifies the
+      // intended control. Verify the accessible name before accepting it.
+      if (action.selector) {
+        try {
+          const selectorMatches = document.querySelectorAll(action.selector);
+          if (selectorMatches.length === 1 && isVisibleActionTarget(selectorMatches[0])) {
+            const candidate = getActionableElement(selectorMatches[0], actionKind);
+            const candidateName = getAccessibleName(candidate) || candidate.innerText || candidate.textContent || "";
+            if (!textTarget || String(candidateName).trim().toLowerCase() === textTarget.toLowerCase()) {
+              return candidate;
+            }
+          }
+        } catch (e) {}
+      }
+
       if (match.ambiguous) {
-        console.warn("AI Agent: refusing ambiguous text target", { textTarget, score: match.score });
+        console.warn("AI Agent: refusing ambiguous text target without a unique explicit selector", { textTarget, score: match.score });
         return null;
       }
-      if (match.element && match.score >= 92) return match.element;
       // If text matching did not produce a unique >= 92 score match,
       // allow fallback to the planner's explicit element_id or selector if provided.
       if (action.element_id !== undefined && action.element_id !== null) {
