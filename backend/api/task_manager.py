@@ -1778,9 +1778,9 @@ class TaskManager:
                             )
                         else:
                             action = BrowserAction(
-                                action=ActionType.FINISH,
-                                reasoning="Form workflow completed.",
-                                extracted_data={"status": "Completed", "url": getattr(controller, "current_url", "")},
+                                action=ActionType.WAIT,
+                                scroll_amount=500,
+                                reasoning="The form has no uniquely identified submit control in the current DOM snapshot. Re-inspect the page; do not report completion without a submission confirmation.",
                             )
                     else:
                         action = BrowserAction(
@@ -2095,11 +2095,21 @@ class TaskManager:
                     # A user-approved custom review is the authorization
                     # for this form workflow. Persist it so the planner cannot
                     # repeatedly ask for the same approval on subsequent steps.
-                    if captcha_or_payment is None:
+                    # A free-text review response is not automatically consent.
+                    # Treat explicit negative/feedback text as a request to continue
+                    # reviewing; only a blank response from the explicit Approve UI
+                    # or an affirmative response authorizes the consequential step.
+                    from agents.action_safety import approval_was_granted
+                    approval_is_granted = (
+                        not bool(user_approval_input.strip())
+                        or approval_was_granted(user_approval_input, [])
+                    )
+                    if captcha_or_payment is None and approval_is_granted:
                         task.context.confirm_form()
                     if user_approval_input:
                         task.context.record_error(
-                            f"Human review feedback: {user_approval_input}"
+                            ("Human approval feedback: " if not approval_is_granted else "Human review note: ")
+                            + user_approval_input
                         )
                     task.status = TaskStatus.RUNNING
                     task.approval_request = None
@@ -2116,7 +2126,19 @@ class TaskManager:
                 # still-open picker when the upload did not actually complete).
                 is_upload_step = False
                 if action.action == ActionType.REQUEST_APPROVAL:
-                    exec_description = f"User granted approval. Input: {user_approval_input}"
+                    # Do not write a false approval marker into trajectory history.
+                    # The planner uses this history to decide whether submission is
+                    # authorized, so feedback must remain distinguishable from consent.
+                    from agents.action_safety import approval_was_granted
+                    approval_granted = (
+                        not bool((user_approval_input or "").strip())
+                        or approval_was_granted(user_approval_input, [])
+                    )
+                    exec_description = (
+                        f"User granted approval. Input: {user_approval_input}"
+                        if approval_granted
+                        else f"User requested further review. Feedback: {user_approval_input}"
+                    )
                     extracted_item = None
                     action_success = True
                 else:
