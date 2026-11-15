@@ -3043,7 +3043,12 @@ If the original goal is already complete, return ["Verify the requested outcome 
         headings     = page_info.get("headings", [])
         
         compact_forms = page_info.get("compact_forms")
-        compact_forms_str = json.dumps(compact_forms, indent=2) if compact_forms else "(none)"
+        question_groups = page_info.get("form_groups") or []
+        form_evidence = {
+            "native_fields": compact_forms,
+            "question_groups": question_groups[:60],
+        } if compact_forms or question_groups else None
+        compact_forms_str = json.dumps(form_evidence, ensure_ascii=False, indent=2) if form_evidence else "(none)"
         visual_context = page_info.get("visual_context") or {}
         viewport = page_info.get("viewport") or {}
         visual_context_str = json.dumps({
@@ -3149,6 +3154,13 @@ Use element rects, viewport size, center_hit, dialogs, and sticky overlays to av
 clicking obscured controls. Prefer a visible, unobstructed matching element. If the
 target is covered or outside the viewport, scroll or dismiss the relevant overlay
 before retrying. Do not assume a control is clickable from its label alone.
+
+FORM-SAFETY RULES:
+- Use each question's own label and associated options from question_groups; do not confuse an option with its parent question.
+- Never fill an empty string. Never invent ratings, recommendations, course choices, checkbox selections, or free-text feedback.
+- If a field requires a subjective answer or no verified value exists in user context, ask the user and wait.
+- A blank optional comment field is already handled; do not fill it with an empty string or repeatedly target it.
+- Track each question independently. After a field is verified, move to the next unanswered question; do not repeat a successful fill after a page rerender.
 
 PAGE VISIBLE TEXT (labels, headings, paragraphs — use this to understand form fields):
 <UNTRUSTED_CONTENT source="page_text">
