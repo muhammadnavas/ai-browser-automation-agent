@@ -2923,16 +2923,44 @@ If the original goal is already complete, return ["Verify the requested outcome 
                         unfilled_input = el
                         break
             if unfilled_input:
-                logger.info("Guardrail: intercepted premature approval request because form input is still unfilled. Filling '%s' first.", unfilled_input.get("name") or unfilled_input.get("placeholder") or "field")
-                val, field_name = synthesize_generalized_field_value(unfilled_input, goal=goal)
-                action = BrowserAction(
-                    action=ActionType.FILL,
-                    element_id=unfilled_input.get("index"),
-                    selector=unfilled_input.get("selector"),
-                    text=val,
-                    value=val,
-                    reasoning=f"Populate the '{field_name}' field with dynamic value '{val}' before requesting approval.",
+                val_res = synthesize_generalized_field_value(
+                    unfilled_input,
+                    goal=goal,
+                    retrieved_context=retrieved_ctx,
+                    exclusive_my_context=any(k in goal_lower_check for k in (
+                        "my context", "from context", "do not invent", "don't invent", "my data"
+                    )),
                 )
+                val, field_name = val_res[0], val_res[1]
+                source = getattr(val_res, "source", "Unknown")
+                if val is not None and str(val).strip():
+                    logger.info(
+                        "Guardrail: filling required field '%s' from a verified value (%s).",
+                        field_name, source,
+                    )
+                    action = BrowserAction(
+                        action=ActionType.FILL,
+                        element_id=unfilled_input.get("index"),
+                        selector=unfilled_input.get("selector"),
+                        text=str(val),
+                        value=str(val),
+                        reasoning=f"Populate required field '{field_name}' from {source}.",
+                    )
+                else:
+                    # Never send an empty string to the executor: it creates a
+                    # successful no-op and traps the planner in the same action.
+                    missing_label = (
+                        unfilled_input.get("text")
+                        or unfilled_input.get("aria_label")
+                        or unfilled_input.get("placeholder")
+                        or unfilled_input.get("name")
+                        or "a required form field"
+                    )
+                    action = BrowserAction(
+                        action=ActionType.REQUEST_APPROVAL,
+                        text=f"I need your input for: {missing_label}. I could not find a verified value in My Context. Please provide the answer; I will not guess.",
+                        reasoning=f"Required field '{field_name}' has no verified value ({source}); asking the user instead of repeatedly filling it with an empty value.",
+                    )
 
         # 5. Store Safe Action in Redis
         if action and use_cache and self.cache_service is not None and self._is_safe_action_to_cache(action):
