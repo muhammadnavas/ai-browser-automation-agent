@@ -2626,6 +2626,17 @@ If the original goal is already complete, return ["Verify the requested outcome 
                 extracted_data={"summary": "Completed maximum steps allocation."},
             )
 
+        # Context-dependent actions must be recomputed against the latest My Context.
+        # The Redis action cache key intentionally does not contain profile/document/
+        # memory versions, so a cache hit could silently bypass newly retrieved data.
+        retrieved_ctx = None
+        if isinstance(task_context, dict):
+            retrieved_ctx = task_context.get("retrieved_context")
+        elif task_context is not None:
+            retrieved_ctx = getattr(task_context, "retrieved_context", None)
+        if isinstance(retrieved_ctx, dict) and retrieved_ctx.get("has_context"):
+            use_cache = False
+
         # Never reuse an action across milestone boundaries.
         if active_milestone:
             use_cache = False
