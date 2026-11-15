@@ -424,7 +424,7 @@
       );
       const question = String(
         titleNode?.innerText || titleNode?.textContent || ""
-      ).trim().replace(/\\s+/g, " ") || String(card.innerText || "").trim().split("\\n")[0].slice(0, 300);
+      ).trim().replace(/\s+/g, " ") || String(card.innerText || "").trim().split("\n")[0].slice(0, 300);
       const type = controls.some((control) =>
         control.matches('input[type="checkbox"],[role="checkbox"]')
       ) ? "checkbox_group" : "radio_group";
@@ -437,7 +437,7 @@
           || control.textContent
           || getAccessibleName(control)
           || ""
-        ).trim().replace(/\\s+/g, " ");
+        ).trim().replace(/\s+/g, " ");
         return {
           label: optionLabel.slice(0, 180),
           value: control.getAttribute("data-value") || control.value || optionLabel,
@@ -453,7 +453,7 @@
         question: question.slice(0, 400),
         type,
         required: card.querySelector('[aria-required="true"],[required]') !== null
-          || /\\*\\s*$/.test(question),
+          || /\*\s*$/.test(question),
         options,
       });
     });
