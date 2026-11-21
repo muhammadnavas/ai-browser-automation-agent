@@ -142,6 +142,25 @@ npm run dev
 
 Open the local URL printed by Vite. Use / for the project landing page and /agent for the automation workspace.
 
+## Redis Semantic Plan Cache
+
+The planner keeps its existing exact-match caches (in-memory L1 and Redis L2) and then checks a semantic Redis layer before calling an LLM. Semantic lookup uses Gemini embeddings (`gemini-embedding-001`) and cosine similarity. Results are scoped to the same normalized starting URL, agent version, and detected task-intent category. A lexical-overlap guard also checks important task terms before a cached plan can be reused.
+
+Semantic caching is best-effort: if Gemini embeddings or Redis are unavailable, planning continues through the normal LLM/heuristic path. It does not cache live DOM decisions, action execution, or recovery plans. Goals that trigger the existing sensitive-data redactor are skipped by the semantic layer.
+
+Configure these optional environment variables in `.env`:
+
+~~~env
+SEMANTIC_CACHE_ENABLED=true
+SEMANTIC_EMBEDDING_MODEL=gemini-embedding-001
+SEMANTIC_CACHE_THRESHOLD=0.92
+SEMANTIC_CACHE_LEXICAL_THRESHOLD=0.70
+SEMANTIC_CACHE_TTL=1800
+SEMANTIC_CACHE_MAX_CANDIDATES=100
+~~~
+
+A Gemini API key is required for embeddings. Redis must be running for either exact or semantic Redis caching. The semantic implementation uses standard Redis key/value and SCAN commands; Redis Stack / RediSearch is not required.
+
 ## Chrome Extension Setup
 
 The extension lets the agent interact with tabs in an existing Chrome session.
