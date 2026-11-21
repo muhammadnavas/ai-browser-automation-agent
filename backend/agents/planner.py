@@ -36,6 +36,7 @@ from agents.action_registry import get_action_catalog_prompt, validate_action_pa
 from agents.plan_format import normalize_plan_response
 from agents.plan_cache import PlanCache, default_plan_cache
 from services.cache_service import CacheService, default_cache_service
+from services.semantic_plan_cache import SemanticPlanCache
 
 logger = logging.getLogger("AIAgentPlanner")
 
@@ -1066,6 +1067,32 @@ class AIAgentPlanner:
             provider = "xAI Grok" if self.groq_api_key.startswith("xai-") else "Groq"
             logger.info(f"Initialized fallback AI provider ({provider}, model: '{self.groq_model}').")
 
+        self.semantic_plan_cache = SemanticPlanCache(
+            cache_service=self.cache_service,
+            embedding_fn=self._embed_semantic_text,
+        )
+
+    async def _embed_semantic_text(self, text: str) -> Optional[List[float]]:
+        """Create a Gemini embedding for semantic plan lookup; return None when unavailable."""
+        if self.client is None or not text:
+            return None
+        try:
+            response = await asyncio.to_thread(
+                self.client.models.embed_content,
+                model=os.getenv("SEMANTIC_EMBEDDING_MODEL", "gemini-embedding-001"),
+                contents=text,
+            )
+            embeddings = getattr(response, "embeddings", None) or []
+            if not embeddings:
+                return None
+            values = getattr(embeddings[0], "values", None)
+            if values is None and isinstance(embeddings[0], dict):
+                values = embeddings[0].get("values")
+            return [float(value) for value in values] if values else None
+        except Exception as exc:
+            logger.warning("Semantic embedding generation unavailable (non-fatal): %s", exc)
+            return None
+
     # Expose domains_match on AIAgentPlanner for convenience and backward compatibility
     @staticmethod
     def domains_match(url1: str, url2: str) -> bool:
@@ -1874,6 +1901,58 @@ class AIAgentPlanner:
                 )
 
         # ------------------------------------------------------------------
+        # 2.5 Semantic Redis lookup (after exact-match caches)
+        # ------------------------------------------------------------------
+        if use_cache and self.semantic_plan_cache is not None:
+            try:
+                semantic_intent = self._analyze_task_intent(goal, start_url)
+                semantic_hit = await self.semantic_plan_cache.find(
+                    goal=goal,
+                    start_url=start_url,
+                    agent_version=self.agent_version,
+                    intent=semantic_intent["category_key"],
+                )
+                if semantic_hit:
+                    semantic_plan = [str(step).strip() for step in semantic_hit["plan"] if str(step).strip()]
+                    if semantic_plan:
+                        redis_key = self.cache_service.generate_key(
+                            cache_type="plan",
+                            agent_version=self.agent_version,
+                            task_or_goal=goal,
+                            url=start_url,
+                            dom_fingerprint="",
+                        ) if self.cache_service is not None else None
+                        if self.cache_service is not None and redis_key:
+                            await self.cache_service.set(redis_key, {
+                                "plan": semantic_plan,
+                                "goal": self.cache_service.normalize_task(goal),
+                                "start_url": self.cache_service.normalize_url(start_url),
+                                "agent_version": self.agent_version.strip().lower(),
+                                "source": "semantic",
+                                "metadata": semantic_hit.get("metadata", {}),
+                            })
+                        if self.plan_cache is not None:
+                            self.plan_cache.set(
+                                goal=goal, start_url=start_url, plan=semantic_plan,
+                                metadata=semantic_hit.get("metadata", {}), source="semantic",
+                            )
+                        self.last_plan_cache_result = {
+                            "hit": True, "tier": "L2 (Redis Semantic)", "source": "semantic",
+                            "reused": True, "key": redis_key or "semantic_cache",
+                            "similarity": semantic_hit.get("similarity"),
+                            "matched_goal": semantic_hit.get("matched_goal", ""),
+                            "message": f"Reused a semantically similar {len(semantic_plan)}-step plan",
+                            "details": f"Redis vector similarity={semantic_hit.get('similarity')} • Scoped to the same URL and task intent",
+                        }
+                        logger.info(
+                            "Semantic plan reused (similarity=%s, intent=%s)",
+                            semantic_hit.get("similarity"), semantic_intent["category_key"],
+                        )
+                        return self._filter_unrequested_report_steps(goal, semantic_plan)
+            except Exception as exc:
+                logger.warning("Semantic plan lookup failed (non-fatal): %s", exc)
+
+        # ------------------------------------------------------------------
         # 3. Fresh Plan Generation (LLM with Heuristic Fallback)
         # ------------------------------------------------------------------
         has_llm = bool(self.ollama_enabled or self.client or self.groq_api_key)
@@ -1977,6 +2056,21 @@ Output format example:
                     metadata=intent_info,
                     source=source,
                 )
+
+        if plan and use_cache and self.semantic_plan_cache is not None:
+            try:
+                semantic_intent = self._analyze_task_intent(goal, start_url)
+                await self.semantic_plan_cache.store(
+                    goal=goal,
+                    start_url=start_url,
+                    agent_version=self.agent_version,
+                    intent=semantic_intent["category_key"],
+                    plan=plan,
+                    source=source,
+                    metadata=semantic_intent,
+                )
+            except Exception as exc:
+                logger.warning("Semantic plan cache store failed (non-fatal): %s", exc)
 
         if not self.last_plan_cache_result:
             self.last_plan_cache_result = {
