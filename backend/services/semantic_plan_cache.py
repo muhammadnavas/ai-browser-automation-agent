@@ -48,6 +48,22 @@ class SemanticPlanCache:
             return 0.0
         return dot / (left_norm * right_norm)
 
+    @staticmethod
+    def lexical_overlap(left: str, right: str) -> float:
+        """Guard against reusing a plan when important task entities differ."""
+        stop_words = {
+            "a", "an", "and", "are", "at", "by", "for", "from", "in", "into",
+            "is", "it", "me", "my", "of", "on", "or", "please", "the", "to",
+            "with", "using", "use", "find", "look", "search", "open", "go",
+            "navigate", "visit", "get", "show", "want", "would", "could",
+        }
+        import re
+        left_tokens = {token for token in re.findall(r"[a-z0-9]+", left.lower()) if len(token) > 1 and token not in stop_words}
+        right_tokens = {token for token in re.findall(r"[a-z0-9]+", right.lower()) if len(token) > 1 and token not in stop_words}
+        if not left_tokens or not right_tokens:
+            return 0.0
+        return len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens))
+
     def _namespace(self, agent_version: str, url: str, intent: str) -> str:
         url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
         intent_hash = hashlib.sha256(intent.encode("utf-8")).hexdigest()[:12]
@@ -97,10 +113,15 @@ class SemanticPlanCache:
                 if scanned >= self.max_candidates:
                     break
 
-            if best is not None and best_score >= self.threshold:
+            lexical_score = self.lexical_overlap(safe_goal, str(best.get("goal", ""))) if best else 0.0
+            lexical_threshold = float(os.getenv("SEMANTIC_CACHE_LEXICAL_THRESHOLD", "0.70"))
+            if best is not None and best_score >= self.threshold and lexical_score >= lexical_threshold:
                 plan = best.get("plan")
                 if isinstance(plan, list) and plan and all(isinstance(step, str) and step.strip() for step in plan):
-                    logger.info("Semantic plan cache HIT: similarity=%.4f threshold=%.4f", best_score, self.threshold)
+                    logger.info(
+                        "Semantic plan cache HIT: vector_similarity=%.4f lexical_overlap=%.4f",
+                        best_score, lexical_score,
+                    )
                     return {
                         "plan": plan,
                         "source": best.get("source", "semantic"),
@@ -108,7 +129,10 @@ class SemanticPlanCache:
                         "similarity": round(best_score, 4),
                         "matched_goal": best.get("goal", ""),
                     }
-            logger.info("Semantic plan cache MISS: candidates=%s best_similarity=%.4f", scanned, best_score)
+            logger.info(
+                "Semantic plan cache MISS: candidates=%s vector_similarity=%.4f lexical_overlap=%.4f",
+                scanned, best_score, lexical_score,
+            )
         except Exception as exc:
             logger.warning("Semantic plan cache lookup failed (non-fatal): %s", exc)
         return None
