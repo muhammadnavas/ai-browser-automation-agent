@@ -2067,7 +2067,10 @@ Output format example:
                     intent=semantic_intent["category_key"],
                     plan=plan,
                     source=source,
-                    metadata=semantic_intent,
+                    metadata={
+                        "category_key": semantic_intent["category_key"],
+                        "category_label": semantic_intent["category_label"],
+                    },
                 )
             except Exception as exc:
                 logger.warning("Semantic plan cache store failed (non-fatal): %s", exc)
