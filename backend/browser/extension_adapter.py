@@ -204,7 +204,11 @@ class ExtensionManager:
                 pending = self.pending_requests.get(msg_id)
                 if pending:
                     origin, fut = pending
-                    if origin is websocket and not fut.done():
+                    is_valid_origin = (
+                        origin is websocket
+                        or websocket in self.active_connections
+                    )
+                    if is_valid_origin and not fut.done():
                         fut.set_result(message)
         return True
 
@@ -742,12 +746,23 @@ class ExtensionBrowserAdapter:
         if isinstance(action.action, ActionType):
             action_payload["action"] = action.action.value
 
-        is_upload = (
+        action_text_lower = str(action.text or "").strip().lower()
+        action_reason_lower = str(action.reasoning or "").lower()
+        is_menu_or_nav = (
+            action_text_lower in ("new", "+ new", "+new", "create", "menu")
+            or "to ensure menu opens" in action_reason_lower
+            or "start the upload/create flow" in action_reason_lower
+            or "open the 'new' menu" in action_reason_lower
+            or "waiting for the 'new' menu" in action_reason_lower
+            or ("folder" in action_reason_lower and "file upload" not in action_text_lower)
+        )
+
+        is_upload = not is_menu_or_nav and (
             action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
             or bool(action_payload.get("file_name"))
             or bool(action_payload.get("file_base64"))
-            or any(k in str(action.text or "").lower() for k in ["add file", "upload", "attach", "choose file"])
-            or any(k in str(action.reasoning or "").lower() for k in ["add file", "upload", "attach", "choose file"])
+            or any(k in action_text_lower for k in ["add file", "choose file", "browse", "file upload", "upload file", "drop files"])
+            or any(k in action_reason_lower for k in ["file upload", "upload file", "attach file", "choose file", "drop files"])
         )
         cmd_timeout = 60.0 if is_upload else 25.0
 
