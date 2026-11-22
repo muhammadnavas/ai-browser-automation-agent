@@ -2204,37 +2204,36 @@ export default function App() {
                         </div>
                       ) : null;
                     })()}
+                    {metadata && (
+                      <div className="plan-meta inline-plan-meta">
+                        <span className="meta-chip">
+                          <Target size={13} />
+                          Intent:{' '}
+                          {metadata.category_label ||
+                            metadata.category_key ||
+                            'Automation'}
+                        </span>
+                        {cache && (
+                          <span
+                            className={
+                              'meta-chip' + (cache.hit ? ' meta-success' : '')
+                            }
+                          >
+                            <Database size={13} />
+                            {cache.tier === 'Live page discovery' ? 'Live page discovery' : `Redis plan ${cache.hit ? 'hit' : 'miss'}`}
+                            {cache.duration_ms != null
+                              ? ' · ' + formatDuration(cache.duration_ms)
+                              : ''}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <p>{currentTask.goal}</p>
                 </div>
                 <StatusPill task={currentTask} />
                 <ReportDownloadButton task={currentTask} />
               </div>
-
-              {metadata && (
-                <div className="plan-meta">
-                  <span className="meta-chip">
-                    <Target size={13} />
-                    Intent:{' '}
-                    {metadata.category_label ||
-                      metadata.category_key ||
-                      'Automation'}
-                  </span>
-                  {cache && (
-                    <span
-                      className={
-                        'meta-chip' + (cache.hit ? ' meta-success' : '')
-                      }
-                    >
-                      <Database size={13} />
-                      {cache.tier === 'Live page discovery' ? 'Live page discovery' : `Redis plan ${cache.hit ? 'hit' : 'miss'}`}
-                      {cache.duration_ms != null
-                        ? ' · ' + formatDuration(cache.duration_ms)
-                        : ''}
-                    </span>
-                  )}
-                </div>
-              )}
 
               {(() => {
                 const planSteps = extractPlanSteps(currentTask);
@@ -2418,7 +2417,7 @@ export default function App() {
                         ? 'Page Analyzed'
                         : cache.tier === 'Live page discovery'
                           ? 'Page Analysis'
-                          : `Plan Cache ${cache.hit ? 'Kit' : 'Miss'}`}
+                          : `Cache ${cache.hit ? 'Hit' : 'Miss'}`}
                     </span>
                     <span className="cache-summary-text">
                       {cache.message ||

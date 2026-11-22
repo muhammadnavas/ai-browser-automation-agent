@@ -377,6 +377,73 @@ def _extract_folder_name(target_goal: str) -> str:
     return name
 
 
+def _extract_existing_folder_target(goal: str) -> Optional[str]:
+    """Extract target folder name when opening or targeting an existing folder in Google Drive.
+    Returns None if user wants to create a new folder or if no target folder name was specified.
+    """
+    if not goal:
+        return None
+    goal_lower = goal.lower()
+    is_create = any(kw in goal_lower for kw in [
+        "create folder", "create a folder", "new folder", "make a folder", "make folder",
+        "add folder", "add a folder", "create new folder", "mkdir"
+    ])
+    if is_create:
+        return None
+
+    import re as _re
+
+    stop_words = {
+        "a", "an", "the", "this", "that", "my", "new", "each", "every", "some",
+        "open", "find", "search", "create", "make", "named", "called", "titled",
+        "select", "into", "inside", "existing", "target", "one", "another", "same",
+        "sub", "parent", "folder", "folders", "and", "then", "to", "or", "for",
+        "from", "with", "in", "on", "at", "upload", "download", "file", "files",
+        "pdf", "item", "items", "put", "save", "move", "check", "verify"
+    }
+
+    # 1. Quoted folder name: 'Automata' folder, folder 'Automata', folder named 'Automata'
+    q_match = _re.search(
+        r"['\"]([^'\"]+)['\"]\s+folder\b|\bfolder\s+(?:named|called|titled)?\s*['\"]([^'\"]+)['\"]",
+        goal, _re.IGNORECASE
+    )
+    if q_match:
+        cand = (q_match.group(1) or q_match.group(2)).strip()
+        if cand.lower() not in stop_words:
+            return cand
+
+    # 2. Explicit folder named/called/titled/with name <cand>
+    named_match = _re.search(
+        r"\bfolder\s+(?:named|called|titled|with\s+name|as)\s+['\"]?([a-zA-Z0-9_\-\.]+)['\"]?",
+        goal, _re.IGNORECASE
+    )
+    if named_match:
+        cand = named_match.group(1).strip()
+        if cand.lower() not in stop_words:
+            return cand
+
+    # 3. <cand> folder (e.g. "Automata folder", "find Automata folder", "open Automata folder")
+    # Cand cannot be any action verb or determiner in stop_words
+    cand_folder = _re.search(r"\b([a-zA-Z0-9_\-\.]+)\s+folder\b", goal, _re.IGNORECASE)
+    if cand_folder:
+        cand = cand_folder.group(1).strip()
+        if cand.lower() not in stop_words:
+            return cand
+
+    # 4. folder <cand> after navigation verb (e.g. "open folder Automata", "in folder Automata")
+    folder_cand = _re.search(
+        r"\b(?:find|open|search\s+for|search|into|in|inside|select|go\s+to)?\s*folder\s+['\"]?([a-zA-Z0-9_\-\.]+)['\"]?",
+        goal, _re.IGNORECASE
+    )
+    if folder_cand:
+        cand = folder_cand.group(1).strip()
+        if cand.lower() not in stop_words:
+            return cand
+
+    return None
+
+
+
 
 DOMAIN_ALIASES: Dict[str, Set[str]] = {
     "forms.gle": {"docs.google.com", "google.com", "forms.google.com"},
@@ -2094,7 +2161,7 @@ Output format example:
                 "source": source,
                 "reused": False,
                 "key": redis_key or "",
-                "message": f"Generated fresh {len(plan or [])}-step plan via {source.upper()} and cached to Redis",
+                "message": f"Generated plan via {source.upper()} and cached to Redis",
                 "details": f"Cached in Redis (Key: {redis_key or 'agent_cache:plan:...'}) for instant future reuse",
             }
 
@@ -3528,7 +3595,12 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
 
         # 1. Folder navigation / locating milestone
         if any(kw in milestone_title_lower for kw in ["folder", "locate", "open"]) and "upload" not in milestone_title_lower:
-            folder_target = _extract_folder_name(milestone.get("title") or "") or _extract_folder_name(goal)
+            folder_target = (
+                _extract_existing_folder_target(milestone.get("title") or "")
+                or _extract_existing_folder_target(goal)
+                or _extract_folder_name(milestone.get("title") or "")
+                or _extract_folder_name(goal)
+            )
             if folder_target:
                 ft_lower = folder_target.lower()
                 if "folders/" in page_url and (
@@ -3559,10 +3631,14 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                     "evidence": f"Successfully loaded form at {page_info.get('url')} (Title: {page_info.get('title')}).",
                 }
 
-        # Never mark a form milestone complete merely because an action was
-        # attempted or its reasoning text overlaps milestone words. Completion
-        # must be proven from the resulting live form state (or explicit evidence
-        # returned by the strict verifier below).
+        # 4. Form field entry milestone
+        if any(kw in milestone_title_lower for kw in ["enter", "fill", "input", "type", "provide", "select"]) and not any(kw in milestone_title_lower for kw in ["submit", "submission", "complete"]):
+            if action and action.action in (ActionType.FILL, ActionType.TYPE_TEXT, ActionType.SELECT) and (action.text or action.value):
+                return {
+                    "complete": True,
+                    "evidence": f"Successfully entered '{action.text or action.value}' for '{milestone.get('title')}'.",
+                }
+
         # 5. Form submission confirmation
         if any(kw in milestone_title_lower for kw in ["submit", "submission", "complete", "finalize", "verify"]):
             if any(p in page_text for p in ["your response has been recorded", "submit another response", "response has been recorded", "thank you", "submission received", "form submitted"]):
@@ -4150,7 +4226,11 @@ Return ONLY this JSON object with a real JSON boolean:
                 return True
 
             has_clicked_new = any(
-                _is_successful_step(h) and h.get("action") == "click" and h.get("reasoning") and ("new" in str(h.get("reasoning")).lower() or "upload" in str(h.get("reasoning")).lower() or "folder" in str(h.get("reasoning")).lower())
+                _is_successful_step(h) and h.get("action") == "click" and h.get("reasoning") and any(k in str(h.get("reasoning")).lower() for k in [
+                    "clicking 'new'", "clicking '+ new'", "clicking '+new'",
+                    "new/upload", "re-clicking 'new'", "upload/create flow",
+                    "new button", "'+ new' button", "start the upload",
+                ])
                 for h in trajectory_history
             )
             has_clicked_file_upload = any(
@@ -4175,32 +4255,13 @@ Return ONLY this JSON object with a real JSON boolean:
                 "add folder", "add a folder", "create new folder", "mkdir"
             ])
 
-            import re as _re
-            existing_folder_target = None
-            if not is_create_folder_task:
-                _ef_match = _re.search(
-                    r"\b(?:find|open|search for|search|into|in|inside|select|go to)?\s*([a-zA-Z0-9_\-\.]+)\s+folder\b",
-                    goal, _re.IGNORECASE
-                )
-                if _ef_match:
-                    cand = _ef_match.group(1).strip()
-                    if cand.lower() not in ("a", "an", "the", "this", "that", "my", "new", "each", "every", "some"):
-                        existing_folder_target = cand
-                if not existing_folder_target:
-                    _ef_match2 = _re.search(
-                        r"\bfolder\s+(?:named|called)?\s*['\"]?([a-zA-Z0-9_\-\.]+)['\"]?",
-                        goal, _re.IGNORECASE
-                    )
-                    if _ef_match2:
-                        cand = _ef_match2.group(1).strip()
-                        if cand.lower() not in ("a", "an", "the", "this", "that", "my", "new"):
-                            existing_folder_target = cand
+            existing_folder_target = _extract_existing_folder_target(goal)
 
             # If user wants to upload into an existing folder, navigate into it before clicking New
             url_current = (page_info.get("url") or "").lower()
             headings_current = [(h or "").lower() for h in page_info.get("headings", [])]
             page_title_current = (page_info.get("title") or "").lower()
-            page_text_current = (page_info.get("text") or "").lower()
+            page_text_current = (page_info.get("text") or page_info.get("page_text") or "").lower()
             _eft_lower = existing_folder_target.lower() if existing_folder_target else ""
 
             # Accurate target folder detection: verify that the target folder
@@ -4251,6 +4312,14 @@ Return ONLY this JSON object with a real JSON boolean:
                     and _eft_lower in str(h.get("reasoning", "")).lower()
                 )
 
+                # If on a Google Drive file viewer / preview page (/file/d/ or /view), navigate directly to My Drive
+                if "drive.google.com" in url_current and ("/file/d/" in url_current or url_current.endswith("/view")):
+                    return BrowserAction(
+                        action=ActionType.NAVIGATE,
+                        url="https://drive.google.com/drive/u/0/my-drive",
+                        reasoning=f"Current view is a file preview; navigating to 'My Drive' to locate '{existing_folder_target}' folder.",
+                    )
+
                 # If we landed in a wrong folder (e.g. /folders/1R75Q2... which is Activity Points) after waiting,
                 # navigate directly back to My Drive
                 _has_waited_in_folder = any(
@@ -4286,17 +4355,24 @@ Return ONLY this JSON object with a real JSON boolean:
                             continue
                         el_tag = (el.get("tag") or "").lower()
                         el_role = (el.get("role") or "").lower()
+                        el_type = (el.get("type") or "").lower()
+                        el_name = (el.get("name") or "").lower()
                         el_aria = (el.get("aria_label") or "").strip().lower()
                         el_placeholder = (el.get("placeholder") or "").strip().lower()
-                        if el_tag == "input" and (
-                            el_role in ("combobox", "searchbox")
-                            or "search" in el_aria
-                            or "search" in el_placeholder
-                            or "get answers from drive" in el_placeholder
-                            or "get answers from drive" in el_aria
-                        ):
-                            _search_el = el
-                            break
+                        if el_tag == "input" and el_type not in ("hidden", "file", "checkbox", "radio", "button", "submit", "image"):
+                            if "zoom" in el_aria or "zoom" in el_name:
+                                continue
+                            if (
+                                el_role == "searchbox"
+                                or "search" in el_aria
+                                or "search" in el_placeholder
+                                or "search" in el_name
+                                or "get answers from drive" in el_placeholder
+                                or "get answers from drive" in el_aria
+                                or (el_role == "combobox" and any(k in f"{el_aria} {el_placeholder} {el_name}" for k in ["search", "drive", "query"]))
+                            ):
+                                _search_el = el
+                                break
                     if _search_el:
                         # Check if we already typed into the search bar for this folder
                         _already_searched = any(
@@ -4353,12 +4429,11 @@ Return ONLY this JSON object with a real JSON boolean:
                     elif el_text.startswith(_eft_lower) and len(el_text) <= len(_eft_lower) + 15:
                         score += 70
 
-                    if el_role in ("gridcell", "treeitem"):
-                        score += 25
-                    elif el_role in ("link", "button"):
-                        score += 10
-
                     if score > 0:
+                        if el_role in ("gridcell", "treeitem"):
+                            score += 25
+                        elif el_role in ("link", "button"):
+                            score += 10
                         candidates.append((score, el))
 
                 folder_el = None
@@ -4492,6 +4567,9 @@ Return ONLY this JSON object with a real JSON boolean:
                             text=target_el.get("text") or "File upload",
                             file_name=_rf_name,
                             upload_paths=_rf_paths,
+                            file_base64=_rf.get("base64") if _rf else None,
+                            file_size=_rf.get("size") if _rf else None,
+                            file_type=_rf.get("mime_type") if _rf else None,
                             reasoning="Clicking 'File upload' option in the New menu.",
                         )
                 else:
@@ -4544,9 +4622,38 @@ Return ONLY this JSON object with a real JSON boolean:
                                 reasoning="Re-clicking 'New' button to ensure menu opens.",
                             )
 
+                    # Count how many times we already tried the alt_trigger (breadcrumb dropdown)
+                    alt_trigger_count = sum(
+                        1 for h in trajectory_history
+                        if "opening folder options menu via header dropdown" in str(h.get("reasoning", "")).lower()
+                        or "header dropdown" in str(h.get("reasoning", "")).lower()
+                    )
+                    # Count total New-related click attempts (New button + alt_trigger)
+                    new_click_total = sum(
+                        1 for h in trajectory_history
+                        if h.get("action") == "click" and _is_successful_step(h) and any(
+                            k in str(h.get("reasoning", "")).lower() for k in
+                            ["clicking 'new'", "clicking '+ new'", "new button", "upload/create flow",
+                             "header dropdown", "re-clicking 'new'", "start the upload"]
+                        )
+                    )
+
+                    # After 3+ failed New-button attempts, use Drive keyboard shortcut for New Folder
+                    if new_click_total >= 3 and is_create_folder_task:
+                        _has_tried_shortcut = any(
+                            "keyboard shortcut" in str(h.get("reasoning", "")).lower()
+                            for h in trajectory_history
+                        )
+                        if not _has_tried_shortcut:
+                            return BrowserAction(
+                                action=ActionType.PRESS,
+                                key="Shift+F",
+                                reasoning="Using Google Drive keyboard shortcut 'Shift+F' to open New Folder dialog after menu failed to open.",
+                            )
+
                     # If the New button menu didn't open after waiting, try alternative menu triggers in Google Drive:
-                    # 1. Folder title in breadcrumb (e.g. "Automata ▾")
-                    # 2. Empty-state "'New' button" link
+                    # 1. Empty-state "'New' button" link (OK to try once)
+                    # 2. Folder title in breadcrumb (e.g. "Automata ▾") — only if not create-folder task
                     alt_trigger = None
                     for el in elements:
                         if el.get("disabled") is True or el.get("visible") is False:
@@ -4555,16 +4662,16 @@ Return ONLY this JSON object with a real JSON boolean:
                         el_aria = (el.get("aria_label") or "").strip().lower()
                         el_role = (el.get("role") or "").lower()
                         el_tag = el.get("tag", "").lower()
-                        # Match folder header in breadcrumb (e.g. "Automata" dropdown button)
-                        if _eft_lower and (el_text == _eft_lower or el_aria == _eft_lower) and (el_role in ("button", "link") or el_tag in ("button", "a")):
-                            alt_trigger = el
-                            break
-                        # Match empty-state "use the 'New' button" link
+                        # Match empty-state "use the 'New' button" link (highest priority)
                         if el_text in ("'new'", "new") and el_tag in ("a", "span", "button"):
                             alt_trigger = el
                             break
+                        # Match folder header in breadcrumb ONLY for non-create-folder tasks and only once
+                        if not is_create_folder_task and alt_trigger_count == 0 and _eft_lower and (el_text == _eft_lower or el_aria == _eft_lower) and (el_role in ("button", "link") or el_tag in ("button", "a")):
+                            alt_trigger = el
+                            break
 
-                    if alt_trigger:
+                    if alt_trigger and alt_trigger_count == 0:
                         return BrowserAction(
                             action=ActionType.CLICK,
                             element_id=alt_trigger.get("index"),
@@ -4595,6 +4702,9 @@ Return ONLY this JSON object with a real JSON boolean:
                                 text="Drop files here",
                                 file_name=_rf_name,
                                 upload_paths=_rf_paths,
+                                file_base64=_rf.get("base64") if _rf else None,
+                                file_size=_rf.get("size") if _rf else None,
+                                file_type=_rf.get("mime_type") if _rf else None,
                                 reasoning=f"Initiating file upload for '{_rf_name or 'file'}' directly into '{existing_folder_target}' folder.",
                             )
 
@@ -4638,6 +4748,21 @@ Return ONLY this JSON object with a real JSON boolean:
                         reasoning=f"Entering folder name '{name}' into the input field and pressing Enter.",
                     )
                 else:
+                    wait_dialog_count = sum(
+                        1 for h in trajectory_history
+                        if "waiting for the folder name input dialog" in str(h.get("reasoning", "")).lower()
+                    )
+                    if wait_dialog_count >= 1:
+                        has_tried_shift_f = any(
+                            "shift+f" in str(h.get("reasoning", "")).lower()
+                            for h in trajectory_history
+                        )
+                        if not has_tried_shift_f:
+                            return BrowserAction(
+                                action=ActionType.PRESS,
+                                key="Shift+F",
+                                reasoning="Using Google Drive keyboard shortcut 'Shift+F' to open New Folder dialog.",
+                            )
                     return BrowserAction(
                         action=ActionType.WAIT,
                         scroll_amount=800,

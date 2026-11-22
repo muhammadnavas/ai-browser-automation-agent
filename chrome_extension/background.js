@@ -527,9 +527,84 @@ async function handleBackendMessage(msg) {
     let createdTabId = null;
     try {
       const url = msg.url || "about:blank";
-      // Keep the task in a dedicated background tab. Chrome can execute
-      // content-script DOM actions in inactive tabs; never steal focus from
-      // the user's current tab when a task starts.
+
+      // 1. Re-use existing mapped tab for this task if still open
+      const existingTabId = taskTabMap.get(task_id);
+      if (existingTabId !== undefined) {
+        try {
+          const existingTab = await chrome.tabs.get(existingTabId);
+          if (existingTab && !isRestrictedUrl(existingTab.url)) {
+            const needsNav = (url && url !== "about:blank" && !existingTab.url?.startsWith(url.split("#")[0])) ||
+              existingTab.url?.includes("/file/d/");
+            if (needsNav) {
+              await chrome.tabs.update(existingTab.id, { url, active: true });
+              await waitForTabLoaded(existingTab.id, 12000);
+            } else {
+              await chrome.tabs.update(existingTab.id, { active: true });
+            }
+            await ensureContentScriptInjected(existingTab.id);
+            const currentTab = await chrome.tabs.get(existingTab.id).catch(() => existingTab);
+            sendWsMessage({
+              id,
+              task_id,
+              type: "response",
+              success: true,
+              data: { tab_id: existingTab.id, url: currentTab.url || url },
+            });
+            return;
+          }
+        } catch (e) {
+          taskTabMap.delete(task_id);
+          tabTaskMap.delete(existingTabId);
+        }
+      }
+
+      // 2. Re-use an existing open tab in Chrome matching the target domain/URL
+      // if it is not claimed by another active task. This prevents opening duplicate
+      // tabs when Google Drive or a target site is already open or during retries.
+      if (url && url !== "about:blank") {
+        try {
+          const targetUrlObj = new URL(url);
+          const openTabs = await chrome.tabs.query({});
+          for (const openTab of openTabs) {
+            if (!openTab.id || !openTab.url || isRestrictedUrl(openTab.url)) continue;
+            const assignedTask = tabTaskMap.get(openTab.id);
+            if (assignedTask && assignedTask !== task_id) continue;
+
+            try {
+              const openUrlObj = new URL(openTab.url);
+              if (openUrlObj.hostname === targetUrlObj.hostname) {
+                taskTabMap.set(task_id, openTab.id);
+                tabTaskMap.set(openTab.id, task_id);
+                await saveMappings();
+
+                const shouldNavigate = openTab.url.includes("/file/d/") ||
+                  !openTab.url.startsWith(url.split("#")[0]) ||
+                  (targetUrlObj.pathname && targetUrlObj.pathname !== "/" && !openUrlObj.pathname.startsWith(targetUrlObj.pathname));
+
+                if (shouldNavigate) {
+                  await chrome.tabs.update(openTab.id, { url, active: true });
+                  await waitForTabLoaded(openTab.id, 12000);
+                } else {
+                  await chrome.tabs.update(openTab.id, { active: true });
+                }
+                await ensureContentScriptInjected(openTab.id);
+                const currentTab = await chrome.tabs.get(openTab.id).catch(() => openTab);
+                sendWsMessage({
+                  id,
+                  task_id,
+                  type: "response",
+                  success: true,
+                  data: { tab_id: openTab.id, url: currentTab.url || url },
+                });
+                return;
+              }
+            } catch (uErr) {}
+          }
+        } catch (qErr) {}
+      }
+
+      // 3. Otherwise create a dedicated task tab
       const tab = await chrome.tabs.create({ url, active: false });
       createdTabId = tab.id;
 
@@ -955,34 +1030,40 @@ async function handleBackendMessage(msg) {
       // Pointer actions must use trusted browser input. DOM-dispatched MouseEvents and
       // HTMLElement.click() are synthetic (isTrusted=false) and are ignored by some
       // application controls. Keep DOM for target resolution, but let Chrome deliver input.
+      // Exception: popup/menu triggers (e.g. Google Drive "+ New", dropdown menus) are
+      // instantly dismissed if the Chrome debugger attaches and detaches (which blurs the window).
+      // Dispatch those directly via content script DOM events so the menu stays open.
       const pointerAction = ["click", "double_click", "right_click"].includes(
         String(action.action || "").toLowerCase()
       );
-      if (pointerAction) {
+      const isMenuTrigger = /^(new|\+ new|\+new)$/i.test(String(action.text || "").trim()) ||
+        /new button|menu|dropdown|popup/i.test(String(action.reasoning || ""));
+      if (pointerAction && !isMenuTrigger) {
         // The task-tab interaction guard normally blocks trusted user input. Temporarily
         // permit input for this tab while CDP dispatches the agent's pointer sequence.
         await sendContentMessage(tabId, {
           type: "native_input_state",
           enabled: true,
-        });
+        }).catch(() => {});
         try {
           const nativeResult = await dispatchNativePointerClick(tabId, action);
-          if (!nativeResult?.success) {
-            throw new Error(nativeResult?.error || "Native pointer input failed.");
+          if (nativeResult?.success) {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            sendWsMessage({
+              id,
+              task_id,
+              type: "response",
+              success: true,
+              data: {
+                ...nativeResult.data,
+                description: nativeResult.data.description + "; page state must be re-inspected before the next action",
+                details: { postcondition: "input_dispatched_unverified" },
+              },
+            });
+            return;
           }
-          await new Promise((resolve) => setTimeout(resolve, 350));
-          sendWsMessage({
-            id,
-            task_id,
-            type: "response",
-            success: true,
-            data: {
-              ...nativeResult.data,
-              description: nativeResult.data.description + "; page state must be re-inspected before the next action",
-              details: { postcondition: "input_dispatched_unverified" },
-            },
-          });
-          return;
+        } catch (nativeErr) {
+          console.warn("[AI Extension] Native pointer input failed, falling back to DOM action:", nativeErr.message);
         } finally {
           await sendContentMessage(tabId, {
             type: "native_input_state",

@@ -1802,15 +1802,37 @@
       innerTarget.dispatchEvent(new MouseEvent("mousedown", opts));
       innerTarget.dispatchEvent(new MouseEvent("pointerup", opts));
       innerTarget.dispatchEvent(new MouseEvent("mouseup", opts));
+      innerTarget.dispatchEvent(new MouseEvent("click", opts));
       if (typeof innerTarget.click === "function") {
         innerTarget.click();
-      } else if (typeof el.click === "function") {
-        el.click();
+      }
+      if (el !== innerTarget) {
+        el.dispatchEvent(new MouseEvent("pointerdown", opts));
+        el.dispatchEvent(new MouseEvent("mousedown", opts));
+        el.dispatchEvent(new MouseEvent("pointerup", opts));
+        el.dispatchEvent(new MouseEvent("mouseup", opts));
+        el.dispatchEvent(new MouseEvent("click", opts));
+        if (typeof el.click === "function") {
+          el.click();
+        }
+      }
+
+      // If clicking a menuitem (e.g. in Google Drive menu), also dispatch Enter keydown/keyup on the item
+      const isMenuItem = el.getAttribute("role") === "menuitem" || el.tagName === "LI" || Boolean(el.closest('[role="menu"], ul.aqdrmf-E'));
+      if (isMenuItem) {
+        const enterOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true };
+        el.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
+        el.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
       }
 
       // A Google Drive "+ New" button click opens a dynamic menu: wait briefly for the menu to mount
-      if (location.hostname.includes("drive.google.com") && /^(new|\+ new)$/i.test((action.text || el.innerText || "").trim())) {
-        await new Promise((r) => setTimeout(r, 450));
+      if (location.hostname.includes("drive.google.com") && /^(new|\+ new|\+new)$/i.test((action.text || el.innerText || "").trim())) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      // A Google Drive "New folder" menu item opens a modal dialog: wait briefly for the dialog to mount
+      if (location.hostname.includes("drive.google.com") && /new folder|create folder/i.test((action.text || el.innerText || "").trim())) {
+        await new Promise((r) => setTimeout(r, 600));
       }
 
       // If navigation began immediately synchronously
@@ -2288,8 +2310,16 @@
     if (actType === "press" || actType === "press_key") {
       const target = el || document.activeElement || document.body;
       const keyName = action.key || action.text || "Enter";
-      target.dispatchEvent(new KeyboardEvent("keydown", { key: keyName, bubbles: true }));
-      target.dispatchEvent(new KeyboardEvent("keyup", { key: keyName, bubbles: true }));
+      const isShift = Boolean(action.shift || keyName === "F" || keyName.startsWith("Shift+"));
+      const cleanKey = keyName.replace(/^Shift\+/i, "");
+      const code = cleanKey.length === 1 ? `Key${cleanKey.toUpperCase()}` : cleanKey;
+      const keyCode = cleanKey.length === 1 ? cleanKey.toUpperCase().charCodeAt(0) : 13;
+      const kOpts = { key: isShift ? cleanKey.toUpperCase() : cleanKey, code, keyCode, which: keyCode, shiftKey: isShift, bubbles: true };
+
+      target.dispatchEvent(new KeyboardEvent("keydown", kOpts));
+      target.dispatchEvent(new KeyboardEvent("keyup", kOpts));
+      window.dispatchEvent(new KeyboardEvent("keydown", kOpts));
+      window.dispatchEvent(new KeyboardEvent("keyup", kOpts));
       return { success: true, description: `Pressed key '${keyName}'` };
     }
 
@@ -2770,7 +2800,7 @@
           // Bring the target into the viewport, then re-check its live geometry
           // and hit-test after layout/scroll settling to avoid clicking overlays.
           target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          await new Promise((resolve) => setTimeout(resolve, 50));
           if (!isCenterHitTarget(target)) {
             sendResponse({ success: false, error: "Native click target is obscured or its center is not hit-testable." });
             return;

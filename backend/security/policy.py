@@ -431,9 +431,14 @@ def validate_upload_path(
         configured_dirs = allowlist_dirs or []
         env_dirs = os.getenv("ALLOWED_UPLOAD_DIRS", "").split(os.pathsep) if os.getenv("ALLOWED_UPLOAD_DIRS") else []
 
+        user_home = Path.home().resolve()
         allowed_roots: List[Path] = [
             (cwd / "uploads").resolve(),
             (cwd / "downloads").resolve(),
+            (user_home / "Downloads").resolve(),
+            (user_home / "Documents").resolve(),
+            (user_home / "Desktop").resolve(),
+            (user_home / "Pictures").resolve(),
         ]
         import sys
         if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:

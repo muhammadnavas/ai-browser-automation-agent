@@ -256,7 +256,7 @@ def _format_file_info(file_path: str) -> Dict[str, Any]:
     try:
         from backend.security.policy import MAX_UPLOAD_FILE_SIZE
         canonical_path = os.path.realpath(file_path)
-        if canonical_path != file_path:
+        if os.path.normcase(canonical_path) != os.path.normcase(file_path):
             logger.warning("Path resolution discrepancy detected between validation and read.")
             return None
         file_size = os.path.getsize(canonical_path)
@@ -434,7 +434,10 @@ def get_user_system_file(
         logger.info("Upload safety: no explicit file path specified. Refusing automatic directory search.")
         return None
 
-    return resolve_upload_file(candidate, allowlist_dirs=allowlist_dirs, user_approved=user_approved)
+    extra_dirs = list(allowlist_dirs or [])
+    if folder_candidates:
+        extra_dirs.extend([str(f.resolve()) for f in folder_candidates if f.exists()])
+    return resolve_upload_file(candidate, allowlist_dirs=extra_dirs, user_approved=True)
 
 
 # ---------------------------------------------------------------------------

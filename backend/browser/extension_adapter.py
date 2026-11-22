@@ -471,6 +471,15 @@ class ExtensionBrowserAdapter:
                 "Please load the extension in Chrome Developer Mode and ensure it is connected to http://localhost:8000."
             )
 
+        if self.task_id in self.manager.task_tabs:
+            tab_id = self.manager.task_tabs[self.task_id]
+            logger.info("Task %s already holds tab #%s; reusing without creating new tab.", self.task_id, tab_id)
+            self.is_running = True
+            if initial_url and initial_url != "about:blank":
+                await self.navigate(initial_url)
+            await self.lock_ui()
+            return
+
         if initial_url and initial_url != "about:blank":
             from backend.browser.security import validate_url_security
             safe, reason, normalized = validate_url_security(initial_url, resolve_dns=True)
@@ -771,6 +780,11 @@ class ExtensionBrowserAdapter:
                 payload={"action": action_payload},
                 timeout=cmd_timeout,
             )
+            if os_dialog_task and not os_dialog_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(os_dialog_task), timeout=8.0)
+                except Exception:
+                    pass
         finally:
             if os_dialog_task and not os_dialog_task.done():
                 os_dialog_task.cancel()
@@ -871,6 +885,17 @@ class ExtensionBrowserAdapter:
             )
         except Exception:
             pass
+
+    async def close_tab(self) -> None:
+        """Closes the dedicated task tab in Chrome."""
+        try:
+            await self.manager.send_command(
+                task_id=self.task_id,
+                command_type="close_tab",
+                timeout=5.0,
+            )
+        except Exception as exc:
+            logger.warning("Failed to close tab for task %s: %s", self.task_id, exc)
 
     async def stop(self) -> None:
         """Releases the task tab and cleans up."""

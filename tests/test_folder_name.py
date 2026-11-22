@@ -43,15 +43,31 @@ def test_extract_folder_name():
     assert _extract_folder_name("open gdrive and create a folder 'Automata'") == "Automata"
     assert _extract_folder_name("create a folder as Automata") == "Automata"
 
+def _sync_run(coro):
+    try:
+        coro.send(None)
+    except StopIteration as e:
+        return e.value
+    import asyncio
+    return asyncio.run(coro)
+
+
 def test_existing_folder_target():
-    import re
-    goal = "open gdrive and find automata folder upload any pdf file from the downloads"
-    _ef_match = re.search(
-        r"\b(?:find|open|search for|search|into|in|inside|select|go to)?\s*([a-zA-Z0-9_\-\.]+)\s+folder\b",
-        goal, re.IGNORECASE
-    )
-    assert _ef_match is not None
-    assert _ef_match.group(1).strip().lower() == "automata"
+    from backend.agents.planner import _extract_existing_folder_target
+
+    assert _extract_existing_folder_target("open gdrive and open folder named Automata and upload any pdf file from Downloads.") == "Automata"
+    assert _extract_existing_folder_target("open gdrive and find automata folder upload any pdf file from the downloads") == "automata"
+    assert _extract_existing_folder_target("open gdrive and open folder called Automata") == "Automata"
+    assert _extract_existing_folder_target("open gdrive and open folder 'Automata'") == "Automata"
+    assert _extract_existing_folder_target('open gdrive and open folder "Automata"') == "Automata"
+    assert _extract_existing_folder_target("open gdrive and open 'Automata' folder") == "Automata"
+    assert _extract_existing_folder_target("open folder Automata and upload pdf") == "Automata"
+    assert _extract_existing_folder_target("go to Automata folder and upload file") == "Automata"
+    assert _extract_existing_folder_target("open Automata folder") == "Automata"
+    assert _extract_existing_folder_target("open gdrive and create a folder named Test") is None
+    assert _extract_existing_folder_target("open gdrive and create folder Automata") is None
+    assert _extract_existing_folder_target("open gdrive and upload a file") is None
+
 
 
 def test_folder_candidate_ranking_ignores_container_row():
@@ -311,7 +327,7 @@ def test_verify_milestone_completion_folder_opening():
     )
     milestone = {"id": "m2", "title": "Locate and open the 'Automata' folder"}
 
-    result = asyncio.run(planner.verify_milestone_completion(
+    result = _sync_run(planner.verify_milestone_completion(
         goal="open gdrive and open a folder called Automata and upload any pdf file from downloads",
         milestone=milestone,
         action=action,
@@ -349,7 +365,7 @@ def test_verify_milestone_completion_drive_access():
     )
     milestone = {"id": "m1", "title": "Access the Google Drive interface"}
 
-    result = asyncio.run(planner.verify_milestone_completion(
+    result = _sync_run(planner.verify_milestone_completion(
         goal="open gdrive and open a folder called Automata and upload any pdf file from downloads",
         milestone=milestone,
         action=action,
@@ -407,7 +423,7 @@ def test_verify_milestone_completion_form_field():
     )
     milestone = {"id": "m2", "title": "Enter Full Name (Optional) with user data"}
 
-    result = asyncio.run(planner.verify_milestone_completion(
+    result = _sync_run(planner.verify_milestone_completion(
         goal="fill this form with my data",
         milestone=milestone,
         action=action,

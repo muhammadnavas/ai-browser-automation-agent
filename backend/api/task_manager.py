@@ -4564,11 +4564,16 @@ Task evidence:
         if async_task and not async_task.done():
             async_task.cancel()
 
-        # Unlock UI on controller if locked, and stop controller with short timeout
+        # Unlock UI on controller if locked, close dedicated tab, and stop controller with short timeout
         if controller:
             if hasattr(controller, "unlock_ui"):
                 try:
                     await asyncio.wait_for(controller.unlock_ui(), timeout=0.5)
+                except Exception:
+                    pass
+            if hasattr(controller, "close_tab"):
+                try:
+                    await asyncio.wait_for(controller.close_tab(), timeout=1.0)
                 except Exception:
                     pass
             try:
