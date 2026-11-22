@@ -2415,10 +2415,10 @@ export default function App() {
                     >
                       {currentTask.plan_metadata?.inspection_plan_generated &&
                       currentTask.plan_metadata?.replan_reason === 'live_page_inspection'
-                        ? 'Page analyzed'
+                        ? 'Page Analyzed'
                         : cache.tier === 'Live page discovery'
-                          ? 'Page-aware planning'
-                          : `Plan cache ${cache.hit ? 'hit' : 'miss'}`}
+                          ? 'Page Analysis'
+                          : `Plan Cache ${cache.hit ? 'Kit' : 'Miss'}`}
                     </span>
                     <span className="cache-summary-text">
                       {cache.message ||

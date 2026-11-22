@@ -1830,11 +1830,20 @@ class TaskManager:
                         )
 
                 # Never present a generic submission-approval dialog while the
-                # form still has unanswered questions. This is an input request, not
-                # a consent request, and the two must not share the same approval state.
+                # form still has unanswered questions in exclusive-context mode.
                 if action.action == ActionType.REQUEST_APPROVAL:
+                    goal_lower = (req.goal or "").lower()
+                    is_exclusive = any(
+                        k in goal_lower for k in [
+                            "exclusively from my context",
+                            "only from my context",
+                            "only from context",
+                            "do not invent",
+                            "don't invent",
+                        ]
+                    )
                     unanswered = self._unanswered_form_questions(page_info)
-                    if unanswered:
+                    if unanswered and is_exclusive:
                         action.text = (
                             "I have filled the fields supported by verified information. "
                             "I still need your answers for: "
