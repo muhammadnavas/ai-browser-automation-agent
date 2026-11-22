@@ -168,8 +168,32 @@ def validate_url_security(url: str, resolve_dns: bool = True) -> Tuple[bool, str
     except ValueError:
         # Hostname is a domain name
         if resolve_dns:
-            try:
-                addr_info = socket.getaddrinfo(hostname, parsed.port or 80, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            trusted_suffixes = (
+                ".google.com", ".googleapis.com", ".gstatic.com",
+                ".github.com", ".microsoft.com", ".apple.com",
+                ".mozilla.org", ".wikipedia.org", ".cloudflare.com",
+            )
+            is_trusted_domain = (
+                hostname in ("google.com", "github.com", "microsoft.com", "apple.com", "wikipedia.org")
+                or hostname.endswith(trusted_suffixes)
+            )
+
+            addr_info = None
+            last_dns_error = None
+            for dns_attempt in range(2):
+                try:
+                    addr_info = socket.getaddrinfo(hostname, parsed.port or 80, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                    break
+                except socket.gaierror as exc:
+                    last_dns_error = exc
+                    if dns_attempt == 0:
+                        import time
+                        time.sleep(0.3)
+                except Exception as exc:
+                    logger.warning(f"Unexpected DNS resolution error for {hostname}: {exc}")
+                    break
+
+            if addr_info is not None:
                 resolved_ips = set()
                 for item in addr_info:
                     sockaddr = item[4]
@@ -184,10 +208,14 @@ def validate_url_security(url: str, resolve_dns: bool = True) -> Tuple[bool, str
                             return False, f"Domain '{hostname}' resolves to prohibited IP: {reason}", None
                     except ValueError:
                         continue
-            except socket.gaierror as exc:
-                return False, f"DNS resolution failed for '{hostname}': {exc}", None
-            except Exception as exc:
-                logger.warning(f"Unexpected DNS resolution error for {hostname}: {exc}")
+            elif last_dns_error is not None:
+                if is_trusted_domain:
+                    logger.warning(
+                        "DNS resolution failed for trusted public domain %s: %s; allowing browser to handle resolution",
+                        hostname, last_dns_error,
+                    )
+                else:
+                    return False, f"DNS resolution failed for '{hostname}': {last_dns_error}. Please check your internet connection.", None
 
     normalized = parsed.geturl()
     return True, "Safe", normalized

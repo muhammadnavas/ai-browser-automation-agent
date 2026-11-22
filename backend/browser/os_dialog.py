@@ -334,7 +334,9 @@ def get_user_system_file(
     Finds a file matching prompt requirements ONLY when an explicit, valid file path is provided.
     Automatic personal-folder discovery and mock-file generation are removed for upload safety.
     """
+    from pathlib import Path
     combined_context = f"{goal} {context_text}".strip()
+    folder_candidates: list[Path] = []
 
     # 1. Check for explicit path in goal or context
     path_match = re.search(r"(?<![A-Za-z0-9])[A-Za-z]:[/\\](?!/)[^\s\"'<>]+", combined_context)
@@ -349,6 +351,13 @@ def get_user_system_file(
         target_fn = extract_target_file_name(combined_context)
         if target_fn and os.path.isabs(target_fn):
             candidate = target_fn
+
+    if candidate and not os.path.isabs(candidate):
+        for candidate_folder in [Path.home() / "Downloads", Path.home() / "Documents", Path.home() / "Desktop"]:
+            if (candidate_folder / candidate).is_file():
+                candidate = str((candidate_folder / candidate).resolve())
+                folder_candidates.append(candidate_folder)
+                break
 
     if not candidate:
         # Check for safe allowlisted mock files when filling forms with mock data or testing uploads
@@ -562,6 +571,10 @@ async def handle_os_file_dialog(
         return False
 
     try:
+        # Move focus to the File name field in native Windows dialog
+        pyautogui.hotkey("alt", "n")
+        await asyncio.sleep(0.2)
+
         # Select all in the filename field
         pyautogui.hotkey("ctrl", "a")
         await asyncio.sleep(0.2)

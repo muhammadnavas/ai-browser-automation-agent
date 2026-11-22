@@ -317,20 +317,28 @@
       index++;
     });
 
-    // 2. Collect visible page text for context
+    // 2. Collect visible page text for context (prioritizing toasts, alerts, and live regions)
     const pageTextParts = [];
     const seen = new Set();
+    const addText = (el) => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      const t = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+      if (t && t.length > 2 && t.length < 300 && !seen.has(t)) {
+        seen.add(t);
+        pageTextParts.push(t);
+      }
+    };
+
+    // First scan toasts, notifications, status banners, alerts, and upload regions
+    document
+      .querySelectorAll('[role="alert"], [role="status"], [aria-live], .toast, .notification, .alert, [role="region"][aria-label*="upload" i], [class*="upload" i], [data-tooltip], [role="gridcell"]')
+      .forEach(addText);
+
+    // Then scan headings, labels, and structured text
     document
       .querySelectorAll("h1,h2,h3,h4,h5,h6,label,legend,p,[role=\"heading\"],[aria-label],[data-params]")
-      .forEach((el) => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) return;
-        const t = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
-        if (t && t.length > 2 && t.length < 300 && !seen.has(t)) {
-          seen.add(t);
-          pageTextParts.push(t);
-        }
-      });
+      .forEach(addText);
 
     // 3. Collect Google Forms or specific questionnaire items
     const formQuestions = [];
@@ -491,7 +499,7 @@
       title: document.title,
       url: window.location.href,
       elements: results.slice(0, 400),
-      page_text: pageTextParts.slice(0, 60).join(" | "),
+      page_text: pageTextParts.slice(0, 150).join(" | "),
       form_questions: formQuestions,
       form_groups: formGroups.slice(0, 80),
       headings: Array.from(document.querySelectorAll("h1,h2,h3,[role=\"heading\"]"))
@@ -1421,10 +1429,29 @@
         }
         const questionText = normalize(question?.innerText || question?.textContent || "");
         const pageText = normalize(document.body?.innerText || document.documentElement?.innerText || "");
+        const targetPrefix = targetBaseName && targetBaseName.length >= 8 ? targetBaseName.slice(0, 10) : targetBaseName;
+
         const filenameVisible = (
           (targetName && (questionText.includes(targetName) || pageText.includes(targetName))) ||
-          (targetBaseName && targetBaseName.length >= 3 && (questionText.includes(targetBaseName) || pageText.includes(targetBaseName)))
+          (targetBaseName && targetBaseName.length >= 3 && (questionText.includes(targetBaseName) || pageText.includes(targetBaseName))) ||
+          (targetPrefix && targetPrefix.length >= 8 && (questionText.includes(targetPrefix) || pageText.includes(targetPrefix)))
         );
+
+        let hasAttrMatch = false;
+        try {
+          const matchingElements = Array.from(document.querySelectorAll(
+            '[aria-label], [title], [data-tooltip], [role="gridcell"], [role="row"], [role="listitem"], [role="status"], [role="alert"], div[aria-live]'
+          ));
+          hasAttrMatch = matchingElements.some((el) => {
+            const aria = normalize(el.getAttribute("aria-label") || "");
+            const title = normalize(el.getAttribute("title") || "");
+            const tip = normalize(el.getAttribute("data-tooltip") || "");
+            const txt = normalize(el.innerText || "");
+            const combined = `${aria} ${title} ${tip} ${txt}`;
+            return (targetBaseName && combined.includes(targetBaseName)) ||
+                   (targetPrefix && targetPrefix.length >= 8 && combined.includes(targetPrefix));
+          });
+        } catch (_) {}
 
         const allInputs = Array.from(document.querySelectorAll('input[type="file"]'));
         document.querySelectorAll("iframe").forEach((ifr) => {
@@ -1437,7 +1464,19 @@
         )).filter((node) => {
           const style = window.getComputedStyle(node);
           const rect = node.getBoundingClientRect();
-          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+          if (style.display === "none" || style.visibility === "hidden" || rect.width <= 0 || rect.height <= 0) {
+            return false;
+          }
+          const valNow = node.getAttribute("aria-valuenow");
+          const valMax = node.getAttribute("aria-valuemax") || "100";
+          if (valNow !== null && Number(valNow) >= Number(valMax)) {
+            return false;
+          }
+          const container = node.closest('[role="dialog"], [role="region"], .upload-dialog, [class*="upload" i], div');
+          if (container && /complete|done|success|finish/i.test(container.innerText || "")) {
+            return false;
+          }
+          return true;
         });
 
         const currentDialogOpen = isAnyDialogOpen();
@@ -1447,16 +1486,21 @@
             (targetBaseName && targetBaseName.length >= 3 && normalize(question.innerText).includes(targetBaseName))
           )
         );
-        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (childInjected || filenameVisible || inputRetained || childComplete || cardHasFileEvidence);
-        const explicitDone = /upload complete|uploaded successfully|file uploaded/.test(questionText + " " + pageText);
+        const dialogClosedAfterAction = initialDialogOpen && !currentDialogOpen && (childInjected || filenameVisible || hasAttrMatch || inputRetained || childComplete || cardHasFileEvidence);
+        const explicitDone = /upload[s]?\s+complete|uploaded\s+successfully|file[s]?\s+uploaded|\d+\s+uploads?\s+complete/i.test(questionText + " " + pageText);
 
-        if ((filenameVisible || explicitDone || dialogClosedAfterAction || childComplete || cardHasFileEvidence) && progressIndicators.length === 0) {
+        const isConfirmed = explicitDone || (
+          (filenameVisible || hasAttrMatch || dialogClosedAfterAction || childComplete || cardHasFileEvidence)
+          && progressIndicators.length === 0
+        );
+
+        if (isConfirmed) {
           return {
             success: true,
             elapsed_ms: Date.now() - startedAt,
             confirmation: explicitDone
               ? "upload-complete-message"
-              : (filenameVisible
+              : (filenameVisible || hasAttrMatch
                 ? "filename-visible"
                 : (cardHasFileEvidence ? "card-file-chip-evidence" : (dialogClosedAfterAction ? "dialog-closed-with-upload-evidence" : "child-complete")))
           };
@@ -1719,7 +1763,8 @@
           /^(add file|choose file|browse|upload file|attach file)$/i.test(actionText.trim()) ||
           /^(add file|choose file|browse|upload file|attach file)$/i.test(elText.trim()) ||
           /^(add file|choose file|browse|upload file|attach file)$/i.test(elAria.trim()) ||
-          Boolean(/upload|attach|file/i.test(actionText))
+          Boolean(/upload|attach|file/i.test(actionText)) ||
+          Boolean(/upload|attach/i.test(actionReason))
         )
       );
 

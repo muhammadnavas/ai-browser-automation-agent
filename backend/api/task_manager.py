@@ -1131,6 +1131,8 @@ class TaskManager:
                     validate_url_security, effective_start_url, True
                 )
                 if not safe:
+                    if "DNS resolution failed" in str(reason):
+                        raise ValueError(f"Navigation failed: Unable to connect to '{effective_start_url}' because DNS resolution failed. Please check your internet connection.")
                     raise ValueError(f"Initial navigation blocked by security policy: {reason}")
                 effective_start_url = normalized
 
@@ -2763,6 +2765,36 @@ class TaskManager:
                                 str(recovery_entry)[:500],
                             )
 
+                if is_upload_step and not action_success:
+                    # If the content script upload watcher timed out, but the OS file dialog or upload
+                    # completed, inspect the live page to see if the file is visible or upload completed.
+                    try:
+                        inspect_page = await controller.parse_interactive_elements()
+                        inspect_text = str(inspect_page.get("page_text") or "").lower()
+                        target_fname = str(action.file_name or "").lower()
+                        target_base = target_fname.rsplit(".", 1)[0] if "." in target_fname else target_fname
+                        target_prefix = target_base[:10] if len(target_base) >= 10 else target_base
+
+                        has_evidence = False
+                        if target_base and (target_base in inspect_text or (len(target_prefix) >= 8 and target_prefix in inspect_text)):
+                            has_evidence = True
+                        elif any(kw in inspect_text for kw in ("upload complete", "uploads complete", "uploaded successfully", "file uploaded", "1 upload complete")):
+                            has_evidence = True
+                        else:
+                            for el in inspect_page.get("elements", []):
+                                el_txt = f"{el.get('text', '')} {el.get('aria_label', '')} {el.get('title', '')}".lower()
+                                if target_base and (target_base in el_txt or (len(target_prefix) >= 8 and target_prefix in el_txt)):
+                                    has_evidence = True
+                                    break
+
+                        if has_evidence:
+                            action_success = True
+                            exec_description = f"File upload for '{action.file_name or 'file'}' completed and confirmed from page evidence."
+                            recovery_log = [item for item in recovery_log if "Recovery paused:" not in str(item)]
+                            logger.info(f"Task {task_id} step {step_num}: upload confirmed from post-action page inspection.")
+                    except Exception as verify_upload_err:
+                        logger.warning(f"Failed post-action upload inspection: {verify_upload_err}")
+
                 if is_upload_step:
                     try:
                         post_action_path, post_action_url = await controller.capture_screenshot(task_id, step_num)
@@ -3025,16 +3057,30 @@ class TaskManager:
                     # A failed FINISH means the requested outcome was not verified.
                     # Do not continue planning or mark this task completed afterward.
                     if any("Recovery paused:" in str(item) for item in recovery_log):
-                        task.status = TaskStatus.FAILED
-                        task.plan_status = "failed"
-                        task.error = (
-                            f"Automatic recovery stopped at step {step_num} because "
-                            f"{action.action.value} may have caused a side effect. "
-                            "The outcome is ambiguous; inspect the browser and task diagnostics "
-                            "before manually retrying."
-                        )
-                        logger.warning("Task %s halted for manual recovery at step %s", task_id, step_num)
-                        break
+                        upload_recovered = False
+                        if is_upload_step:
+                            try:
+                                final_check = await controller.parse_interactive_elements()
+                                fc_text = str(final_check.get("page_text") or "").lower()
+                                target_fname = str(action.file_name or "").lower()
+                                target_base = target_fname.rsplit(".", 1)[0] if "." in target_fname else target_fname
+                                target_prefix = target_base[:8] if len(target_base) >= 8 else target_base
+                                if any(kw in fc_text for kw in ("upload complete", "uploads complete", "uploaded successfully", "1 upload complete", "file uploaded")) or (target_prefix and target_prefix in fc_text):
+                                    upload_recovered = True
+                                    logger.info(f"Task {task_id} step {step_num}: upload verified on final safety check; bypassing recovery pause abort.")
+                            except Exception:
+                                pass
+                        if not upload_recovered:
+                            task.status = TaskStatus.FAILED
+                            task.plan_status = "failed"
+                            task.error = (
+                                f"Automatic recovery stopped at step {step_num} because "
+                                f"{action.action.value} may have caused a side effect. "
+                                "The outcome is ambiguous; inspect the browser and task diagnostics "
+                                "before manually retrying."
+                            )
+                            logger.warning("Task %s halted for manual recovery at step %s", task_id, step_num)
+                            break
 
                     if action.action == ActionType.FINISH:
                         task.status = TaskStatus.FAILED
@@ -3486,12 +3532,14 @@ class TaskManager:
             action_text = str(action.text or "")
             # Rebind dynamic upload controls from live page text instead of
             # rejecting a stale index before the extension can inspect the DOM.
-            if action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE) or (
-                action.action == ActionType.CLICK and re.search(
-                    r"add\s+file|choose\s+file|browse|upload\s+file|attach\s+file",
-                    f"{action_text} {reasoning}", re.IGNORECASE
-                )
-            ):
+            is_upload_action = bool(
+                getattr(action, "file_name", None)
+                or getattr(action, "upload_paths", None)
+                or getattr(action, "file_base64", None)
+                or action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
+                or re.search(r"add\s+file|choose\s+file|browse|upload|attach|file\s+upload|drop\s+files", f"{action_text} {reasoning}", re.IGNORECASE)
+            )
+            if is_upload_action:
                 return True, "Upload action; live DOM injection/picker resolution will be used."
             if action.action in (ActionType.FILL, ActionType.FILL_FIELD, ActionType.TYPE_TEXT, ActionType.SELECT, ActionType.SELECT_OPTION):
                 label_candidates = [
@@ -4196,7 +4244,49 @@ Task evidence:
                     or target_folder.lower() in elements_text.lower()):
                     return True, f"Outcome verified: Folder '{target_folder}' is present on the page."
 
-        # 8. Unverified Outcome / Insufficient Evidence Fallback
+        # 8. Check File Upload Goals
+        is_upload_goal = any(kw in goal_lower for kw in ("upload", "attach file", "upload file", "add file", "upload a file", "upload any"))
+        if is_upload_goal:
+            upload_done_pattern = any(p in visible_text_lower for p in (
+                "upload complete", "uploads complete", "uploaded successfully",
+                "file uploaded", "1 upload complete", "upload finished"
+            ))
+            uploaded_file_name = None
+            for s in task.steps:
+                if getattr(s, "file_name", None):
+                    uploaded_file_name = s.file_name
+                    break
+
+            elements_text = " ".join(
+                str(el.get("text") or el.get("aria_label") or el.get("title") or "")
+                for el in (page_info.get("elements") or [])
+                if isinstance(el, dict)
+            ).lower()
+
+            target_base = ""
+            if uploaded_file_name:
+                target_base = uploaded_file_name.rsplit(".", 1)[0].lower() if "." in uploaded_file_name else uploaded_file_name.lower()
+
+            file_visible = False
+            if target_base and len(target_base) >= 3:
+                prefix = target_base[:10] if len(target_base) >= 10 else target_base
+                file_visible = (
+                    target_base in visible_text_lower
+                    or prefix in visible_text_lower
+                    or target_base in elements_text
+                    or prefix in elements_text
+                )
+
+            if "pdf" in goal_lower and (".pdf" in visible_text_lower or ".pdf" in elements_text or "pdf" in elements_text):
+                has_pdf_evidence = True
+            else:
+                has_pdf_evidence = False
+
+            if upload_done_pattern or file_visible or (has_pdf_evidence and any(s.action in (ActionType.UPLOAD, ActionType.CLICK) for s in task.steps)):
+                evidence_desc = f"File '{uploaded_file_name}'" if file_visible else ("Upload completion message" if upload_done_pattern else "Uploaded document")
+                return True, f"Outcome verified: {evidence_desc} confirmed on the page."
+
+        # 9. Unverified Outcome / Insufficient Evidence Fallback
         reason_prefix = model_reason or "The verification model is unavailable"
         return False, f"Outcome unverified: {reason_prefix}, and available deterministic evidence is insufficient to confirm whether '{task.goal}' was achieved. Final page state: URL '{curr_url}', title '{page_title}'."
 

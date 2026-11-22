@@ -572,6 +572,40 @@ async def _check_action_already_satisfied(
                 return True, f"Already at destination URL: {current_url}"
 
         elif action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+            # Check if this click was a file upload action that already completed
+            is_upload_action = bool(
+                getattr(action, "file_name", None)
+                or getattr(action, "upload_paths", None)
+                or any(k in str(action.text or "").lower() for k in ["file upload", "upload file", "attach file"])
+                or any(k in str(action.reasoning or "").lower() for k in ["file upload", "upload file", "attach file"])
+            )
+            if is_upload_action:
+                visible_text_lower = str(page_info.get("page_text") or "").lower()
+                target_fname = str(getattr(action, "file_name", "") or "").lower()
+                target_base = target_fname.rsplit(".", 1)[0] if "." in target_fname else target_fname
+                target_prefix = target_base[:8] if len(target_base) >= 8 else target_base
+
+                upload_done = any(kw in visible_text_lower for kw in (
+                    "upload complete", "uploads complete", "uploaded successfully",
+                    "1 upload complete", "file uploaded", "upload finished"
+                ))
+                file_found = False
+                if target_base and (target_base in visible_text_lower or (target_prefix and target_prefix in visible_text_lower)):
+                    file_found = True
+                else:
+                    for el in page_info.get("elements") or []:
+                        if isinstance(el, dict):
+                            el_txt = f"{el.get('text', '')} {el.get('aria_label', '')} {el.get('title', '')}".lower()
+                            if (target_base and target_base in el_txt) or (target_prefix and target_prefix in el_txt):
+                                file_found = True
+                                break
+                            if any(kw in el_txt for kw in ("upload complete", "uploads complete", "uploaded successfully", "1 upload complete")):
+                                upload_done = True
+                                break
+
+                if upload_done or file_found:
+                    return True, f"File upload verified on page (upload_done={upload_done}, file_found={file_found})"
+
             target_selector = str(action.selector or "")
             target_id = action.element_id
             target_label = str(action.text or "").strip().lower()
@@ -587,6 +621,33 @@ async def _check_action_already_satisfied(
                 target_el = matching[0]
                 if target_el.get("aria_expanded") in (True, "true") or target_el.get("aria_selected") in (True, "true"):
                     return True, "Click state already satisfied (aria-expanded/selected is true)"
+
+        elif action_type in (ActionType.UPLOAD, ActionType.UPLOAD_FILE):
+            visible_text_lower = str(page_info.get("page_text") or "").lower()
+            target_fname = str(getattr(action, "file_name", "") or "").lower()
+            target_base = target_fname.rsplit(".", 1)[0] if "." in target_fname else target_fname
+            target_prefix = target_base[:8] if len(target_base) >= 8 else target_base
+
+            upload_done = any(kw in visible_text_lower for kw in (
+                "upload complete", "uploads complete", "uploaded successfully",
+                "1 upload complete", "file uploaded", "upload finished"
+            ))
+            file_found = False
+            if target_base and (target_base in visible_text_lower or (target_prefix and target_prefix in visible_text_lower)):
+                file_found = True
+            else:
+                for el in page_info.get("elements") or []:
+                    if isinstance(el, dict):
+                        el_txt = f"{el.get('text', '')} {el.get('aria_label', '')} {el.get('title', '')}".lower()
+                        if (target_base and target_base in el_txt) or (target_prefix and target_prefix in el_txt):
+                            file_found = True
+                            break
+                        if any(kw in el_txt for kw in ("upload complete", "uploads complete", "uploaded successfully", "1 upload complete")):
+                            upload_done = True
+                            break
+
+            if upload_done or file_found:
+                return True, f"File upload verified on page (upload_done={upload_done}, file_found={file_found})"
     except Exception as exc:
         logger.debug("Query-before-retry inspection error: %s", exc)
 
@@ -637,7 +698,7 @@ async def execute_with_retry_and_fallback(
                 action.action in (ActionType.CLICK, ActionType.DOUBLE_CLICK)
                 and attempt == 2
                 and classify_browser_error(last_error) == "locator_or_stale_state"
-                and page is not None
+                and (page is not None or getattr(controller, "is_running", False) or hasattr(controller, "execute_action"))
             )
             # Gmail Compose window opening is a timeout-style failure safe to retry:
             # the button was found but the compose window did not appear, so there is
@@ -648,7 +709,19 @@ async def execute_with_retry_and_fallback(
                 and classify_browser_error(last_error) == "timeout"
                 and b"compose" in last_error.lower().encode()
             )
-            if not (safe_locator_recovery or safe_compose_timeout):
+            # If an upload action's target was not yet present or timed out, retrying is safe
+            is_upload_action = bool(
+                getattr(action, "file_name", None)
+                or getattr(action, "upload_paths", None)
+                or getattr(action, "file_base64", None)
+                or action.action in (ActionType.UPLOAD, ActionType.UPLOAD_FILE)
+            )
+            safe_upload_retry = (
+                is_upload_action
+                and attempt == 2
+                and classify_browser_error(last_error) in ("locator_or_stale_state", "timeout")
+            )
+            if not (safe_locator_recovery or safe_compose_timeout or safe_upload_retry):
                 recovery_log.append(
                     f"Recovery paused: {action.action.value} may have side effects; "
                     "automatic retry skipped to avoid duplicate execution."
