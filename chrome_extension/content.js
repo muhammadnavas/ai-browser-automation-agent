@@ -2792,7 +2792,7 @@
           boxShadow: "0 0 8px rgba(52, 211, 153, 0.65)",
         });
         const label = document.createElement("span");
-        label.textContent = "AI agent running • Screen locked";
+        label.textContent = "AI agent running •";
         indicator.append(dot, label);
       }
       if (rootContainer && indicator.parentNode !== rootContainer) {

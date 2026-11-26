@@ -712,7 +712,7 @@ IMPORTANT RULES:
   • Ground targets using accessible_name first, then role, label, ARIA, visible text, and nearby row/question context.
   • Treat element IDs and selectors as belonging ONLY to the latest DOM snapshot; never reuse them after navigation or a page re-render.
   • If multiple visible elements have the same or similarly matching name, do NOT guess. Inspect more context, open the relevant menu, or scroll until the intended target is uniquely identifiable.
-  • OPEN MENUS & MODAL DIALOGS: If a context/action menu (elements with role="menu" or role="menuitem") is ALREADY open and displays the needed option (e.g. "Rename", "Move", "Delete", "Make a copy", "Download"), click that visible menuitem directly — NEVER re-click "More actions" or "+ New" while the menu is open. After clicking a menuitem like "Rename" that opens a modal dialog, inspect the next snapshot for the dialog's visible text input before calling "fill"; if no dialog input appeared, re-open the target item's context menu (using "right_click" on the item row/cell or clicking its "More actions" button) and click the option again — NEVER guess unrelated header/search inputs.
+  • OPEN MENUS & MODAL DIALOGS: On Google Drive or list/grid views with per-item or toolbar "More actions" buttons, prefer clicking the target item's "More actions" button (or toolbar "More actions" after selecting the item) rather than "right_click" so the context menu stays open cleanly. If a context/action menu (elements with role="menu" or role="menuitem") is ALREADY open and displays the needed option (e.g. "Rename", "Move", "Delete", "Make a copy", "Download"), click that visible menuitem directly — NEVER re-click "More actions" or "+ New" while the menu is open. After clicking a menuitem like "Rename" that opens a modal dialog, inspect the next snapshot for the dialog's visible text input before calling "fill"; if no dialog input appeared, re-open the target item's context menu and click the option again — NEVER guess unrelated header/search inputs.
   • Before clicking, ensure the chosen element is enabled and unobscured. If it is off-screen, scroll it into view and inspect again.
   • Use "scroll" to reveal off-screen fields before interacting with them.
   • Always use the "label" or "accessible_name" field of an element (if provided) to understand what a field is for.
@@ -1195,7 +1195,7 @@ class AIAgentPlanner:
             if tag:
                 item["tag"] = tag
             el_type = str(el.get("type") or "").strip().lower()
-            if el_type and el_type not in ("text", ""):
+            if el_type and el_type not in ("text", "") and not (tag in ("a", "div", "span", "li", "button", "p", "td", "tr") and el_type == tag):
                 item["type"] = el_type
             name = str(el.get("name") or "").strip()
             if name:
@@ -1204,26 +1204,40 @@ class AIAgentPlanner:
             if el_id:
                 item["id"] = el_id
             selector = str(el.get("selector") or "").strip()
-            if selector:
+            # Keep short semantic selectors; drop multi-hundred-char CSS ancestor chains when element_id index is available.
+            if selector and not (item.get("index") is not None and ">" in selector and len(selector) > 100):
                 item["selector"] = selector
             role = str(el.get("role") or "").strip().lower()
             if role:
                 item["role"] = role
 
+            def _dedup_phrase(val: str) -> str:
+                mid = len(val) // 2
+                if len(val) >= 6 and val[:mid].strip() == val[mid:].strip():
+                    return val[:mid].strip()
+                return val
+
+            seen_labels: set[str] = set()
             for key, max_len in [
-                ("accessible_name", 160),
-                ("text", 120),
                 ("aria_label", 120),
+                ("text", 120),
                 ("label", 120),
+                ("accessible_name", 140),
                 ("placeholder", 120),
                 ("value", 120),
                 ("href", 100),
             ]:
                 val = el.get(key)
                 if val:
-                    val_str = str(val).strip()
-                    if val_str:
-                        item[key] = val_str[:max_len]
+                    val_str = _dedup_phrase(str(val).strip())[:max_len]
+                    if not val_str:
+                        continue
+                    if key in ("aria_label", "text", "label", "accessible_name"):
+                        norm = val_str.casefold()
+                        if norm in seen_labels:
+                            continue
+                        seen_labels.add(norm)
+                    item[key] = val_str
 
             if el.get("in_viewport") is not None:
                 item["in_viewport"] = bool(el.get("in_viewport"))
@@ -1249,7 +1263,8 @@ class AIAgentPlanner:
     _FALLBACK_GROQ_MODELS = [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "qwen/qwen3.8-27b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
     ]
 
     def _compress_prompt_for_groq(self, prompt: str, max_input_tokens: int = 3500) -> str:
@@ -1351,16 +1366,44 @@ class AIAgentPlanner:
         if len(compressed) // 4 <= max_input_tokens:
             return compressed
 
-        # 5. Prune interactive elements if still too large
+        # 5. Compact and prune interactive elements cleanly if still over budget
         def _prune_elements(match: re.Match) -> str:
             inner = match.group(1).strip()
             try:
                 elems = json.loads(inner)
-                if isinstance(elems, list) and len(elems) > 25:
-                    pruned = elems[:25]
+                if isinstance(elems, list):
+                    trimmed = []
+                    for el in elems:
+                        if not isinstance(el, dict):
+                            continue
+                        compact_el = dict(el)
+                        sel = str(compact_el.get("selector") or "")
+                        if len(sel) > 85 and ">" in sel and compact_el.get("index") is not None:
+                            compact_el.pop("selector", None)
+                        compact_el.pop("href", None)
+                        trimmed.append(compact_el)
+                    candidate = trimmed
+                    serialized = json.dumps(candidate, separators=(",", ":"))
+                    if len(compressed) - len(inner) + len(serialized) > max_input_tokens * 4 and len(trimmed) > 30:
+                        priority_roles = {
+                            "menu", "menuitem", "dialog", "textbox", "combobox",
+                            "button", "link", "gridcell", "checkbox", "radio", "tab",
+                        }
+                        prioritized = [
+                            el for el in trimmed
+                            if str(el.get("role") or "").lower() in priority_roles
+                            or str(el.get("tag") or "").lower() in ("input", "textarea", "select", "button")
+                        ]
+                        rest = [el for el in trimmed if el not in prioritized]
+                        pool = prioritized + rest
+                        for cap in (30, 20, 14):
+                            candidate = pool[:cap]
+                            serialized = json.dumps(candidate, separators=(",", ":"))
+                            if len(compressed) - len(inner) + len(serialized) <= max_input_tokens * 4:
+                                break
                     return (
                         '<UNTRUSTED_CONTENT source="page_elements">\n'
-                        f"{json.dumps(pruned, indent=1)}\n"
+                        f"{serialized}\n"
                         "</UNTRUSTED_CONTENT>"
                     )
             except Exception:
@@ -1373,6 +1416,30 @@ class AIAgentPlanner:
             compressed,
             flags=re.DOTALL,
         )
+        if len(compressed) // 4 <= max_input_tokens:
+            return compressed
+
+        # 6. Trim secondary TASK MEMORY / context blocks and redundant catalog if still over budget
+        def _prune_memory(match: re.Match) -> str:
+            header = match.group(1)
+            body = match.group(2).strip()
+            if len(body) > 800:
+                return f"{header}\n{body[:800]}\n... [context pruned for token budget]\n"
+            return match.group(0)
+
+        compressed = re.sub(
+            r'(TASK MEMORY[^\n]*:)(.*?)(?=\n═+|\nINSTRUCTIONS:)',
+            _prune_memory,
+            compressed,
+            flags=re.DOTALL,
+        )
+        if len(compressed) // 4 > max_input_tokens:
+            compressed = re.sub(
+                r'AVAILABLE BROWSER TOOLS \(choose only from this registry\):.*?(?=\nPREVIOUSLY EXTRACTED DATA:|\nTASK MEMORY|\n═+|\nINSTRUCTIONS:)',
+                'AVAILABLE BROWSER TOOLS: [see ACTION SCHEMA above]\n',
+                compressed,
+                flags=re.DOTALL,
+            )
 
         return compressed
 
@@ -1411,11 +1478,20 @@ class AIAgentPlanner:
                     "temperature": 0.1,
                 }
                 # Groq json_object mode requires the output to be a JSON object ({}), not an array ([]).
-                # Only specify json_object if prompt does not explicitly request a JSON array.
-                if response_mime_type == "application/json" and "array" not in budgeted_prompt.lower() and "[" not in budgeted_prompt[:250]:
+                # Only disable it when the prompt asks to return a JSON array (do not match schema field descriptions like "array of paths").
+                wants_json_array = bool(
+                    re.search(r"return\s+(?:only\s+)?(?:a\s+)?json\s+array|only\s+valid\s+json\s*[:\-]?\s*\[", budgeted_prompt.lower())
+                    or "[" in budgeted_prompt[:250]
+                )
+                if response_mime_type == "application/json" and not wants_json_array:
                     payload["response_format"] = {"type": "json_object"}
 
                 resp = httpx.post(base_url, headers=headers, json=payload, timeout=30.0)
+                if resp.status_code == 413:
+                    # Re-compress more aggressively if request still exceeded Groq model TPM/payload size.
+                    tight_prompt = self._compress_prompt_for_groq(budgeted_prompt, max_input_tokens=2000)
+                    payload["messages"][1]["content"] = tight_prompt
+                    resp = httpx.post(base_url, headers=headers, json=payload, timeout=30.0)
                 if resp.status_code == 400 and "json_validate_failed" in resp.text:
                     payload.pop("response_format", None)
                     resp = httpx.post(base_url, headers=headers, json=payload, timeout=30.0)
@@ -1619,12 +1695,15 @@ class AIAgentPlanner:
                             contents=prompt,
                             config=gen_config,
                         )
+                        raw_text_out = getattr(response, "text", None)
+                        if not isinstance(raw_text_out, str) or not raw_text_out.strip():
+                            raise ValueError(f"Gemini model '{model}' returned an empty text response")
                         if model != self.model_name:
                             logger.info(f"LLM fallback succeeded with Gemini model '{model}'")
                         self.circuit_breaker.record_success()
                         probe_succeeded = True
                         self.last_llm_provider = "gemini"
-                        return response.text.strip()
+                        return raw_text_out.strip()
                     except Exception as exc:
                         gemini_exc = exc
                         # Detect terminal daily quota exhaustion
@@ -1648,6 +1727,7 @@ class AIAgentPlanner:
                             or "resource_exhausted" in err_str
                             or "quota" in err_str
                             or "rate_limit" in err_str
+                            or "empty text response" in err_str
                         ):
                             logger.warning(f"Gemini model '{model}' unavailable or quota reached ({exc}), trying next fallback...")
                             continue
@@ -3023,16 +3103,24 @@ If the original goal is already complete, return ["Verify the requested outcome 
                 action = heuristic_action
 
         if action is None and (self.ollama_enabled or self.client or self.groq_api_key):
-            try:
-                action = await self._llm_decide_action(
-                    goal, step_number, max_steps, page_info,
-                    extracted_data, trajectory_history, user_approval_input,
-                    task_context,
-                    vision_image_path,
-                    active_milestone,
-                )
-            except Exception as e:
-                logger.error(f"LLM decision error: {e}. Falling back to heuristic planner.")
+            for llm_attempt in range(2):
+                try:
+                    action = await self._llm_decide_action(
+                        goal, step_number, max_steps, page_info,
+                        extracted_data, trajectory_history, user_approval_input,
+                        task_context,
+                        vision_image_path,
+                        active_milestone,
+                    )
+                    break
+                except Exception as e:
+                    if llm_attempt == 0:
+                        logger.warning(
+                            "Transient LLM decision error (%s); retrying once before heuristic fallback.", e
+                        )
+                        await asyncio.sleep(1.5)
+                        continue
+                    logger.error(f"LLM decision error: {e}. Falling back to heuristic planner.")
 
         if not action:
             action = self._heuristic_decide_action(
@@ -3545,7 +3633,17 @@ INSTRUCTIONS: Choose the BEST NEXT single action.
                 lines = lines[:-1]
             raw_text = "\n".join(lines).strip()
         logger.debug(f"LLM raw response (step {step_number}): {raw_text[:300]}")
-        data = json.loads(raw_text)
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError:
+            obj_match = re.search(r"\{.*\}", raw_text, flags=re.DOTALL)
+            if not obj_match:
+                raise
+            data = json.loads(obj_match.group(0))
+        if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+            data = data[0]
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected JSON object from action planner, got {type(data).__name__}")
 
         action_str = data.get("action")
         expected_milestone_id = str(active_milestone.get("id") or "") if active_milestone else None

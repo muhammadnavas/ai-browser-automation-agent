@@ -5,7 +5,7 @@ import httpx
 import pytest
 import threading
 import concurrent.futures
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "backend", ".env"))
@@ -19,7 +19,7 @@ from backend.agents.planner import (
     GroqProviderError,
     is_gemini_daily_quota_exhausted,
 )
-from backend.models.schemas import ActionType
+from backend.models.schemas import ActionType, BrowserAction
 
 def test_groq_planner_init():
     planner = AIAgentPlanner(api_key="", groq_api_key="gsk_dummy_test_key")
@@ -619,3 +619,116 @@ def test_gemini_fallback_chain_uses_current_model_ids():
     ]
     assert "gemini-2.5-flash-lite" not in models
     assert "gemini-3.1-flash-lite-preview" not in models
+
+
+def test_compact_interactive_elements_deduplicates_drive_bloat():
+    """Verify Drive-style duplicated labels and multi-hundred-char CSS paths are compacted safely."""
+    drive_els = [
+        {
+            "index": i,
+            "tag": "div",
+            "type": "div",
+            "role": "gridcell",
+            "selector": "div#a > div.b > div.c > div.d > div.e > div.f > div.g > div.h > div.i > div.j > div.k > div.target-nested-folder-card",
+            "text": f"Folder {i}",
+            "aria_label": f"Folder {i}",
+            "label": f"Folder {i}",
+            "accessible_name": f"Folder {i} Folder {i}",
+            "in_viewport": True,
+        }
+        for i in range(60)
+    ]
+    short_selector_el = {
+        "index": 60,
+        "tag": "li",
+        "role": "menuitem",
+        "selector": '[aria-label="Rename, Ctrl+Alt+E"]',
+        "text": "Rename Ctrl+Alt+E",
+        "aria_label": "Rename, Ctrl+Alt+E",
+    }
+    compacted = AIAgentPlanner.compact_interactive_elements(drive_els + [short_selector_el], limit=65)
+    assert len(compacted) == 61
+    assert "type" not in compacted[0]
+    assert "selector" not in compacted[0]
+    assert "label" not in compacted[0]
+    assert "accessible_name" not in compacted[0]
+    assert compacted[60]["selector"] == '[aria-label="Rename, Ctrl+Alt+E"]'
+    assert len(json.dumps(compacted, separators=(",", ":"))) < 6500
+
+
+def test_groq_prompt_budgeting_handles_large_drive_dom_and_memory():
+    """Verify _compress_prompt_for_groq compresses large Drive elements and TASK MEMORY cleanly."""
+    planner = AIAgentPlanner(api_key="", groq_api_key="gsk_test")
+    drive_elements = [
+        {
+            "index": i,
+            "tag": "button" if i == 36 else "div",
+            "role": "button" if i == 36 else "row",
+            "selector": "div#a > div.b > div.c > div.d > div.e > div.f > div.g > div.h > button.more-actions-long-chain-selector-extra-padding",
+            "text": "More actions" if i == 36 else f"Row {i}",
+        }
+        for i in range(60)
+    ]
+    raw_prompt = (
+        'USER GOAL: "open gdrive and rename Assist folder to Test"\n'
+        '<UNTRUSTED_CONTENT source="page_text">\n' + ("Home Assist Folder " * 150) + '\n</UNTRUSTED_CONTENT>\n'
+        '<UNTRUSTED_CONTENT source="page_elements">\n' + json.dumps(drive_elements, separators=(",", ":")) + '\n</UNTRUSTED_CONTENT>\n'
+        'TASK MEMORY (full context from previous steps):\n' + ("profile skills " * 400) + '\n'
+        'INSTRUCTIONS: Choose the BEST NEXT single action.\n{"action": "<action_name>"}'
+    )
+    compressed = planner._compress_prompt_for_groq(raw_prompt, max_input_tokens=1500)
+    assert len(compressed) // 4 <= 1600
+    assert 'USER GOAL: "open gdrive and rename Assist folder to Test"' in compressed
+    assert "More actions" in compressed
+    assert "... [context pruned for token budget]" in compressed
+
+
+def test_groq_keeps_json_object_mode_with_upload_paths_schema():
+    """Verify schema field text '<array of ...>' does not disable response_format json_object."""
+    planner = AIAgentPlanner(api_key="", groq_api_key="gsk_test")
+    captured_payloads = []
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"choices": [{"message": {"content": '{"action":"click","element_id":22}'}}]}
+    mock_resp.raise_for_status.return_value = None
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured_payloads.append(json)
+        return mock_resp
+
+    with patch("backend.agents.planner.httpx.post", side_effect=fake_post):
+        planner._call_groq('INSTRUCTIONS: output JSON\n"upload_paths": <array of authorized file paths or null>')
+        assert captured_payloads[0].get("response_format") == {"type": "json_object"}
+
+        captured_payloads.clear()
+        planner._call_groq("Return ONLY a JSON array of 3 to 6 concise strings.")
+        assert "response_format" not in captured_payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_decide_next_action_retries_once_on_transient_llm_error():
+    """Verify decide_next_action retries _llm_decide_action once before giving up to heuristic fallback."""
+    planner = AIAgentPlanner(api_key="", groq_api_key="gsk_test")
+    expected = BrowserAction(action=ActionType.CLICK, element_id=22, text="More actions", reasoning="Retry succeeded")
+
+    calls = {"count": 0}
+    async def flaky_llm(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise FallbackProviderError("Transient 429")
+        return expected
+
+    with patch.object(planner, "_llm_decide_action", side_effect=flaky_llm):
+        with patch("backend.agents.planner.asyncio.sleep", new=AsyncMock()):
+            res = await planner.decide_next_action(
+                goal="open gdrive and rename Assist folder to Test",
+                step_number=2,
+                max_steps=15,
+                page_info={"url": "https://drive.google.com/drive/u/0/home", "elements": []},
+                extracted_data=[],
+                trajectory_history=[{"step": 1, "action": "right_click", "description": "Right clicked Assist"}],
+            )
+    assert calls["count"] == 2
+    assert res.action == ActionType.CLICK
+    assert res.element_id == 22
+
