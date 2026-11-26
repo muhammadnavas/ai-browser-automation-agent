@@ -435,6 +435,7 @@ async def test_task_outcome_cannot_be_determined_reported_unverified(tm, mock_co
 
     assert verified is False
     assert "Outcome unverified" in msg
+
     assert "insufficient" in msg.lower()
     assert "Ensure the secret logo color turned green" in msg
 
@@ -594,3 +595,107 @@ async def test_extension_radio_postcondition_verifies_selected_option(tm):
     verified, message = await tm._verify_extension_action_postcondition(action, controller, {})
     assert verified is True
     assert "Radio selection verified" in message
+
+
+@pytest.mark.asyncio
+async def test_navigation_fallback_rejects_uncompleted_drive_rename(tm, mock_planner_no_llm):
+    """Verify compound Drive rename task fails deterministic verification when only Drive Home is open."""
+    drive_ctrl = MagicMock()
+    drive_ctrl.current_url = "https://drive.google.com/drive/u/0/home"
+    drive_ctrl.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://drive.google.com/drive/u/0/home",
+        "title": "Home - Google Drive",
+        "page_text": "Home My Drive AssistMore actions",
+        "headings": ["Welcome to Drive"],
+        "elements": [],
+    })
+
+    task = TaskResponse(
+        task_id="task_rename_unverified",
+        goal="open gdrive and rename Assist folder to Test",
+        status=TaskStatus.RUNNING,
+        created_at=100.0,
+        updated_at=100.0,
+        context=TaskContext(),
+    )
+
+    verified, msg = await tm._verify_goal_completion(
+        drive_ctrl, task, mock_planner_no_llm, []
+    )
+
+    assert verified is False
+    assert "Outcome unverified" in msg
+
+
+@pytest.mark.asyncio
+async def test_extension_right_click_postcondition_requires_observable_menu_or_dom_change(tm):
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://drive.google.com/drive/u/0/home",
+        "elements": [{"index": 31, "selector": "[data-id='assist']", "role": "gridcell", "text": "Assist"}],
+        "form_fields": [],
+        "headings": [],
+        "page_text": "My Drive Assist",
+    })
+    before_page = {
+        "url": "https://drive.google.com/drive/u/0/home",
+        "elements": [{"index": 31, "selector": "[data-id='assist']", "role": "gridcell", "text": "Assist"}],
+        "form_fields": [],
+        "headings": [],
+        "page_text": "My Drive Assist",
+    }
+    action = BrowserAction(
+        action=ActionType.RIGHT_CLICK,
+        element_id=31,
+        reasoning="Right-click on Assist folder to open the context menu.",
+    )
+    verified_empty, msg_empty = await tm._verify_extension_action_postcondition(
+        action, controller, before_page=before_page
+    )
+    assert verified_empty is False
+    assert "no context menu" in msg_empty
+
+    controller.parse_interactive_elements = AsyncMock(return_value={
+        "url": "https://drive.google.com/drive/u/0/home",
+        "elements": [
+            {"index": 1, "selector": "[aria-label='Rename, Ctrl+Alt+E']", "role": "menuitem", "text": "Rename"},
+            {"index": 31, "selector": "[data-id='assist']", "role": "gridcell", "text": "Assist"},
+        ],
+        "form_fields": [],
+        "headings": [],
+        "page_text": "My Drive Assist",
+    })
+    verified_opened, msg_opened = await tm._verify_extension_action_postcondition(
+        action, controller, before_page=before_page
+    )
+    assert verified_opened is True
+    assert "context menu" in msg_opened
+
+
+@pytest.mark.asyncio
+async def test_extension_menuitem_click_does_not_claim_menu_trigger_when_unchanged(tm):
+    unchanged_dom = {
+        "url": "https://drive.google.com/drive/u/0/home",
+        "elements": [
+            {"index": 2, "selector": "[aria-label='Rename, Ctrl+Alt+E']", "role": "menuitem", "text": "Rename Ctrl+Alt+E"},
+        ],
+        "form_fields": [],
+        "headings": [],
+        "page_text": "My Drive Assist",
+    }
+    controller = MagicMock()
+    controller.parse_interactive_elements = AsyncMock(return_value=unchanged_dom)
+    action = BrowserAction(
+        action=ActionType.CLICK,
+        element_id=2,
+        selector="[aria-label='Rename, Ctrl+Alt+E']",
+        text="Rename Ctrl+Alt+E",
+        reasoning="Click the 'Rename' menu item in the context menu.",
+    )
+    verified, msg = await tm._verify_extension_action_postcondition(
+        action, controller, before_page=unchanged_dom
+    )
+    assert verified is False
+    assert "Menu trigger click" not in msg
+
+

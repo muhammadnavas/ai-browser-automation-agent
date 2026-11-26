@@ -221,3 +221,51 @@ async def test_extension_manager_handles_ping_pong_heartbeat():
     handled = await mgr.handle_message(ws, {"type": "ping", "timestamp": 123456789})
     assert handled is True
     ws.send_json.assert_awaited_once_with({"type": "pong", "timestamp": 123456789})
+
+
+@pytest.mark.asyncio
+async def test_timeout_during_inspect_dom_retries_and_recovers(tmp_path, monkeypatch):
+    """Verify TimeoutError on an initial inspect_dom attempt is retried and succeeds."""
+    manager = type("Manager", (), {})()
+    manager.send_command = AsyncMock(side_effect=[
+        TimeoutError("Extension command 'inspect_dom' timed out after 25.0s."),
+        {"success": True, "data": {
+            "url": "https://drive.google.com/drive/u/0/home",
+            "browser_tab_url": "https://drive.google.com/drive/u/0/home",
+            "title": "Home - Google Drive",
+            "elements": [{"index": 1, "text": "Assist", "selector": "[role='gridcell']"}],
+            "page_text": "Home - Google Drive Assist",
+            "headings": ["Home"],
+            "form_fields": [],
+        }},
+    ])
+    monkeypatch.setattr("browser.extension_adapter.asyncio.sleep", AsyncMock())
+
+    adapter = ExtensionBrowserAdapter(
+        task_id="task-timeout-retry", manager=manager, screenshots_dir=str(tmp_path)
+    )
+    result = await adapter.parse_interactive_elements()
+
+    assert result.get("inspection_error") is not True
+    assert result["title"] == "Home - Google Drive"
+    assert manager.send_command.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_persistent_timeout_during_inspect_dom_returns_inspection_error(tmp_path, monkeypatch):
+    """Verify persistent inspect_dom timeouts exhaust retries and return structured inspection_error."""
+    manager = type("Manager", (), {})()
+    manager.send_command = AsyncMock(
+        side_effect=TimeoutError("Extension command 'inspect_dom' timed out after 25.0s.")
+    )
+    monkeypatch.setattr("browser.extension_adapter.asyncio.sleep", AsyncMock())
+
+    adapter = ExtensionBrowserAdapter(
+        task_id="task-timeout-fail", manager=manager, screenshots_dir=str(tmp_path)
+    )
+    result = await adapter.parse_interactive_elements()
+
+    assert result["inspection_error"] is True
+    assert result["inspection_attempts"] == 3
+    assert "timed out" in result["inspection_error_reason"].lower()
+    assert manager.send_command.await_count == 3

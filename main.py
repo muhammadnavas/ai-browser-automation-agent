@@ -12,6 +12,13 @@ BACKEND_DIR = ROOT_DIR / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BACKEND_DIR / ".env")
+    load_dotenv(ROOT_DIR / ".env")
+except ImportError:
+    pass
+
 if __name__ == "__main__":
     if sys.platform == "win32":
         import asyncio

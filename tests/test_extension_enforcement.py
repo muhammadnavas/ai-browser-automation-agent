@@ -198,3 +198,68 @@ async def test_extension_manager_send_command_roundtrip():
 
     assert resp["success"] is True
     assert resp["data"]["locked"] is True
+
+
+@pytest.mark.asyncio
+async def test_open_auth_and_recovery_tabs_unlock_ui_first():
+    """Verify open_auth_tab and open_recovery_tab unlock UI before manual user actions."""
+    mock_mgr = MagicMock()
+    mock_mgr.send_command = AsyncMock(side_effect=[
+        {"success": True},
+        {"success": True, "data": {"tab_id": 77, "url": "https://accounts.google.com/ServiceLogin"}},
+        {"success": True},
+        {"success": True, "data": {"tab_id": 78, "url": "https://accounts.google.com/RotateCookiesPage"}},
+    ])
+    adapter = ExtensionBrowserAdapter(task_id="task-auth-unlock", manager=mock_mgr)
+    adapter._ui_locked = True
+
+    await adapter.open_auth_tab("https://example.com/auth")
+    assert adapter._ui_locked is False
+    await adapter.open_recovery_tab("https://example.com/recover")
+    assert adapter._ui_locked is False
+
+    commands = [call.kwargs["command_type"] for call in mock_mgr.send_command.call_args_list]
+    assert commands == ["unlock_ui", "open_auth_tab", "unlock_ui", "open_recovery_tab"]
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume_task_maintain_ui_lock_when_idle():
+    """Verify pause_task unlocks UI and resume_task re-locks UI cleanly."""
+    tm = TaskManager()
+    req = TaskRequest(goal="Fill form", execution_layer="extension")
+    task = tm.create_task(req)
+    task.status = TaskStatus.RUNNING
+    gate = asyncio.Event()
+    gate.set()
+    tm.pause_events[task.task_id] = gate
+
+    controller = MagicMock()
+    controller.manager = MagicMock()
+    controller.manager.get_task_lock = MagicMock(return_value=asyncio.Lock())
+    controller.unlock_ui = AsyncMock()
+    controller.lock_ui = AsyncMock()
+    tm.controllers[task.task_id] = controller
+    tm._save_cached_task_state = AsyncMock()
+    tm.broadcast_task_update = AsyncMock()
+
+    await tm.pause_task(task.task_id)
+    assert task.status == TaskStatus.PAUSED
+    controller.unlock_ui.assert_awaited_once()
+
+    await tm.resume_task(task.task_id)
+    assert task.status == TaskStatus.RUNNING
+    controller.lock_ui.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_set_ui_lock_skips_when_command_lock_held_if_only_if_idle():
+    """Verify idle-only lock transition does not block on an active browser command."""
+    controller = MagicMock()
+    busy_lock = asyncio.Lock()
+    await busy_lock.acquire()
+    controller.manager = MagicMock()
+    controller.manager.get_task_lock = MagicMock(return_value=busy_lock)
+    controller.unlock_ui = AsyncMock()
+
+    await TaskManager._set_ui_lock(controller, False, only_if_idle=True, task_id="task-busy")
+    controller.unlock_ui.assert_not_called()

@@ -327,3 +327,76 @@ def test_heuristic_pure_navigation_finishes_correctly():
     assert action2.action == ActionType.FINISH
     assert action2.extracted_data.get("status") == "Success"
 
+
+def test_drive_rename_not_misclassified_or_finished_prematurely():
+    """Verify compound Drive rename goal is neither pure navigation nor prematurely finished/hijacked by upload heuristic."""
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    goal = "open gdrive and rename Assist folder to Test"
+
+    intent = planner._analyze_task_intent(goal)
+    assert intent["category_key"] != "navigation"
+
+    drive_home_page = {
+        "url": "https://drive.google.com/drive/u/0/home",
+        "title": "Home - Google Drive",
+        "elements": [
+            {"index": 1, "tag": "input", "type": "text", "name": "q", "aria_label": "Get answers from Drive", "selector": 'input[name="q"]'},
+            {"index": 12, "tag": "button", "text": "New", "aria_label": "New", "selector": "button.new"},
+            {"index": 23, "tag": "div", "role": "gridcell", "text": "AssistMore actions", "aria_label": "Assist Folder", "selector": '[aria-label="Assist Folder"]'},
+        ],
+    }
+
+    action = planner._heuristic_decide_action(
+        goal=goal,
+        step_number=1,
+        page_info=drive_home_page,
+        extracted_data=[],
+        trajectory_history=[],
+    )
+    assert action.action != ActionType.DOUBLE_CLICK
+    assert action.action != ActionType.TYPE_TEXT
+    assert not (action.action == ActionType.CLICK and (action.text or "").lower() == "new")
+    assert action.extracted_data.get("status") != "Success"
+
+
+@pytest.mark.asyncio
+async def test_drive_rename_uses_llm_instead_of_upload_heuristic_bypass():
+    """Verify decide_next_action delegates Drive rename tasks to LLM instead of bypassing to upload/create heuristic."""
+    planner = AIAgentPlanner(api_key="", groq_api_key="")
+    planner.ollama_enabled = True
+    planner.plan_cache = None
+    planner.cache_service = None
+    called = {"llm": False}
+
+    async def fake_llm_decide(*args, **kwargs):
+        called["llm"] = True
+        return BrowserAction(
+            action=ActionType.RIGHT_CLICK,
+            element_id=23,
+            text="Assist",
+            reasoning="Open context menu on Assist folder to rename it.",
+        )
+
+    drive_home_page = {
+        "url": "https://drive.google.com/drive/u/0/home",
+        "title": "Home - Google Drive",
+        "elements": [
+            {"index": 23, "tag": "div", "role": "gridcell", "text": "Assist", "aria_label": "Assist Folder"},
+        ],
+    }
+
+    with patch.object(planner, "_llm_decide_action", side_effect=fake_llm_decide):
+        action = await planner.decide_next_action(
+            goal="open gdrive and rename Assist folder to Test",
+            step_number=1,
+            max_steps=10,
+            page_info=drive_home_page,
+            extracted_data=[],
+            trajectory_history=[],
+            use_cache=False,
+        )
+
+    assert called["llm"] is True
+    assert action.action == ActionType.RIGHT_CLICK
+
+

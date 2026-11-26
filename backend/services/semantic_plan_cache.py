@@ -103,6 +103,8 @@ class SemanticPlanCache:
                 entry = await self.cache_service.get(key)
                 if not isinstance(entry, dict):
                     continue
+                if str(entry.get("source", "")).strip().lower() == "heuristic":
+                    continue
                 vector = entry.get("embedding")
                 if not isinstance(vector, list):
                     continue

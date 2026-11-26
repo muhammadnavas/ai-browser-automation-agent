@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 _MUTATING_INTENT = re.compile(
     r"\b(delete|remove|trash|send|submit|publish|post|buy|purchase|pay|checkout|"
-    r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update)\b",
+    r"transfer|withdraw|share|grant access|make public|upload|fill|edit|update|"
+    r"rename|create|mkdir|move|copy|compose|draft|archive|star|restore|"
+    r"make\s+(?:a\s+|new\s+)?folder)\b",
     re.IGNORECASE,
 )
 _ALLOWED_AUTOMATIC_ROLES = {"navigation", "research", "interaction"}

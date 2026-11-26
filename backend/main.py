@@ -18,8 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# Load environment variables before importing application modules
-load_dotenv()
+# Load environment variables before importing application modules.
+# Load backend/.env first (canonical location per README), then project root .env.
+load_dotenv(BACKEND_DIR / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
 
 # ── Windows asyncio fix ──────────────────────────────────────────────
 # Playwright needs to spawn browser sub-processes via asyncio.

@@ -32,3 +32,12 @@ def test_research_is_not_delegated_without_known_url():
         None,
     )
     assert specs == []
+
+
+def test_rename_task_is_not_automatically_delegated():
+    specs = build_automatic_subagent_specs(
+        "open gdrive and rename Assist folder to Test",
+        "https://drive.google.com",
+    )
+    assert specs == []
+

@@ -160,7 +160,7 @@
     // Keep this function synchronous so the chrome.runtime.onMessage port
     // does not need to stay open across microtask boundaries.
     // SPA stabilisation is handled by background.js post-navigate delay instead.
-    return _inspectPageDOMInternal(showBadges);
+    return withLockShieldBypassed(() => _inspectPageDOMInternal(showBadges));
   }
 
   function _inspectPageDOMInternal(showBadges) {
@@ -177,29 +177,28 @@
 
     const rawElements = Array.from(document.querySelectorAll(interactiveSelectors));
 
-    // Keep the current interactive context first, then controls in the viewport.
-    // Off-screen controls remain observable so the agent can scroll to them instead
-    // of assuming that only the first viewport exists.
-    rawElements.sort((a, b) => {
-      const aMenu = a.closest('[role="menu"], [role="dialog"], [aria-modal="true"], .modal, ul.aqdrmf-E, [role="listbox"]') ? 1 : 0;
-      const bMenu = b.closest('[role="menu"], [role="dialog"], [aria-modal="true"], .modal, ul.aqdrmf-E, [role="listbox"]') ? 1 : 0;
-      if (aMenu !== bMenu) return bMenu - aMenu;
-      const ar = a.getBoundingClientRect();
-      const br = b.getBoundingClientRect();
-      const aInView = ar.bottom > 0 && ar.top < window.innerHeight ? 1 : 0;
-      const bInView = br.bottom > 0 && br.top < window.innerHeight ? 1 : 0;
-      if (aInView !== bInView) return bInView - aInView;
-      return Math.abs(ar.top) - Math.abs(br.top);
+    // Sort interactive candidates once using cached geometry/menu metadata
+    // to avoid O(N log N) repeated closest() and getBoundingClientRect() calls.
+    const rankedElements = rawElements.map((el) => {
+      const rect = el.getBoundingClientRect();
+      const inMenu = el.closest?.('[role="menu"], [role="dialog"], [aria-modal="true"], .modal, ul.aqdrmf-E, [role="listbox"]') ? 1 : 0;
+      const inView = rect.bottom > 0 && rect.top < window.innerHeight ? 1 : 0;
+      return { el, rect, inMenu, inView };
+    });
+    rankedElements.sort((a, b) => {
+      if (a.inMenu !== b.inMenu) return b.inMenu - a.inMenu;
+      if (a.inView !== b.inView) return b.inView - a.inView;
+      return Math.abs(a.rect.top) - Math.abs(b.rect.top);
     });
     // Bound work on pages with thousands of generic tabindex/data-id nodes.
     // A fresh inspection after scrolling promotes newly visible controls.
-    if (rawElements.length > 800) rawElements.length = 800;
+    if (rankedElements.length > 800) rankedElements.length = 800;
 
     const results = [];
+    const pendingBadges = [];
     let index = 1;
 
-    rawElements.forEach((el) => {
-      const rect = el.getBoundingClientRect();
+    rankedElements.forEach(({ el, rect }) => {
       // Do not discard controls merely because they are below the fold or
       // above the current viewport. Scrollable pages are part of the same task.
       if (rect.width <= 0 || rect.height <= 0) return;
@@ -245,7 +244,7 @@
           pointerEvents: "none",
           boxShadow: "0 2px 5px rgba(0,0,0,0.3)",
         });
-        document.body.appendChild(badge);
+        pendingBadges.push(badge);
       }
 
       // Store element index reference on DOM node
@@ -317,6 +316,12 @@
       index++;
     });
 
+    if (showBadges && pendingBadges.length) {
+      const frag = document.createDocumentFragment();
+      pendingBadges.forEach((badge) => frag.appendChild(badge));
+      document.body.appendChild(frag);
+    }
+
     // 2. Collect visible page text for context (prioritizing toasts, alerts, and live regions)
     const pageTextParts = [];
     const seen = new Set();
@@ -353,6 +358,21 @@
     });
 
     // 4. Form Fields structured collection
+    function isFormFieldVisible(inp) {
+      if (!inp || !inp.isConnected) return false;
+      if (inp.hidden || String(inp.getAttribute("type") || "").toLowerCase() === "hidden") return false;
+      if (inp.closest('[hidden], [aria-hidden="true"]')) return false;
+      const st = window.getComputedStyle(inp);
+      if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity || "1") <= 0) {
+        return false;
+      }
+      const r = inp.getBoundingClientRect();
+      if (r.width <= 1 || r.height <= 1) return false;
+      // Exclude off-screen parked helper inputs (e.g. left: -9999px) while keeping below-the-fold controls.
+      if (r.right <= -100 || r.bottom <= -100) return false;
+      return true;
+    }
+
     const formFields = [];
     const formInputs = Array.from(document.querySelectorAll("input, select, textarea"));
     formInputs.forEach((inp) => {
@@ -393,22 +413,24 @@
           ? ""
           : (tag === "select" ? inp.options[inp.selectedIndex]?.value || "" : inp.value || (inp.checked ? "checked" : "")),
         options: options,
-        visible: !inp.hidden && inp.type !== "hidden",
+        visible: isFormFieldVisible(inp),
         aria_label: inp.getAttribute("aria-label") || null,
       });
     });
 
     const compactForms = {
       form_count: document.forms.length,
-      fields: formFields.map((f) => ({
-        type: f.field_type,
-        label: f.label,
-        name: f.name,
-        id: f.field_id,
-        placeholder: f.placeholder,
-        selector: f.selector,
-        value: f.current_value,
-      })),
+      fields: formFields
+        .filter((f) => f.visible && !f.disabled)
+        .map((f) => ({
+          type: f.field_type,
+          label: f.label,
+          name: f.name,
+          id: f.field_id,
+          placeholder: f.placeholder,
+          selector: f.selector,
+          value: f.current_value,
+        })),
     };
 
     // Preserve question-to-control relationships for custom form widgets
@@ -580,25 +602,27 @@
 
   function isCenterHitTarget(el) {
     if (!isVisibleActionTarget(el)) return false;
-    const rect = el.getBoundingClientRect();
-    const x = Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(0, window.innerWidth - 1));
-    const y = Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(0, window.innerHeight - 1));
-    const hit = document.elementFromPoint(x, y);
-    if (Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el) || hit.id === "ai-agent-running-border" || hit.id === "ai-agent-ui-lock"))) return true;
+    return withLockShieldBypassed(() => {
+      const rect = el.getBoundingClientRect();
+      const x = Math.min(Math.max(rect.left + rect.width / 2, 0), Math.max(0, window.innerWidth - 1));
+      const y = Math.min(Math.max(rect.top + rect.height / 2, 0), Math.max(0, window.innerHeight - 1));
+      const hit = document.elementFromPoint(x, y);
+      if (Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el) || hit.id === "ai-agent-running-border" || hit.id === "ai-agent-ui-lock"))) return true;
 
-    // Check additional hit points (e.g. left-center, right-center) in case center is overlayed by an icon or pseudo-element
-    const points = [
-      [rect.left + Math.min(20, rect.width / 4), rect.top + rect.height / 2],
-      [rect.left + rect.width * 0.25, rect.top + rect.height / 2],
-      [rect.left + rect.width * 0.75, rect.top + rect.height / 2],
-    ];
-    for (const [px, py] of points) {
-      if (px >= 0 && px < window.innerWidth && py >= 0 && py < window.innerHeight) {
-        const h = document.elementFromPoint(px, py);
-        if (h && (h === el || el.contains(h) || h.contains(el) || h.id === "ai-agent-running-border" || h.id === "ai-agent-ui-lock")) return true;
+      // Check additional hit points (e.g. left-center, right-center) in case center is overlayed by an icon or pseudo-element
+      const points = [
+        [rect.left + Math.min(20, rect.width / 4), rect.top + rect.height / 2],
+        [rect.left + rect.width * 0.25, rect.top + rect.height / 2],
+        [rect.left + rect.width * 0.75, rect.top + rect.height / 2],
+      ];
+      for (const [px, py] of points) {
+        if (px >= 0 && px < window.innerWidth && py >= 0 && py < window.innerHeight) {
+          const h = document.elementFromPoint(px, py);
+          if (h && (h === el || el.contains(h) || h.contains(el) || h.id === "ai-agent-running-border" || h.id === "ai-agent-ui-lock")) return true;
+        }
       }
-    }
-    return false;
+      return false;
+    });
   }
 
   function findGmailTarget(action) {
@@ -695,10 +719,24 @@
     const labelText = el.labels
       ? Array.from(el.labels).map((label) => label.innerText || label.textContent || "").join(" ")
       : "";
-    const questionCard = el.closest('.Qr7Oae,[role="listitem"],[data-params],[role="row"],[data-target="item"]');
-    const cardHeading = questionCard?.querySelector('[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]');
+    const questionCard = el.closest?.('.Qr7Oae,[role="listitem"],[data-params],[role="row"],[data-target="item"]') || null;
+    const cardHeading = questionCard?.querySelector?.('[role="heading"],.M7eMe,[class*="ItemTitle"],[class*="QuestionTitle"]');
+    const isGenericItemMenuBtn = /^(more actions|more info|more options)$/i.test(
+      (el.getAttribute("aria-label") || el.innerText || "").trim()
+    );
+    const gridItem = isGenericItemMenuBtn
+      ? (el.closest?.('[role="gridcell"][aria-label], [role="row"][data-id], [data-target="item"]') || null)
+      : null;
+    const driveItemLabel = (el !== gridItem && gridItem)
+      ? (
+          gridItem.querySelector?.('[data-tooltip]')?.getAttribute("data-tooltip")
+          || gridItem.getAttribute("aria-label")
+          || ""
+        ).replace(/\s+Loading….*$/i, "").replace(/\s+More info.*$/i, "").trim()
+      : "";
     return [
       el.getAttribute("aria-label"),
+      isGenericItemMenuBtn && driveItemLabel ? `for ${driveItemLabel}` : "",
       labelledBy,
       labelText,
       inferLabel(el),
@@ -1628,8 +1666,10 @@
       const dir = (action.scroll_direction || "down").toLowerCase();
       const amount = action.scroll_amount || 500;
       const dy = dir === "up" ? -amount : amount;
-      window.scrollBy({ top: dy, left: 0, behavior: "smooth" });
-      await new Promise((r) => setTimeout(r, 400));
+      await withScrollUnlockedForAgent(async () => {
+        window.scrollBy({ top: dy, left: 0, behavior: "smooth" });
+        await new Promise((r) => setTimeout(r, 400));
+      });
       return { success: true, description: `Scrolled ${dir} ${amount}px` };
     }
 
@@ -1637,8 +1677,10 @@
       const resolvedElement = findTargetElement(action);
       const el = resolvedElement ? getActionableElement(resolvedElement, actType) : null;
       if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        await new Promise((r) => setTimeout(r, 400));
+        await withScrollUnlockedForAgent(async () => {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          await new Promise((r) => setTimeout(r, 400));
+        });
         return { success: true, description: `Scrolled to element [${action.selector}]` };
       }
       return { success: false, error: `Element not found for scroll_to: ${action.selector}` };
@@ -1841,30 +1883,59 @@
       };
 
       const innerTarget = el.querySelector('span, svg, [class*="text" i], [class*="label" i]') || el;
-      innerTarget.dispatchEvent(new MouseEvent("mouseover", opts));
-      innerTarget.dispatchEvent(new MouseEvent("mouseenter", opts));
-      innerTarget.dispatchEvent(new MouseEvent("pointerdown", opts));
-      innerTarget.dispatchEvent(new MouseEvent("mousedown", opts));
-      innerTarget.dispatchEvent(new MouseEvent("pointerup", opts));
-      innerTarget.dispatchEvent(new MouseEvent("mouseup", opts));
-      innerTarget.dispatchEvent(new MouseEvent("click", opts));
-      if (typeof innerTarget.click === "function") {
-        innerTarget.click();
-      }
-      if (el !== innerTarget) {
-        el.dispatchEvent(new MouseEvent("pointerdown", opts));
-        el.dispatchEvent(new MouseEvent("mousedown", opts));
-        el.dispatchEvent(new MouseEvent("pointerup", opts));
-        el.dispatchEvent(new MouseEvent("mouseup", opts));
-        el.dispatchEvent(new MouseEvent("click", opts));
-        if (typeof el.click === "function") {
-          el.click();
+      const isMenuItem = el.getAttribute("role") === "menuitem" || el.tagName === "LI" || Boolean(el.closest('[role="menu"], ul.aqdrmf-E'));
+      const pointerDownOpts = {
+        ...opts,
+        button: 0,
+        buttons: 1,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+      };
+      const pointerUpOpts = { ...pointerDownOpts, buttons: 0 };
+      const dispatchPointerOrMouse = (target, type, evOpts) => {
+        if (typeof PointerEvent === "function") {
+          target.dispatchEvent(new PointerEvent(type, evOpts));
+        } else {
+          target.dispatchEvent(new MouseEvent(type, evOpts));
         }
+      };
+
+      if (isMenuItem && typeof el.focus === "function") {
+        try {
+          el.focus({ preventScroll: true });
+        } catch (e) {}
       }
 
-      // If clicking a menuitem (e.g. in Google Drive menu), also dispatch Enter keydown/keyup on the item
-      const isMenuItem = el.getAttribute("role") === "menuitem" || el.tagName === "LI" || Boolean(el.closest('[role="menu"], ul.aqdrmf-E'));
-      if (isMenuItem) {
+      const hoverTarget = isMenuItem ? el : innerTarget;
+      hoverTarget.dispatchEvent(new MouseEvent("mouseover", opts));
+      hoverTarget.dispatchEvent(new MouseEvent("mouseenter", opts));
+      if (isMenuItem && innerTarget !== el) {
+        innerTarget.dispatchEvent(new MouseEvent("mouseover", opts));
+      }
+
+      const clickTarget = (
+        isMenuItem ||
+        innerTarget === el ||
+        (typeof SVGElement !== "undefined" && innerTarget instanceof SVGElement) ||
+        typeof innerTarget.click !== "function"
+      )
+        ? el
+        : innerTarget;
+
+      dispatchPointerOrMouse(clickTarget, "pointerdown", pointerDownOpts);
+      clickTarget.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
+      dispatchPointerOrMouse(clickTarget, "pointerup", pointerUpOpts);
+      clickTarget.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
+      if (typeof clickTarget.click === "function") {
+        // Native .click() already emits one bubbling click MouseEvent.
+        clickTarget.click();
+      } else {
+        clickTarget.dispatchEvent(new MouseEvent("click", opts));
+      }
+
+      // If clicking a menuitem did not immediately close/detach the menu, send Enter as fallback.
+      if (isMenuItem && el.isConnected) {
         const enterOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true };
         el.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
         el.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
@@ -1875,8 +1946,8 @@
         await new Promise((r) => setTimeout(r, 500));
       }
 
-      // A Google Drive "New folder" menu item opens a modal dialog: wait briefly for the dialog to mount
-      if (location.hostname.includes("drive.google.com") && /new folder|create folder/i.test((action.text || el.innerText || "").trim())) {
+      // A Google Drive "New folder" or "Rename" menu item opens a modal dialog: wait briefly for it to mount
+      if (location.hostname.includes("drive.google.com") && /new folder|create folder|rename/i.test((action.text || el.innerText || "").trim())) {
         await new Promise((r) => setTimeout(r, 600));
       }
 
@@ -2098,9 +2169,38 @@
       } catch (e) {}
       // ---------------------------------
 
-      const opts = { bubbles: true, cancelable: true, view: window, button: 2 };
-      el.dispatchEvent(new MouseEvent("contextmenu", opts));
-      return { success: true, description: `Right clicked on [${action.selector || action.element_id}]` };
+      const visualCenter = getElementVisualCenter(el);
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: 2,
+        buttons: 2,
+        which: 3,
+        clientX: visualCenter.x,
+        clientY: visualCenter.y,
+      };
+      if (typeof PointerEvent === "function") {
+        el.dispatchEvent(new PointerEvent("pointerdown", {
+          ...opts,
+          pointerId: 1,
+          pointerType: "mouse",
+          isPrimary: true,
+        }));
+      }
+      el.dispatchEvent(new MouseEvent("mousedown", opts));
+      if (typeof PointerEvent === "function") {
+        el.dispatchEvent(new PointerEvent("pointerup", {
+          ...opts,
+          buttons: 0,
+          pointerId: 1,
+          pointerType: "mouse",
+          isPrimary: true,
+        }));
+      }
+      el.dispatchEvent(new MouseEvent("mouseup", { ...opts, buttons: 0 }));
+      el.dispatchEvent(new MouseEvent("contextmenu", { ...opts, buttons: 0 }));
+      return { success: true, description: `Right clicked on [${action.selector || action.element_id || action.text || el.tagName}]` };
     }
 
     if (actType === "hover") {
@@ -2354,18 +2454,53 @@
     // ── Press Key ──
     if (actType === "press" || actType === "press_key") {
       const target = el || document.activeElement || document.body;
-      const keyName = action.key || action.text || "Enter";
-      const isShift = Boolean(action.shift || keyName === "F" || keyName.startsWith("Shift+"));
-      const cleanKey = keyName.replace(/^Shift\+/i, "");
-      const code = cleanKey.length === 1 ? `Key${cleanKey.toUpperCase()}` : cleanKey;
-      const keyCode = cleanKey.length === 1 ? cleanKey.toUpperCase().charCodeAt(0) : 13;
-      const kOpts = { key: isShift ? cleanKey.toUpperCase() : cleanKey, code, keyCode, which: keyCode, shiftKey: isShift, bubbles: true };
+      const rawKey = String(action.key || action.text || "Enter").trim();
+      const parts = rawKey.split("+").map((p) => p.trim()).filter(Boolean);
+      const baseKey = parts.length ? parts[parts.length - 1] : "Enter";
+      const modSet = new Set(parts.slice(0, -1).map((m) => m.toLowerCase()));
+      const isShift = Boolean(action.shift || modSet.has("shift") || (baseKey.length === 1 && baseKey !== baseKey.toLowerCase() && baseKey === baseKey.toUpperCase() && /[A-Z]/.test(baseKey)));
+      const isAlt = Boolean(action.alt || modSet.has("alt"));
+      const isCtrl = Boolean(action.ctrl || modSet.has("ctrl") || modSet.has("control"));
+      const isMeta = Boolean(action.meta || modSet.has("meta") || modSet.has("cmd") || modSet.has("command"));
+
+      const specialKeyCodes = {
+        enter: { key: "Enter", code: "Enter", keyCode: 13 },
+        escape: { key: "Escape", code: "Escape", keyCode: 27 },
+        esc: { key: "Escape", code: "Escape", keyCode: 27 },
+        tab: { key: "Tab", code: "Tab", keyCode: 9 },
+        backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+        delete: { key: "Delete", code: "Delete", keyCode: 46 },
+        del: { key: "Delete", code: "Delete", keyCode: 46 },
+        space: { key: " ", code: "Space", keyCode: 32 },
+        arrowdown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+        arrowup: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+        arrowleft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+        arrowright: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+        f2: { key: "F2", code: "F2", keyCode: 113 },
+        f10: { key: "F10", code: "F10", keyCode: 121 },
+      };
+      const mapped = specialKeyCodes[baseKey.toLowerCase()];
+      const key = mapped ? mapped.key : (isShift && baseKey.length === 1 ? baseKey.toUpperCase() : baseKey);
+      const code = mapped ? mapped.code : (baseKey.length === 1 && /[a-z]/i.test(baseKey) ? `Key${baseKey.toUpperCase()}` : baseKey);
+      const keyCode = mapped ? mapped.keyCode : (baseKey.length === 1 ? baseKey.toUpperCase().charCodeAt(0) : 0);
+      const kOpts = {
+        key,
+        code,
+        keyCode,
+        which: keyCode,
+        shiftKey: isShift,
+        altKey: isAlt,
+        ctrlKey: isCtrl,
+        metaKey: isMeta,
+        bubbles: true,
+        cancelable: true,
+      };
 
       target.dispatchEvent(new KeyboardEvent("keydown", kOpts));
       target.dispatchEvent(new KeyboardEvent("keyup", kOpts));
       window.dispatchEvent(new KeyboardEvent("keydown", kOpts));
       window.dispatchEvent(new KeyboardEvent("keyup", kOpts));
-      return { success: true, description: `Pressed key '${keyName}'` };
+      return { success: true, description: `Pressed key '${rawKey}'` };
     }
 
     // ── Focus ──
@@ -2447,16 +2582,57 @@
   // ---------------------------------------------------------------------------
 
   const LOCKED_EVENT_TYPES = [
-    "pointerdown", "pointerup", "pointermove", "mousedown", "mouseup", "click", "dblclick",
-    "contextmenu", "wheel", "touchstart", "touchmove", "touchend", "dragstart", "drop",
+    "pointerdown", "pointerup", "pointermove", "pointercancel",
+    "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu",
+    "wheel", "touchstart", "touchmove", "touchend", "touchcancel",
+    "dragstart", "drag", "dragenter", "dragover", "drop",
+    "selectstart", "submit",
     "keydown", "keypress", "keyup", "beforeinput", "input", "paste", "cut"
   ];
   let agentUiLocked = false;
   // CDP input is trusted browser input. Permit it only during the short window
   // explicitly opened by background.js for an agent pointer action.
   let nativeAgentInputActive = false;
+  let _agentScrolling = false;
   let lockObserver = null;
   let originalOverflow = null;
+  let originalUserSelect = null;
+  let lockPulseTimer = null;
+
+  function withLockShieldBypassed(fn) {
+    const border = document.getElementById?.("ai-agent-running-border");
+    const prevPointerEvents = border ? border.style.pointerEvents : "";
+    if (border && prevPointerEvents !== "none") {
+      border.style.pointerEvents = "none";
+    }
+    try {
+      return fn();
+    } finally {
+      if (border) {
+        border.style.pointerEvents = agentUiLocked && !nativeAgentInputActive ? "auto" : (prevPointerEvents || "none");
+      }
+    }
+  }
+
+  function syncLockShieldInteractivity() {
+    const border = document.getElementById?.("ai-agent-running-border");
+    if (border) {
+      border.style.pointerEvents = agentUiLocked && !nativeAgentInputActive ? "auto" : "none";
+    }
+  }
+
+  function pulseLockIndicator() {
+    const indicator = document.getElementById?.("ai-agent-ui-lock");
+    if (!indicator || !agentUiLocked) return;
+    indicator.style.boxShadow = "0 0 0 2px rgba(52, 211, 153, 0.7), 0 6px 22px rgba(0, 0, 0, 0.35)";
+    if (lockPulseTimer !== null) clearTimeout(lockPulseTimer);
+    lockPulseTimer = setTimeout(() => {
+      lockPulseTimer = null;
+      if (indicator.isConnected) {
+        indicator.style.boxShadow = "0 6px 22px rgba(0, 0, 0, 0.22)";
+      }
+    }, 350);
+  }
 
   function handleAgentLockEvent(event) {
     if (!agentUiLocked || !event.isTrusted || nativeAgentInputActive) return;
@@ -2469,10 +2645,13 @@
     if (event.cancelable) event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
+    if (event.type === "pointerdown" || event.type === "mousedown" || event.type === "keydown") {
+      pulseLockIndicator();
+    }
   }
 
   function applyFrameScrollLock() {
-    if (!agentUiLocked) return;
+    if (!agentUiLocked || _agentScrolling) return;
     const html = document.documentElement;
     const body = document.body;
     if (!originalOverflow) {
@@ -2483,27 +2662,68 @@
         bodyPriority: body ? body.style.getPropertyPriority("overflow") : "",
       };
     }
-    if (html) html.style.setProperty("overflow", "hidden", "important");
+    if (!originalUserSelect && html) {
+      originalUserSelect = {
+        val: html.style.getPropertyValue("user-select"),
+        prio: html.style.getPropertyPriority("user-select"),
+      };
+    }
+    if (html) {
+      html.style.setProperty("overflow", "hidden", "important");
+      html.style.setProperty("user-select", "none", "important");
+    }
     if (body) body.style.setProperty("overflow", "hidden", "important");
   }
 
   function restoreFrameScrollLock() {
-    if (!originalOverflow) return;
     const html = document.documentElement;
     const body = document.body;
-    if (html) {
-      if (originalOverflow.html) html.style.setProperty("overflow", originalOverflow.html, originalOverflow.htmlPriority);
-      else html.style.removeProperty("overflow");
+    if (originalOverflow) {
+      if (html) {
+        if (originalOverflow.html) html.style.setProperty("overflow", originalOverflow.html, originalOverflow.htmlPriority);
+        else html.style.removeProperty("overflow");
+      }
+      if (body) {
+        if (originalOverflow.body) body.style.setProperty("overflow", originalOverflow.body, originalOverflow.bodyPriority);
+        else body.style.removeProperty("overflow");
+      }
+      originalOverflow = null;
     }
-    if (body) {
-      if (originalOverflow.body) body.style.setProperty("overflow", originalOverflow.body, originalOverflow.bodyPriority);
-      else body.style.removeProperty("overflow");
+    if (!_agentScrolling && originalUserSelect !== null && html) {
+      if (originalUserSelect.val) html.style.setProperty("user-select", originalUserSelect.val, originalUserSelect.prio);
+      else html.style.removeProperty("user-select");
+      originalUserSelect = null;
     }
-    originalOverflow = null;
   }
 
-  // Non-blocking execution indicator. Automation is scoped to this tab,
-  // but the user must remain free to interact with the page and switch tabs.
+  async function withScrollUnlockedForAgent(fn) {
+    const wasLocked = agentUiLocked;
+    _agentScrolling = true;
+    if (wasLocked) restoreFrameScrollLock();
+    try {
+      return await fn();
+    } finally {
+      _agentScrolling = false;
+      if (agentUiLocked) applyFrameScrollLock();
+    }
+  }
+
+  function broadcastLockCommandToFrames(root, command) {
+    const frames = [];
+    if (root?.matches?.("iframe,frame")) frames.push(root);
+    if (root?.querySelectorAll) frames.push(...root.querySelectorAll("iframe,frame"));
+    frames.forEach((frame) => {
+      const notify = () => {
+        try { frame.contentWindow?.postMessage({ __aiAgentLockCommand: true, command }, "*"); } catch (e) {}
+      };
+      if (command === "lock_ui") {
+        frame.addEventListener?.("load", notify, { once: true });
+      }
+      notify();
+    });
+  }
+
+  // Full-screen task-tab interaction lock while the agent is actively executing.
   // The indicator deliberately uses the agent's dark green / mint palette.
   function lockUI() {
     agentUiLocked = true;
@@ -2518,12 +2738,10 @@
     });
     applyFrameScrollLock();
 
-    // Only the top frame draws the viewport overlay; child frames still block
-    // their own trusted input events without drawing duplicate green borders.
     let isTopFrame = false;
     try { isTopFrame = window.top === window; } catch (e) {}
     if (isTopFrame) {
-      let border = document.getElementById("ai-agent-running-border");
+      let border = document.getElementById?.("ai-agent-running-border");
       if (!border) {
         border = document.createElement("div");
         border.id = "ai-agent-running-border";
@@ -2537,20 +2755,25 @@
         border: "3px solid rgba(52, 211, 153, 0.92)",
         boxShadow: "inset 0 0 0 1px rgba(167, 243, 208, 0.3), inset 0 0 18px rgba(52, 211, 153, 0.12)",
         borderRadius: "2px",
-        background: "transparent",
-        pointerEvents: "none",
+        background: "rgba(8, 20, 16, 0.04)",
+        pointerEvents: nativeAgentInputActive ? "none" : "auto",
         cursor: "not-allowed",
         userSelect: "none",
+        touchAction: "none",
         boxSizing: "border-box",
       });
-      (document.documentElement || document.body).appendChild(border);
+      const rootContainer = document.documentElement || document.body;
+      if (rootContainer && border.parentNode !== rootContainer) {
+        rootContainer.appendChild(border);
+      }
 
-      let indicator = document.getElementById("ai-agent-ui-lock");
+      let indicator = document.getElementById?.("ai-agent-ui-lock");
       if (!indicator) {
         indicator = document.createElement("div");
         indicator.id = "ai-agent-ui-lock";
         indicator.setAttribute("role", "status");
         indicator.setAttribute("aria-live", "polite");
+        indicator.setAttribute("title", "Screen locked while AI agent is running (Alt+Shift+Esc emergency unlock)");
         Object.assign(indicator.style, {
           position: "fixed", top: "12px", right: "16px", zIndex: "2147483647",
           display: "inline-flex", alignItems: "center", gap: "8px",
@@ -2559,6 +2782,7 @@
           background: "rgba(8, 20, 16, 0.96)", color: "#a7f3d0",
           font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
           letterSpacing: "0.01em", boxShadow: "0 6px 22px rgba(0, 0, 0, 0.22)",
+          transition: "box-shadow 0.2s ease",
           pointerEvents: "none", userSelect: "none", boxSizing: "border-box",
         });
         const dot = document.createElement("span");
@@ -2568,70 +2792,69 @@
           boxShadow: "0 0 8px rgba(52, 211, 153, 0.65)",
         });
         const label = document.createElement("span");
-        label.textContent = "AI agent running";
+        label.textContent = "AI agent running • Screen locked";
         indicator.append(dot, label);
       }
-      (document.documentElement || document.body).appendChild(indicator);
+      if (rootContainer && indicator.parentNode !== rootContainer) {
+        rootContainer.appendChild(indicator);
+      }
 
       // Re-attach the overlay if a single-page app replaces the document body
       // or a page framework removes injected nodes during a rerender.
       if (lockObserver) lockObserver.disconnect();
-      lockObserver = new MutationObserver((mutations) => {
-        if (!agentUiLocked) return;
-        const root = document.documentElement;
-        if (root && !document.getElementById("ai-agent-running-border")) {
-          root.appendChild(border);
-        }
-        if (root && !document.getElementById("ai-agent-ui-lock")) {
-          root.appendChild(indicator);
-        }
-        applyFrameScrollLock();
-        mutations.forEach((mutation) => {
-          mutation.addedNodes.forEach((node) => broadcastToFrames(node));
+      if (typeof MutationObserver !== "undefined" && document.documentElement) {
+        lockObserver = new MutationObserver((mutations) => {
+          if (!agentUiLocked) return;
+          const root = document.documentElement;
+          if (root && !document.getElementById("ai-agent-running-border")) {
+            root.appendChild(border);
+          }
+          if (root && !document.getElementById("ai-agent-ui-lock")) {
+            root.appendChild(indicator);
+          }
+          syncLockShieldInteractivity();
+          applyFrameScrollLock();
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (node && node.nodeType === 1 && (node.matches?.("iframe,frame") || node.querySelector?.("iframe,frame"))) {
+                broadcastLockCommandToFrames(node, "lock_ui");
+              }
+            });
+          });
         });
-      });
-      lockObserver.observe(document.documentElement, { childList: true, subtree: true });
-      // Propagate the lock to existing and newly inserted child browsing contexts.
-      const broadcastToFrames = (root) => {
-        const frames = [];
-        if (root?.matches?.("iframe,frame")) frames.push(root);
-        if (root?.querySelectorAll) frames.push(...root.querySelectorAll("iframe,frame"));
-        frames.forEach((frame) => {
-          const notify = () => {
-            try { frame.contentWindow?.postMessage({ __aiAgentLockCommand: true, command: "lock_ui" }, "*"); } catch (e) {}
-          };
-          frame.addEventListener("load", notify, { once: true });
-          notify();
-        });
-      };
-      broadcastToFrames(document);
+        lockObserver.observe(document.documentElement, { childList: true, subtree: true });
+      }
+      broadcastLockCommandToFrames(document, "lock_ui");
     }
 
     return Boolean(
       agentUiLocked &&
-      LOCKED_EVENT_TYPES.every((type) => {
-        // Event listener installation is synchronous; the active flag and
-        // capture handlers are the authoritative lock, overlay is supplemental.
-        return typeof type === "string";
-      }) &&
-      (!isTopFrame || Boolean(document.getElementById("ai-agent-running-border")))
+      LOCKED_EVENT_TYPES.every((type) => typeof type === "string") &&
+      (!isTopFrame || Boolean(document.getElementById?.("ai-agent-running-border")))
     );
   }
   function unlockUI() {
     agentUiLocked = false;
+    nativeAgentInputActive = false;
+    _agentScrolling = false;
+    if (lockPulseTimer !== null) {
+      clearTimeout(lockPulseTimer);
+      lockPulseTimer = null;
+    }
     if (lockObserver) {
       lockObserver.disconnect();
       lockObserver = null;
     }
-    const indicator = document.getElementById("ai-agent-ui-lock");
+    const indicator = document.getElementById?.("ai-agent-ui-lock");
     if (indicator) indicator.remove();
-    const border = document.getElementById("ai-agent-running-border");
+    const border = document.getElementById?.("ai-agent-running-border");
     if (border) border.remove();
     LOCKED_EVENT_TYPES.forEach((type) => {
       window.removeEventListener(type, handleAgentLockEvent, true);
       document.removeEventListener(type, handleAgentLockEvent, true);
     });
     restoreFrameScrollLock();
+    broadcastLockCommandToFrames(document, "unlock_ui");
   }
 
   // Background worker can broadcast lock commands into every frame. The
@@ -2722,6 +2945,7 @@
     }
     if (event.data?.__aiAgentNativeInputCommand) {
       nativeAgentInputActive = Boolean(event.data.enabled);
+      syncLockShieldInteractivity();
       // Forward the scoped permission through nested frames as well.
       try {
         document.querySelectorAll("iframe,frame").forEach((frame) => {
@@ -2842,10 +3066,20 @@
             return;
           }
 
-          // Bring the target into the viewport, then re-check its live geometry
-          // and hit-test after layout/scroll settling to avoid clicking overlays.
-          target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          // Bring the target into the viewport only if clipped/off-screen so floating menus are not dismissed by scroll events.
+          const initialRect = target.getBoundingClientRect();
+          const needsScroll = (
+            initialRect.top < 4 ||
+            initialRect.bottom > window.innerHeight - 4 ||
+            initialRect.left < 4 ||
+            initialRect.right > window.innerWidth - 4
+          );
+          if (needsScroll) {
+            await withScrollUnlockedForAgent(async () => {
+              target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            });
+          }
           if (!isCenterHitTarget(target)) {
             sendResponse({ success: false, error: "Native click target is obscured or its center is not hit-testable." });
             return;
@@ -2865,7 +3099,7 @@
             data: {
               x, y,
               target: String(accessibleName).slice(0, 160),
-              button: nativeAction.button === "right" ? "right" : "left",
+              button: (String(nativeAction.action || "").toLowerCase() === "right_click" || nativeAction.button === "right") ? "right" : "left",
             },
           });
         } else if (message.type === "execute_action") {
@@ -2873,6 +3107,7 @@
           sendResponse(result);
         } else if (message.type === "native_input_state") {
           nativeAgentInputActive = Boolean(message.enabled);
+          syncLockShieldInteractivity();
           // Propagate the short-lived permission to same-origin and cross-origin
           // child frames, where the lock listeners are installed independently.
           try {

@@ -215,6 +215,35 @@ class TaskManager:
         metadata["milestone_graph"] = graph
         task.plan_metadata = metadata
 
+    @staticmethod
+    async def _set_ui_lock(
+        controller: Any,
+        locked: bool,
+        timeout: Optional[float] = None,
+        *,
+        only_if_idle: bool = False,
+        task_id: Optional[str] = None,
+    ) -> None:
+        """Best-effort controller UI lock/unlock transition; never raises."""
+        if controller is None:
+            return
+        if only_if_idle and task_id:
+            manager = getattr(controller, "manager", None)
+            task_lock = manager.get_task_lock(task_id) if manager and hasattr(manager, "get_task_lock") else None
+            if task_lock is not None and task_lock.locked():
+                return
+        method = getattr(controller, "lock_ui" if locked else "unlock_ui", None)
+        if not callable(method):
+            return
+        try:
+            coro = method()
+            if timeout is not None:
+                await asyncio.wait_for(coro, timeout=timeout)
+            else:
+                await coro
+        except Exception as exc:
+            logger.debug("UI %s transition skipped: %s", "lock" if locked else "unlock", exc)
+
     async def _sleep_or_cancel(self, task_id: str, delay: float) -> bool:
         """
         Sleeps for `delay` seconds, or returns True immediately if cancellation is triggered.
@@ -1162,14 +1191,19 @@ class TaskManager:
                 and not self._is_cancelled(task_id)
             ):
                 # Pause is cooperative: let an in-flight browser action finish,
-                # then stop before planning or executing the next action.
-                await self.pause_events[task_id].wait()
+                # unlock while paused so the user can interact, then re-lock on resume.
+                pause_gate = self.pause_events[task_id]
+                if not pause_gate.is_set() or task.status == TaskStatus.PAUSED:
+                    await self._set_ui_lock(controller, False)
+                    await pause_gate.wait()
+                    if self._is_cancelled(task_id):
+                        break
+                    await self._set_ui_lock(controller, True)
                 if self._is_cancelled(task_id):
                     break
                 if task.status == TaskStatus.PAUSED:
                     continue
-                if hasattr(controller, "lock_ui"):
-                    await controller.lock_ui()
+                await self._set_ui_lock(controller, True)
                 step_start = time.time()
 
                 # ── Guard: distinguish a closed tab from a lost extension connection ──
@@ -1494,6 +1528,7 @@ class TaskManager:
                     task.error = None
                     task.plan_status = "executing"
                     task.updated_at = time.time()
+                    await self._set_ui_lock(controller, True)
                     await self.broadcast_task_update(task_id)
                     # Re-inspect the recovered Gmail page at this same step.
                     continue
@@ -1553,6 +1588,7 @@ class TaskManager:
 
                     audit_logger.log_auth_event(task_id, action="resumed", reason="User confirmed completion of authentication in browser")
 
+                    await self._set_ui_lock(controller, True)
                     try:
                         page_info = await controller.parse_interactive_elements()
                     except Exception as refresh_exc:
@@ -2216,7 +2252,8 @@ class TaskManager:
                     summary_msg += "\n\nDo you want to authorize the form submission?"
 
                     screenshot_path, screenshot_url = await controller.capture_screenshot(task_id, step_num)
-                    
+
+                    await self._set_ui_lock(controller, False)
                     task.status = TaskStatus.WAITING_APPROVAL
                     task.approval_request = HumanApprovalRequest(
                         task_id=task_id,
@@ -2242,6 +2279,7 @@ class TaskManager:
                     task.context.confirm_form()
                     task.status = TaskStatus.RUNNING
                     task.approval_request = None
+                    await self._set_ui_lock(controller, True)
 
                 # 5. Human approval gate
                 if (
@@ -2343,6 +2381,7 @@ class TaskManager:
                         }, step=step_num)
                     task.status = TaskStatus.RUNNING
                     task.approval_request = None
+                    await self._set_ui_lock(controller, True)
 
                 # 6. Execute action
                 recovery_log: List[str] = []
@@ -2487,6 +2526,7 @@ class TaskManager:
                                     task.approval_request = None
                                     task.status = TaskStatus.RUNNING
                                     audit_logger.log_upload_event(task_id, file_path, True, "User authorized file upload")
+                                    await self._set_ui_lock(controller, True)
                             else:
                                 audit_logger.log_upload_event(task_id, "unknown", False, "No explicit allowlisted file path specified for upload")
                         except Exception as e:
@@ -2600,10 +2640,15 @@ class TaskManager:
                         task_log.action(step_num, action, phase="finished", result={"description": description, "extracted": extracted, "success": success})
                         return description, extracted, success
 
-                    # If the user pauses while the planner is deciding, stop
-                    # here before issuing the next browser command. An action that
-                    # was already in flight is allowed to finish safely.
-                    await self.pause_events[task_id].wait()
+                    # If the user pauses while the planner is deciding, unlock the UI
+                    # and wait before issuing the next browser command.
+                    pause_gate = self.pause_events[task_id]
+                    if not pause_gate.is_set() or task.status == TaskStatus.PAUSED:
+                        await self._set_ui_lock(controller, False)
+                        await pause_gate.wait()
+                        if self._is_cancelled(task_id):
+                            break
+                        await self._set_ui_lock(controller, True)
                     if self._is_cancelled(task_id):
                         break
 
@@ -3276,9 +3321,6 @@ class TaskManager:
                     logger.info(f"Task {task_id} cancellation detected during inter-step sleep.")
                     break
 
-            if hasattr(controller, "unlock_ui"):
-                await controller.unlock_ui()
-
             # A task is successful only when the planner's FINISH action has
             # independently verified the requested outcome. Reaching max_steps,
             # closing a loop, or otherwise leaving the loop is not success.
@@ -3497,7 +3539,7 @@ class TaskManager:
     ) -> tuple[bool, str]:
         """Check that a targeted extension control exists and is actionable."""
         target_actions = {
-            ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.TYPE_TEXT,
+            ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK, ActionType.TYPE_TEXT,
             ActionType.FILL, ActionType.FILL_FIELD, ActionType.SELECT,
             ActionType.SELECT_OPTION, ActionType.CHECK, ActionType.CHECK_BOX,
             ActionType.UNCHECK, ActionType.RADIO_BUTTON, ActionType.UPLOAD,
@@ -3519,7 +3561,7 @@ class TaskManager:
                     return True, "Radio group precondition verified."
                 return False, "Action precondition failed: radio group is no longer present."
             # Text-only clicks are supported by the extension's fallback resolver.
-            if action.action in (ActionType.CLICK, ActionType.DOUBLE_CLICK) and action.text:
+            if action.action in (ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK) and action.text:
                 return True, "Text-targeted interaction will use extension resolution."
             return False, "Action precondition failed: no element index or selector was supplied."
 
@@ -3763,18 +3805,22 @@ class TaskManager:
                     return False, "Radio postcondition failed: a different option is selected."
             return False, "Radio postcondition inconclusive: selected state was not exposed by the extension."
 
-        if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+        if action_type in (ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK):
             action_text_lower = str(action.text or "").strip().lower()
             action_reason_lower = str(action.reasoning or "").lower()
-            is_menu_or_nav = (
-                action_text_lower in ("new", "+ new", "+new", "create", "menu")
+            is_menu_item_click = bool(
+                re.search(r'menuitem|role\s*=\s*["\']?menu(?:item|option)|goog-menuitem', str(action.selector or "").lower())
+                or re.search(r'\bmenu\s*item\b|\bmenuitem\b', action_reason_lower)
+            )
+            is_menu_or_nav = action_type != ActionType.RIGHT_CLICK and not is_menu_item_click and (
+                action_text_lower in ("new", "+ new", "+new", "create", "more actions", "more options")
                 or "to ensure menu opens" in action_reason_lower
                 or "start the upload/create flow" in action_reason_lower
                 or "open the 'new' menu" in action_reason_lower
                 or "waiting for the 'new' menu" in action_reason_lower
                 or ("folder" in action_reason_lower and "file upload" not in action_text_lower)
             )
-            upload_intent = not is_menu_or_nav and bool(
+            upload_intent = action_type != ActionType.RIGHT_CLICK and not is_menu_or_nav and bool(
                 getattr(action, "file_name", None)
                 or getattr(action, "file_base64", None)
                 or re.search(
@@ -3850,13 +3896,25 @@ class TaskManager:
                 or len(after.get("headings", [])) != len(before.get("headings", []))
                 or str(after.get("page_text") or "").strip() != str(before.get("page_text") or "").strip()
             )
+            def _menu_or_dialog_count(elems: List[Any]) -> int:
+                return sum(
+                    1 for item in elems
+                    if isinstance(item, dict)
+                    and str(item.get("role") or "").lower() in ("menu", "menuitem", "dialog")
+                )
+            overlay_opened = _menu_or_dialog_count(after_elements) > _menu_or_dialog_count(before_elements)
 
             changed = (
                 after_url != before_url
                 or (bool(before_target) and after_target is None)
                 or target_state_changed
                 or dom_changed
+                or overlay_opened
             )
+            if action_type == ActionType.RIGHT_CLICK:
+                if changed:
+                    return True, "Right-click produced an observable context menu or page state change."
+                return False, "Right-click outcome is unverified: no context menu or page state change was observed."
             if changed:
                 return True, "Click produced an observable page or target-state change."
             # For double-clicks (opening folders, files, or desktop items),
@@ -3870,12 +3928,12 @@ class TaskManager:
             # Do not fail menu trigger clicks before the menu items can be observed.
             target_text_lower = str(action.text or "").strip().lower()
             reasoning_lower = str(action.reasoning or "").lower()
-            if (
-                target_text_lower in ("new", "+ new", "+new")
+            is_opener_click = not is_menu_item_click and (
+                target_text_lower in ("new", "+ new", "+new", "more actions", "more options")
                 or "new button" in reasoning_lower
-                or "dropdown" in reasoning_lower
-                or "menu" in reasoning_lower
-            ):
+                or bool(re.search(r"\b(?:open|expand|toggle)\b.*\b(?:menu|dropdown|popup)\b", reasoning_lower))
+            )
+            if is_opener_click:
                 return True, "Menu trigger click dispatched; awaiting dropdown menu render."
             # An accepted click is not proof that its intended effect occurred.
             # In particular, do not let an unchanged Submit button count as success.
@@ -4168,7 +4226,16 @@ Task evidence:
 
             if is_domain_match and path_matches and has_content and not ("chrome-error://" in curr_url or curr_url == "about:blank"):
                 goal_words = set(re.findall(r"\w+", goal_lower))
-                interactive_words = {"fill", "submit", "register", "buy", "pay", "order", "purchase", "upload"}
+                interactive_words = {
+                    "fill", "submit", "register", "buy", "pay", "order", "purchase",
+                    "upload", "attach", "create", "make", "mkdir", "rename", "delete",
+                    "remove", "trash", "move", "copy", "share", "edit", "update",
+                    "modify", "change", "organize", "download", "search", "find",
+                    "extract", "scrape", "summarize", "compose", "draft", "send",
+                    "reply", "forward", "click", "select", "book", "apply",
+                    "star", "archive", "restore", "export", "import", "post", "publish",
+                    "folder", "file",
+                }
                 if not (goal_words & interactive_words):
                     return True, f"Outcome verified: Successfully navigated to {curr_url} (matching {target_url}) with page title '{page_title}'."
             elif not is_domain_match and curr_url and curr_url not in ("about:blank", ""):
@@ -4574,6 +4641,9 @@ Task evidence:
         task.plan_status = "paused"
         task.error = "Paused by user. The current browser action will finish before execution stops."
         task.updated_at = time.time()
+        await self._set_ui_lock(
+            self.controllers.get(task_id), False, timeout=0.8, only_if_idle=True, task_id=task_id
+        )
         await self.broadcast_task_update(task_id)
         await self._save_cached_task_state(task_id)
         return task
@@ -4594,6 +4664,9 @@ Task evidence:
         task.plan_status = "executing"
         task.error = None
         task.updated_at = time.time()
+        await self._set_ui_lock(
+            self.controllers.get(task_id), True, timeout=1.0, only_if_idle=True, task_id=task_id
+        )
         gate.set()
         await self.broadcast_task_update(task_id)
         await self._save_cached_task_state(task_id)

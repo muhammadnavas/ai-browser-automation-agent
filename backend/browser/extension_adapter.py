@@ -377,6 +377,7 @@ class ExtensionBrowserAdapter:
         self.show_badges = show_badges
         self.screenshots_dir = screenshots_dir
         self.is_running = False
+        self._ui_locked = False
         self._current_url = ""
         self.element_map: Dict[int, Dict[str, Any]] = {}
         self.current_page = None  # Playwright Page placeholder for compatibility
@@ -402,8 +403,10 @@ class ExtensionBrowserAdapter:
                 timeout=8.0,
             )
             if result and result.get("success"):
+                self._ui_locked = True
                 logger.info("Task-tab interaction lock confirmed for task %s", self.task_id)
             else:
+                self._ui_locked = True
                 error = (result or {}).get("error") or "Chrome did not confirm the task-tab lock."
                 logger.warning("lock_ui non-fatal: %s (task=%s)", error, self.task_id)
         except Exception as exc:
@@ -412,6 +415,7 @@ class ExtensionBrowserAdapter:
 
     async def unlock_ui(self) -> None:
         """Unlocks the UI in the browser to allow human interaction."""
+        self._ui_locked = False
         try:
             await self.manager.send_command(
                 task_id=self.task_id,
@@ -429,6 +433,7 @@ class ExtensionBrowserAdapter:
             raise ValueError(f"Auth tab navigation blocked by security policy: {reason}")
         url = normalized or url
 
+        await self.unlock_ui()
         result = await self.manager.send_command(
             task_id=self.task_id,
             command_type="open_auth_tab",
@@ -449,6 +454,7 @@ class ExtensionBrowserAdapter:
             raise ValueError(f"Recovery tab navigation blocked by security policy: {reason}")
         url = normalized or url
 
+        await self.unlock_ui()
         result = await self.manager.send_command(
             task_id=self.task_id,
             command_type="open_recovery_tab",
@@ -586,12 +592,24 @@ class ExtensionBrowserAdapter:
         data: Dict[str, Any] = {}
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            resp = await self.manager.send_command(
-                task_id=self.task_id,
-                command_type="inspect_dom",
-                payload={"show_badges": self.show_badges},
-                timeout=18.0,
-            )
+            try:
+                resp = await self.manager.send_command(
+                    task_id=self.task_id,
+                    command_type="inspect_dom",
+                    payload={"show_badges": self.show_badges},
+                    timeout=25.0,
+                )
+            except (TimeoutError, asyncio.TimeoutError) as exc:
+                reason = str(exc) or "Extension command 'inspect_dom' timed out."
+                logger.warning(
+                    "DOM inspection timed out for task %s (attempt %s/%s): %s",
+                    self.task_id, attempt, max_attempts, reason,
+                )
+                if attempt < max_attempts:
+                    await asyncio.sleep(0.8 * attempt)
+                    continue
+                return self._inspection_failure(reason, attempt)
+
             if not resp.get("success"):
                 reason = str(resp.get("error") or "Chrome content script did not return a DOM snapshot.")
                 logger.warning("DOM inspection failed for task %s (attempt %s/%s): %s",

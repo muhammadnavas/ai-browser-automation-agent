@@ -712,6 +712,7 @@ IMPORTANT RULES:
   • Ground targets using accessible_name first, then role, label, ARIA, visible text, and nearby row/question context.
   • Treat element IDs and selectors as belonging ONLY to the latest DOM snapshot; never reuse them after navigation or a page re-render.
   • If multiple visible elements have the same or similarly matching name, do NOT guess. Inspect more context, open the relevant menu, or scroll until the intended target is uniquely identifiable.
+  • OPEN MENUS & MODAL DIALOGS: If a context/action menu (elements with role="menu" or role="menuitem") is ALREADY open and displays the needed option (e.g. "Rename", "Move", "Delete", "Make a copy", "Download"), click that visible menuitem directly — NEVER re-click "More actions" or "+ New" while the menu is open. After clicking a menuitem like "Rename" that opens a modal dialog, inspect the next snapshot for the dialog's visible text input before calling "fill"; if no dialog input appeared, re-open the target item's context menu (using "right_click" on the item row/cell or clicking its "More actions" button) and click the option again — NEVER guess unrelated header/search inputs.
   • Before clicking, ensure the chosen element is enabled and unobscured. If it is off-screen, scroll it into view and inspect again.
   • Use "scroll" to reveal off-screen fields before interacting with them.
   • Always use the "label" or "accessible_name" field of an element (if provided) to understand what a field is for.
@@ -1793,7 +1794,15 @@ class AIAgentPlanner:
             category_label = "Email Composition & Sending"
             tools.extend(["Interactive Element Control", "Form Discovery", "Human Approval Gate", "Send Verification"])
             requires_human_approval = True
-        elif is_nav_goal and not has_search_intent and not _has_keyword(goal_lower, ["upload", "attach", "create", "new folder", "share"]):
+        elif is_nav_goal and not has_search_intent and not _has_keyword(
+            goal_lower,
+            [
+                "upload", "attach", "create", "make", "new folder", "mkdir", "share",
+                "rename", "delete", "remove", "trash", "move", "copy", "edit",
+                "update", "modify", "change", "organize", "download", "folder",
+                "star", "archive", "restore",
+            ],
+        ):
             category_key = "navigation"
             category_label = "Direct URL Navigation & Interaction" if (has_click_intent or click_target) else "Direct URL Navigation"
             tools.extend(["Interactive Element Control", "Action Executor", "Data Extractor", "Summary Reporter"])
@@ -1915,7 +1924,11 @@ class AIAgentPlanner:
                     if not isinstance(cached_obj, dict):
                         return False
 
-                    # a. plan is a list of strings
+                    # a. reject degraded heuristic fallback plans stored by older runs
+                    if str(cached_obj.get("source", "")).strip().lower() == "heuristic":
+                        return False
+
+                    # b. plan is a list of strings
                     plan_steps = cached_obj.get("plan")
                     if not isinstance(plan_steps, list) or not plan_steps:
                         return False
@@ -2095,9 +2108,9 @@ Output format example:
                 source = "heuristic"
 
         # ------------------------------------------------------------------
-        # 4. Store Plan in L2 Redis & L1 PlanCache
+        # 4. Store Plan in L2 Redis & L1 PlanCache (skip degraded fallback plans)
         # ------------------------------------------------------------------
-        if plan and use_cache:
+        if plan and use_cache and source != "heuristic":
             # L2 Redis store
             if self.cache_service is not None:
                 try:
@@ -2136,7 +2149,7 @@ Output format example:
                     source=source,
                 )
 
-        if plan and use_cache and self.semantic_plan_cache is not None:
+        if plan and use_cache and source != "heuristic" and self.semantic_plan_cache is not None:
             try:
                 semantic_intent = self._analyze_task_intent(goal, start_url)
                 await self.semantic_plan_cache.store(
@@ -2155,15 +2168,26 @@ Output format example:
                 logger.warning("Semantic plan cache store failed (non-fatal): %s", exc)
 
         if not self.last_plan_cache_result:
-            self.last_plan_cache_result = {
-                "hit": False,
-                "tier": "None (Fresh)",
-                "source": source,
-                "reused": False,
-                "key": redis_key or "",
-                "message": f"Generated plan via {source.upper()} and cached to Redis",
-                "details": f"Cached in Redis (Key: {redis_key or 'agent_cache:plan:...'}) for instant future reuse",
-            }
+            if source == "heuristic":
+                self.last_plan_cache_result = {
+                    "hit": False,
+                    "tier": "None (Fallback)",
+                    "source": source,
+                    "reused": False,
+                    "key": redis_key or "",
+                    "message": "Generated fallback plan via HEURISTIC (not cached)",
+                    "details": "LLM unavailable or unconfigured; using heuristic fallback without writing to cache",
+                }
+            else:
+                self.last_plan_cache_result = {
+                    "hit": False,
+                    "tier": "None (Fresh)",
+                    "source": source,
+                    "reused": False,
+                    "key": redis_key or "",
+                    "message": f"Generated plan via {source.upper()} and cached to Redis",
+                    "details": f"Cached in Redis (Key: {redis_key or 'agent_cache:plan:...'}) for instant future reuse",
+                }
 
         return self._filter_unrequested_report_steps(goal, plan)
 
@@ -2965,10 +2989,20 @@ If the original goal is already complete, return ["Verify the requested outcome 
 
         # For upload/folder creation tasks on Drive-like sites, use heuristic FIRST.
         # The LLM tends to hallucinate wrong CSS selectors for these structured workflows.
+        # Do NOT hijack non-upload/non-create Drive operations (such as rename, delete, move, share, download).
         goal_lower_check = goal.lower()
-        _is_drive_task = any(k in goal_lower_check for k in [
-            "upload", "file upload", "new folder", "create folder", "gdrive", "google drive", "drive", "folder"
-        ])
+        _has_non_upload_drive_ops = _has_keyword(
+            goal_lower_check,
+            ["rename", "delete", "remove", "trash", "move", "copy", "download", "share", "star", "archive", "restore"],
+        )
+        _is_drive_upload_or_create = (
+            any(k in goal_lower_check for k in ["upload", "file upload", "attach"])
+            or any(k in goal_lower_check for k in [
+                "create folder", "create a folder", "new folder", "make folder",
+                "make a folder", "add folder", "add a folder", "create new folder", "mkdir",
+            ])
+        )
+        _is_drive_task = _is_drive_upload_or_create and not _has_non_upload_drive_ops
         _current_url = page_info.get("url", "").lower()
         _on_drive = "drive.google.com" in _current_url
 
@@ -4178,7 +4212,17 @@ Return ONLY this JSON object with a real JSON boolean:
         # ── Step 3: Navigation verification / Finish ──
         # DOM inspection above is internal state collection, not user-requested extraction.
         is_nav_or_generic = intent.get("category_key") in ("navigation", "generic")
-        has_upload_intent = _has_keyword(goal_lower, ["upload", "attach", "create", "new folder", "share", "drive"])
+        has_non_upload_drive_ops = _has_keyword(
+            goal_lower,
+            ["rename", "delete", "remove", "trash", "move", "copy", "download", "share", "star", "archive", "restore"],
+        )
+        has_upload_intent = has_non_upload_drive_ops or _has_keyword(
+            goal_lower,
+            [
+                "upload", "attach", "create", "make", "new folder", "mkdir",
+                "edit", "update", "modify", "change", "organize", "folder",
+            ],
+        )
         has_pending_search = (
             intent.get("category_key") == "search_extraction"
             or intent.get("has_search_intent")
@@ -4207,9 +4251,11 @@ Return ONLY this JSON object with a real JSON boolean:
             )
 
         # ── Step 3b: File Upload & Folder Creation Heuristic ─────────────────
-        is_upload_task = intent.get("category_key") == "file_upload" or _has_keyword(
-            goal_lower, ["upload", "attach", "folder", "create"]
-        )
+        is_upload_task = (
+            intent.get("category_key") == "file_upload"
+            or _has_keyword(goal_lower, ["upload", "attach", "create", "new folder", "make folder", "add folder", "mkdir"])
+            or (_has_keyword(goal_lower, ["folder"]) and not has_non_upload_drive_ops)
+        ) and not has_non_upload_drive_ops
         if is_upload_task and on_target:
             def _is_successful_step(h: Dict[str, Any]) -> bool:
                 if h.get("success") is False:
@@ -5021,10 +5067,10 @@ Return ONLY this JSON object with a real JSON boolean:
 
 
         # ── Step 4: Locate and type into a search/text input ─────────────
-        # Skip for upload tasks — they should never type the goal into a search box
+        # Skip for upload/Drive non-search tasks — never type the goal into Drive's search box
         search_input_id = None
         search_input_selector = None
-        if not is_upload_task:
+        if not is_upload_task and (not is_drive_context or has_pending_search) and not has_non_upload_drive_ops:
             # First pass: look for an explicit search input / combobox / searchbox
             for el in elements:
                 tag = str(el.get("tag") or "").lower()
@@ -5096,6 +5142,19 @@ Return ONLY this JSON object with a real JSON boolean:
             )
 
         # ── Step 7: Finish ────────────────────────────────────────────────
+        if has_non_upload_drive_ops and not has_interacted:
+            return BrowserAction(
+                action=ActionType.FINISH,
+                reasoning="Cannot perform this operation without an active LLM planner; refusing false completion.",
+                extracted_data={
+                    "task_goal":   goal,
+                    "url":         page_info.get("url"),
+                    "status":      "Failed",
+                    "error":       "LLM planner is required to execute this page action, and heuristic fallback could not verify completion.",
+                    "total_steps": step_number,
+                },
+            )
+
         return BrowserAction(
             action=ActionType.FINISH,
             reasoning="Task objectives fulfilled.",

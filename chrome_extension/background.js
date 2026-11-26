@@ -20,6 +20,7 @@ const LEGACY_LOCAL_SERVER_URLS = new Set([
 ]);
 let socket = null;
 let reconnectTimer = null;
+let disconnectUnlockTimer = null;
 let pingInterval = null;
 let isConnecting = false;
 let isAuthenticated = false;
@@ -31,6 +32,8 @@ let lastConnectedAt = null;
 let taskTabMap = new Map();
 // Reverse mapping: tab_id -> task_id
 let tabTaskMap = new Map();
+// Authoritative desired lock state per task: task_id -> boolean
+const taskLockStateMap = new Map();
 
 // ---------------------------------------------------------------------------
 // Storage Sync Helpers
@@ -166,6 +169,19 @@ async function connectWebSocket() {
       await updateBadgeStatus(false);
       await chrome.storage.local.set({ isConnected: false, isAuthenticated: false, lastConnectionError });
 
+      if (isRevoked || event.code === 4003 || event.code === 1000 || event.code === 1001) {
+        await unlockAllTaskTabs();
+      } else {
+        // Release user interaction if backend remains offline past the brief MV3 reconnect window.
+        if (disconnectUnlockTimer) clearTimeout(disconnectUnlockTimer);
+        disconnectUnlockTimer = setTimeout(() => {
+          disconnectUnlockTimer = null;
+          if (!isAuthenticated) {
+            unlockAllTaskTabs().catch(() => {});
+          }
+        }, 4000);
+      }
+
       // Schedule reconnection with backoff only if not explicitly revoked and not an auth failure (code 4003)
       if (!reconnectTimer && !isRevoked && event.code !== 4003) {
         reconnectTimer = setTimeout(() => {
@@ -203,6 +219,50 @@ function sendWsMessage(msg) {
   }
 }
 
+async function applyTabLockState(tabId, command) {
+  if (!tabId || !chrome.scripting?.executeScript) return [];
+  const executeLockWithTimeout = async (target, timeoutMs) => {
+    let lockTimer = null;
+    try {
+      return await Promise.race([
+        chrome.scripting.executeScript({
+          target,
+          world: "ISOLATED",
+          func: (lockCommand) => {
+            const detail = { command: lockCommand, result: false };
+            window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
+            return detail.result;
+          },
+          args: [command],
+        }),
+        new Promise((_, reject) => {
+          lockTimer = setTimeout(() => reject(new Error(`${command} executeScript timed out`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (lockTimer !== null) clearTimeout(lockTimer);
+    }
+  };
+
+  try {
+    return await executeLockWithTimeout({ tabId, allFrames: true }, 3500);
+  } catch (scriptErr) {
+    return await executeLockWithTimeout({ tabId }, 2500);
+  }
+}
+
+async function unlockAllTaskTabs() {
+  const entries = Array.from(taskTabMap.entries());
+  taskLockStateMap.clear();
+  for (const [taskId, mappedTabId] of entries) {
+    try {
+      const tab = await chrome.tabs.get(mappedTabId).catch(() => null);
+      if (!tab || !tab.url || isRestrictedUrl(tab.url)) continue;
+      await applyTabLockState(mappedTabId, "unlock_ui").catch(() => {});
+    } catch (e) {}
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tab Management & Content Script Injection Helpers
 // ---------------------------------------------------------------------------
@@ -230,6 +290,25 @@ function isRestrictedUrl(url) {
   );
 }
 
+async function sendTabMessageWithTimeout(tabId, message, options = { frameId: 0 }, timeoutMs = 12000) {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return await chrome.tabs.sendMessage(tabId, message, options);
+  }
+  let timer = null;
+  try {
+    return await Promise.race([
+      chrome.tabs.sendMessage(tabId, message, options),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`Tab message '${message?.type || "unknown"}' timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
 async function ensureContentScriptInjected(tabId) {
   const getScriptableTab = async () => {
     const tab = await chrome.tabs.get(tabId);
@@ -242,7 +321,7 @@ async function ensureContentScriptInjected(tabId) {
 
   const ping = async () => {
     try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "ping" }, { frameId: 0 });
+      const response = await sendTabMessageWithTimeout(tabId, { type: "ping" }, { frameId: 0 }, 2000);
       return Boolean(response && response.pong && response.is_top_frame !== false);
     } catch (error) {
       return false;
@@ -298,22 +377,9 @@ async function ensureContentScriptInjected(tabId) {
 }
 
 // Dispatch trusted browser input through Chrome DevTools Protocol. This does not
+// Dispatch pointer input via Chrome Debugger Protocol so the browser does not
 // synthesize DOM events; Chrome generates trusted pointer events for the page.
 async function dispatchNativePointerClick(tabId, action) {
-  const resolved = await sendContentMessage(tabId, {
-    type: "resolve_native_click_target",
-    action,
-  }, { frameId: 0 });
-
-  if (!resolved?.success || !resolved.data) {
-    throw new Error(resolved?.error || "Could not resolve a unique, unobscured click target.");
-  }
-
-  const { x, y, target, button = "left" } = resolved.data;
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error("Native click target returned invalid viewport coordinates.");
-  }
-
   const debuggee = { tabId };
   let attachedHere = false;
   try {
@@ -326,6 +392,25 @@ async function dispatchNativePointerClick(tabId, action) {
       if (!/already attached|Another debugger is already attached/i.test(attachError.message || "")) {
         throw new Error("Chrome native input could not attach to the task tab: " + attachError.message);
       }
+    }
+
+    if (attachedHere) {
+      // Wait briefly for any debugger-infobar viewport shift before resolving coordinates.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+
+    const resolved = await sendContentMessage(tabId, {
+      type: "resolve_native_click_target",
+      action,
+    }, { frameId: 0 });
+
+    if (!resolved?.success || !resolved.data) {
+      throw new Error(resolved?.error || "Could not resolve a unique, unobscured click target.");
+    }
+
+    const { x, y, target, button = "left" } = resolved.data;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error("Native click target returned invalid viewport coordinates.");
     }
 
     const clickCount = String(action.action || "").toLowerCase() === "double_click" ? 2 : 1;
@@ -359,17 +444,18 @@ async function dispatchNativePointerClick(tabId, action) {
 
 async function sendContentMessage(tabId, message, options = { frameId: 0 }) {
   await ensureContentScriptInjected(tabId);
+  const timeoutMs = message?.type === "execute_action" ? 0 : 12000;
   try {
-    return await chrome.tabs.sendMessage(tabId, message, options);
+    return await sendTabMessageWithTimeout(tabId, message, options, timeoutMs);
   } catch (error) {
     // For read-only inspection or informational queries, a document transition / BFCache entry
     // can be recovered by waiting for the new document and re-querying once.
     // For action execution, we do NOT re-dispatch the action here to prevent duplicate actions.
     const isChannelClosed = /receiving end does not exist|could not establish connection|back\/forward cache|message channel.*closed/i.test(error.message || "");
     if (isChannelClosed && message && message.type !== "execute_action") {
-      await waitForTabLoaded(tabId, 10000);
+      await waitForTabLoaded(tabId, 5000);
       await ensureContentScriptInjected(tabId);
-      return await chrome.tabs.sendMessage(tabId, message, options);
+      return await sendTabMessageWithTimeout(tabId, message, options, timeoutMs);
     }
     throw error;
   }
@@ -459,6 +545,10 @@ async function handleBackendMessage(msg) {
 
   if (type === "registered") {
     console.log("[AI Extension] Successfully authenticated and paired with backend.");
+    if (disconnectUnlockTimer) {
+      clearTimeout(disconnectUnlockTimer);
+      disconnectUnlockTimer = null;
+    }
     isAuthenticated = true;
     isRevoked = false;
     lastConnectionError = null;
@@ -489,6 +579,7 @@ async function handleBackendMessage(msg) {
   if (type === "auth_failed") {
     console.warn("[AI Extension] Authentication failed:", msg.reason);
     isAuthenticated = false;
+    await unlockAllTaskTabs();
     await updateBadgeStatus(false);
     const reason = msg.reason || "Extension authentication failed";
     lastConnectionError = reason;
@@ -538,7 +629,7 @@ async function handleBackendMessage(msg) {
               existingTab.url?.includes("/file/d/");
             if (needsNav) {
               await chrome.tabs.update(existingTab.id, { url, active: true });
-              await waitForTabLoaded(existingTab.id, 12000);
+              await waitForTabLoaded(existingTab.id, 12000, { expectNavigation: true, minWaitMs: 150 });
             } else {
               await chrome.tabs.update(existingTab.id, { active: true });
             }
@@ -584,7 +675,7 @@ async function handleBackendMessage(msg) {
 
                 if (shouldNavigate) {
                   await chrome.tabs.update(openTab.id, { url, active: true });
-                  await waitForTabLoaded(openTab.id, 12000);
+                  await waitForTabLoaded(openTab.id, 12000, { expectNavigation: true, minWaitMs: 150 });
                 } else {
                   await chrome.tabs.update(openTab.id, { active: true });
                 }
@@ -669,6 +760,13 @@ async function handleBackendMessage(msg) {
       // Google's security challenge. Keep the new tab mapped to this task so
       // subsequent focus/inspection commands target the recovered session.
       const oldTabId = taskTabMap.get(task_id);
+      taskLockStateMap.set(task_id, false);
+      if (oldTabId !== undefined) {
+        const oldTab = await chrome.tabs.get(oldTabId).catch(() => null);
+        if (oldTab && oldTab.url && !isRestrictedUrl(oldTab.url)) {
+          await applyTabLockState(oldTabId, "unlock_ui").catch(() => {});
+        }
+      }
       const tab = await chrome.tabs.create({ url: authUrl, active: true });
 
       if (oldTabId !== undefined && oldTabId !== tab.id) {
@@ -748,6 +846,7 @@ async function handleBackendMessage(msg) {
   // ── 2. Close Task Tab ──
   if (type === "close_tab") {
     try {
+      taskLockStateMap.delete(task_id);
       const tabId = taskTabMap.get(task_id);
       if (tabId) {
         try {
@@ -907,7 +1006,13 @@ async function handleBackendMessage(msg) {
   // ── 5. DOM Inspection ──
   if (type === "inspect_dom") {
     try {
-      const liveTab = await chrome.tabs.get(tabId);
+      let liveTab = await chrome.tabs.get(tabId);
+      if (liveTab?.status === "loading") {
+        // Heavy SPAs like Google Drive may still be redirecting right after create_tab.
+        // Wait briefly for navigation to settle before querying the content script.
+        await waitForTabLoaded(tabId, 5000, { minWaitMs: 0 });
+        liveTab = await chrome.tabs.get(tabId).catch(() => liveTab);
+      }
       const currentUrl = liveTab?.url || "";
       if (isRestrictedUrl(currentUrl) || !currentUrl) {
         // Restricted or blank pages (about:blank, chrome://) cannot run content scripts.
@@ -1033,11 +1138,24 @@ async function handleBackendMessage(msg) {
       // Exception: popup/menu triggers (e.g. Google Drive "+ New", dropdown menus) are
       // instantly dismissed if the Chrome debugger attaches and detaches (which blurs the window).
       // Dispatch those directly via content script DOM events so the menu stays open.
-      const pointerAction = ["click", "double_click", "right_click"].includes(
-        String(action.action || "").toLowerCase()
+      const actionName = String(action.action || "").toLowerCase();
+      const pointerAction = ["click", "double_click", "right_click"].includes(actionName);
+      const actionText = String(action.text || "").trim();
+      const actionSelector = String(action.selector || "");
+      const actionReasoning = String(action.reasoning || "");
+      const isMenuOpenerText = /^(new|\+ new|\+new|more actions|more options)$/i.test(actionText);
+      const isMenuItemTarget = !isMenuOpenerText && (
+        /role\s*=\s*["']?menu(?:item|itemcheckbox|itemradio)|goog-menuitem/i.test(actionSelector) ||
+        /\bmenu\s*item\b|\bmenuitem\b/i.test(actionReasoning) ||
+        /\b(?:option|item|rename|delete|move|copy|share|download)\b.*\bmenu\b/i.test(actionReasoning)
       );
-      const isMenuTrigger = /^(new|\+ new|\+new)$/i.test(String(action.text || "").trim()) ||
-        /new button|menu|dropdown|popup/i.test(String(action.reasoning || ""));
+      const isMenuTrigger =
+        actionName === "click" &&
+        !isMenuItemTarget &&
+        (
+          isMenuOpenerText ||
+          /\bnew button\b|\b(?:open|expand|toggle|show)\s+(?:the\s+|a\s+)?(?:[\w'"-]+\s+){0,3}(?:menu|dropdown|popup)\b|\b(?:dropdown|popup)\s+(?:menu\s+)?(?:trigger|button)\b/i.test(actionReasoning)
+        );
       if (pointerAction && !isMenuTrigger) {
         // The task-tab interaction guard normally blocks trusted user input. Temporarily
         // permit input for this tab while CDP dispatches the agent's pointer sequence.
@@ -1170,6 +1288,7 @@ async function handleBackendMessage(msg) {
   // ── 8. Lock UI ──
   if (type === "lock_ui" || type === "unlock_ui") {
     const command = type;
+    taskLockStateMap.set(task_id, command === "lock_ui");
     try {
       const currentTab = await chrome.tabs.get(tabId);
       const currentUrl = currentTab?.url || "";
@@ -1191,60 +1310,35 @@ async function handleBackendMessage(msg) {
         return;
       }
 
-      // If tab is still loading (not yet complete), skip scripting and fast-ack.
-      // The overlay will be applied on the next lock_ui call after navigation completes.
-      if (currentTab.status !== "complete") {
+      // If tab is still loading (not yet complete), defer lock_ui until tabs.onUpdated
+      // completes; still allow unlock_ui attempts cleanly.
+      if (command === "lock_ui" && currentTab.status !== "complete") {
         sendWsMessage({
           id,
           task_id,
           type: "response",
           success: true,
           data: {
-            locked: command === "lock_ui",
+            locked: true,
             loading: true,
-            message: "Tab still loading; lock overlay deferred until page is ready.",
+            message: "Tab still loading; lock overlay will apply automatically once page is ready.",
           },
         });
         return;
       }
 
       await ensureContentScriptInjected(tabId);
-      // Send the command to every frame, not only the top document. Google Forms
-      // and upload widgets can put interactive controls inside child frames.
       let results = [];
       try {
-        results = await chrome.scripting.executeScript({
-          target: { tabId, allFrames: true },
-          world: "ISOLATED",
-          func: (lockCommand) => {
-            const detail = { command: lockCommand, result: false };
-            window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
-            return detail.result;
-          },
-          args: [command],
+        results = await applyTabLockState(tabId, command);
+      } catch (topFrameErr) {
+        // Page navigated or is unreachable — treat lock as best-effort success.
+        console.warn(`[AI Agent] ${command} scripting skipped (tab likely navigating): ${topFrameErr.message}`);
+        sendWsMessage({
+          id, task_id, type: "response", success: true,
+          data: { locked: command === "lock_ui", scripting_skipped: true },
         });
-      } catch (scriptErr) {
-        // Fallback: try targeting only the top frame if allFrames fails
-        try {
-          results = await chrome.scripting.executeScript({
-            target: { tabId },
-            world: "ISOLATED",
-            func: (lockCommand) => {
-              const detail = { command: lockCommand, result: false };
-              window.dispatchEvent(new CustomEvent("ai-agent-ui-lock-command", { detail }));
-              return detail.result;
-            },
-            args: [command],
-          });
-        } catch (topFrameErr) {
-          // Page navigated or is unreachable — treat lock as best-effort success.
-          console.warn(`[AI Agent] lock_ui scripting skipped (tab likely navigating): ${topFrameErr.message}`);
-          sendWsMessage({
-            id, task_id, type: "response", success: true,
-            data: { locked: command === "lock_ui", scripting_skipped: true },
-          });
-          return;
-        }
+        return;
       }
 
       // For lock_ui, warn but don't fail if the overlay was not confirmed —
@@ -1313,6 +1407,20 @@ if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.onCreated) {
   });
 }
 
+if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.onUpdated) {
+  chrome.tabs.onUpdated.addListener(async (updatedTabId, info, tab) => {
+    if (info?.status !== "complete") return;
+    const taskId = tabTaskMap.get(updatedTabId);
+    if (!taskId || taskLockStateMap.get(taskId) !== true) return;
+    const currentUrl = tab?.url || "";
+    if (!currentUrl || isRestrictedUrl(currentUrl)) return;
+    try {
+      await ensureContentScriptInjected(updatedTabId);
+      await applyTabLockState(updatedTabId, "lock_ui");
+    } catch (e) {}
+  });
+}
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const taskId = tabTaskMap.get(tabId);
   if (taskId) {
@@ -1330,12 +1438,22 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
         const nextTabId = remaining[remaining.length - 1];
         taskTabMap.set(taskId, nextTabId);
         await saveMappings();
+        if (taskLockStateMap.get(taskId) === true) {
+          try {
+            const nextTab = await chrome.tabs.get(nextTabId).catch(() => null);
+            if (nextTab && nextTab.url && !isRestrictedUrl(nextTab.url)) {
+              await ensureContentScriptInjected(nextTabId);
+              await applyTabLockState(nextTabId, "lock_ui");
+            }
+          } catch (e) {}
+        }
         console.log(`[AI Extension] Primary tab ${tabId} closed; switched task ${taskId} to child tab ${nextTabId}`);
         return;
       }
 
       taskTabMap.delete(taskId);
       taskChildTabsMap.delete(taskId);
+      taskLockStateMap.delete(taskId);
       await saveMappings();
 
       // Notify backend
